@@ -1,0 +1,11 @@
+streamlit
+torch
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+joblib
+plotly
+gspread
+oauth2client
