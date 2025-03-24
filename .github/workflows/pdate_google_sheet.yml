@@ -1,0 +1,29 @@
+name: Aggiorna Foglio Google  # Nome del tuo workflow (apparirà nella UI di Actions di GitHub)
+
+on:
+  schedule:
+    - cron: '0 * * * *'    # Pianifica l'esecuzione (es. ogni ora allo scoccare dell'ora)
+  workflow_dispatch:      # Permetti l'esecuzione manuale del workflow dalla UI di GitHub Actions
+
+jobs:
+  update-sheet:           # Nome del job (arbitrario)
+    runs-on: ubuntu-latest  # Ambiente di esecuzione (Ubuntu più recente)
+
+    steps:
+      - name: Checkout codice repository  # Nome del primo step
+        uses: actions/checkout@v3       # Usa l'action 'checkout' per scaricare il codice del repo
+
+      - name: Imposta Python 3.9       # Nome del secondo step
+        uses: actions/setup-python@v4     # Usa l'action 'setup-python' per configurare Python
+        with:
+          python-version: '3.9'         # Specifica la versione di Python da usare
+
+      - name: Installa dipendenze Python  # Nome del terzo step
+        run: pip install -r requirements.txt # Esegui 'pip install' per installare le dipendenze da requirements.txt
+        # OPPURE (se non hai requirements.txt):
+        # run: pip install gspread google-auth pandas  # Elenca direttamente le dipendenze
+
+      - name: Esegui script Python di aggiornamento foglio Google  # Nome del quarto step
+        run: python estrai_dati_meteo.py  # MODIFICA QUI: NOME SCRIPT CORRETTO - Esegui il tuo script Python (ora con il nome corretto)
+        env: # Definisci variabili d'ambiente che saranno accessibili allo script Python
+          GCP_CREDENTIALS_JSON: ${{ secrets.GCP_CREDENTIALS_JSON }} # Passa il segreto come variabile d'ambiente
