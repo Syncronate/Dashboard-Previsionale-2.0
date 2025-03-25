@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 import sys
 import urllib3
 import gspread
-from google.oauth2 import service_account  # Importa la libreria corretta
-import os  # Importa 'os' per accedere alle variabili d'ambiente
+from google.oauth2 import service_account
+import os
 
 # Disable SSL warning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -14,31 +14,32 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 def estrai_dati_meteo():
     """
     Extracts weather data from API and appends it to a Google Sheet.
-    This function runs continuously, updating the sheet every hour.
+    Modified to run once per execution for GitHub Actions.
     """
     # Google Sheets setup
     nome_foglio = "Dati Meteo Stazioni"
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
     try:
-        # Carica le credenziali DA VARIABILE D'AMBIENTE
+        # Load credentials from environment variable
         credentials_json = os.environ.get("GCP_CREDENTIALS_JSON")
         if not credentials_json:
-            raise EnvironmentError("Variabile d'ambiente GCP_CREDENTIALS_JSON non trovata.")
+            raise EnvironmentError("GCP_CREDENTIALS_JSON environment variable not found.")
+        
         credentials_info = json.loads(credentials_json)
-        scoped_credentials = service_account.Credentials.from_service_account_info(  # Usa google.oauth2.service_account.Credentials
+        scoped_credentials = service_account.Credentials.from_service_account_info(
             credentials_info, scopes=scope
         )
         client = gspread.authorize(scoped_credentials)
 
         try:
             foglio = client.open(nome_foglio).sheet1
-            print(f"Foglio Google '{nome_foglio}' aperto con successo.")
+            print(f"Google Sheet '{nome_foglio}' opened successfully.")
         except gspread.SpreadsheetNotFound:
             foglio = client.create(nome_foglio).sheet1
-            print(f"Foglio Google '{nome_foglio}' creato con successo.")
+            print(f"Google Sheet '{nome_foglio}' created successfully.")
     except Exception as e:
-        print(f"Errore nell'autenticazione a Google Sheets: {e}")
+        print(f"Error authenticating to Google Sheets: {e}")
         sys.exit(1)
 
     # API information
@@ -51,140 +52,117 @@ def estrai_dati_meteo():
         "Serra dei Conti",
         "Arcevia",
         "Corinaldo",
-        "Ponte Garibaldi",  # Added Ponte Garibaldi
+        "Ponte Garibaldi",
     ]
     sensori_interessati_tipoSens = [0, 1, 5, 6, 9, 10, 100, 101]
 
-    intestazione_attuale = []
     try:
-        intestazione_attuale = foglio.row_values(1)
-        print(f"Intestazioni esistenti: {intestazione_attuale}")
-    except:
-        intestazione_attuale = []
+        # Fetch existing headers
+        try:
+            intestazione_attuale = foglio.row_values(1)
+            print(f"Existing headers: {intestazione_attuale}")
+        except:
+            intestazione_attuale = []
 
-    valori_precedenti_pioggia = {}
+        # Prepare for data extraction
+        valori_precedenti_pioggia = {}
+        current_time = datetime.now()
+        formatted_time = current_time.strftime('%d/%m/%Y %H:%M')
+        print(f"\nExtracting data at {formatted_time}...")
 
-    print(f"Iniziando il monitoraggio dei dati meteo. I dati saranno salvati nel foglio Google: {nome_foglio}")
-    print(f"Il programma aggiornerà i dati ogni ora. Premi Ctrl+C per terminare.")
+        # Fetch weather data
+        try:
+            response = requests.get(api_url, verify=False, timeout=30)
+            response.raise_for_status()
+            dati_meteo = response.json()
 
-    try:
-        while True:
-            current_time = datetime.now()
-            formatted_time = current_time.strftime('%d/%m/%Y %H:%M')
-            print(f"\nEstrazione dati alle {formatted_time}...")
+            intestazioni_per_stazione = {}
+            dati_per_stazione = {}
+            pioggia_ora_per_stazione = {}
 
-            try:
-                response = requests.get(api_url, verify=False, timeout=30)
-                response.raise_for_status()
-                dati_meteo = response.json()
+            for stazione in dati_meteo:
+                nome_stazione = stazione.get("nome")
+                if nome_stazione in stazioni_interessate:
+                    timestamp_stazione = stazione.get("lastUpdateTime")
 
-                if credenziali.access_token_expired:
-                    client.login()
-                    foglio = client.open(nome_foglio).sheet1
+                    try:
+                        if isinstance(timestamp_stazione, str) and len(timestamp_stazione) >= 16:
+                            timestamp_formattato = timestamp_stazione
+                        else:
+                            dt_obj = datetime.fromisoformat(timestamp_stazione.replace('Z', '+00:00'))
+                            timestamp_formattato = dt_obj.strftime('%d/%m/%Y %H:%M')
+                    except (ValueError, AttributeError):
+                        timestamp_formattato = formatted_time
 
-                intestazioni_per_stazione = {}
-                dati_per_stazione = {}
-                pioggia_ora_per_stazione = {}  # Changed to hourly rain
+                    print(f"Data for station: {nome_stazione}")
 
-                for stazione in dati_meteo:
-                    nome_stazione = stazione.get("nome")
-                    if nome_stazione in stazioni_interessate:
-                        timestamp_stazione = stazione.get("lastUpdateTime")
+                    for sensore in stazione.get("analog", []):
+                        tipoSens = sensore.get("tipoSens")
+                        if tipoSens in sensori_interessati_tipoSens:
+                            descr_sensore = sensore.get("descr", "").strip()
+                            valore_sensore = sensore.get("valore")
+                            unita_misura = sensore.get("unmis", "").strip() if sensore.get("unmis") else ""
 
-                        try:
-                            if isinstance(timestamp_stazione, str) and len(timestamp_stazione) >= 16:
-                                timestamp_formattato = timestamp_stazione
-                            else:
-                                dt_obj = datetime.fromisoformat(timestamp_stazione.replace('Z', '+00:00'))
-                                timestamp_formattato = dt_obj.strftime('%d/%m/%Y %H:%M')
-                        except (ValueError, AttributeError):
-                            timestamp_formattato = formatted_time
+                            intestazione = f"{nome_stazione} - {descr_sensore} ({unita_misura})"
+                            intestazioni_per_stazione[intestazione] = True
+                            dati_per_stazione[intestazione] = valore_sensore
 
-                        print(f"Dati per la stazione: {nome_stazione}")
+                            if "Pioggia TOT Oggi" in descr_sensore and valore_sensore is not None:
+                                pioggia_key = f"{nome_stazione} - Pioggia Ora (mm)"
+                                valore_precedente = valori_precedenti_pioggia.get(nome_stazione, 0)
 
-                        for sensore in stazione.get("analog", []):
-                            tipoSens = sensore.get("tipoSens")
-                            if tipoSens in sensori_interessati_tipoSens:
-                                descr_sensore = sensore.get("descr", "").strip()
-                                valore_sensore = sensore.get("valore")
-                                unita_misura = sensore.get("unmis", "").strip() if sensore.get("unmis") else ""
+                                if isinstance(valore_sensore, (int, float)) and isinstance(valore_precedente, (int, float)):
+                                    current_hour = current_time.hour
 
-                                intestazione = f"{nome_stazione} - {descr_sensore} ({unita_misura})"
-                                intestazioni_per_stazione[intestazione] = True
-                                dati_per_stazione[intestazione] = valore_sensore
-
-                                if "Pioggia TOT Oggi" in descr_sensore and valore_sensore is not None:
-                                    pioggia_key = f"{nome_stazione} - Pioggia Ora (mm)" # Changed key
-                                    valore_precedente = valori_precedenti_pioggia.get(nome_stazione, 0)
-
-                                    if isinstance(valore_sensore, (int, float)) and isinstance(valore_precedente, (int, float)):
-                                        current_hour = current_time.hour
-
-                                        # Reset at the start of each hour *after* the first hour
-                                        if current_hour == 0:
-                                            pioggia_ora = valore_sensore
-
-                                        elif valore_sensore < valore_precedente:
-                                            pioggia_ora = valore_sensore
-
-                                        else:
-                                            pioggia_ora = valore_sensore - valore_precedente  # Hourly difference
-
+                                    if current_hour == 0:
+                                        pioggia_ora = valore_sensore
+                                    elif valore_sensore < valore_precedente:
+                                        pioggia_ora = valore_sensore
                                     else:
-                                        pioggia_ora = 0
+                                        pioggia_ora = valore_sensore - valore_precedente
 
-                                    valori_precedenti_pioggia[nome_stazione] = valore_sensore
-                                    intestazioni_per_stazione[pioggia_key] = True
-                                    pioggia_ora_per_stazione[pioggia_key] = pioggia_ora # store hourly rain
-
-                                    print(f"  - {descr_sensore}: {valore_sensore} {unita_misura}")
-                                    print(f"  - Pioggia Ora: {pioggia_ora} mm")  # Corrected label
                                 else:
-                                    print(f"  - {descr_sensore}: {valore_sensore} {unita_misura}")
+                                    pioggia_ora = 0
 
-                        print("-" * 30)
+                                valori_precedenti_pioggia[nome_stazione] = valore_sensore
+                                intestazioni_per_stazione[pioggia_key] = True
+                                pioggia_ora_per_stazione[pioggia_key] = pioggia_ora
 
-                dati_per_stazione.update(pioggia_ora_per_stazione) # add hourly rain data
+            dati_per_stazione.update(pioggia_ora_per_stazione)
 
-                if not dati_per_stazione:
-                    print("Nessun dato disponibile per le stazioni selezionate. Riproverò al prossimo aggiornamento.")
-                    time.sleep(60 * 60)  # Wait 1 hour
-                    continue
+            if not dati_per_stazione:
+                print("No data available for selected stations.")
+                return
 
-                nuova_intestazione = ['Data_Ora']
-                nuova_intestazione.extend(sorted(intestazioni_per_stazione.keys()))
+            # Prepare headers
+            nuova_intestazione = ['Data_Ora']
+            nuova_intestazione.extend(sorted(intestazioni_per_stazione.keys()))
 
-                headers_changed = False
-                if not intestazione_attuale or nuova_intestazione != intestazione_attuale:
-                    headers_changed = True
-                    print("Le intestazioni sono cambiate o il foglio è vuoto. Aggiornando intestazioni...")
-                    foglio.clear()
-                    foglio.append_row(nuova_intestazione)
-                    intestazione_attuale = nuova_intestazione
+            # Update headers if needed
+            if not intestazione_attuale or nuova_intestazione != intestazione_attuale:
+                print("Updating headers...")
+                foglio.clear()
+                foglio.append_row(nuova_intestazione)
 
-                riga_dati = [formatted_time]
-                for intestazione in nuova_intestazione[1:]:
-                    valore = dati_per_stazione.get(intestazione, 'N/A')
-                    riga_dati.append(valore)
+            # Prepare and append data row
+            riga_dati = [formatted_time]
+            for intestazione in nuova_intestazione[1:]:
+                valore = dati_per_stazione.get(intestazione, 'N/A')
+                riga_dati.append(valore)
 
-                foglio.append_row(riga_dati)
-                print(f"Dati meteo aggiunti al foglio Google '{nome_foglio}'")
+            foglio.append_row(riga_dati)
+            print(f"Weather data added to Google Sheet '{nome_foglio}'")
 
-            except requests.exceptions.RequestException as e:
-                print(f"Errore nella richiesta API: {e}")
-            except json.JSONDecodeError as e:
-                print(f"Errore nel parsing JSON: {e}")
-            except Exception as e:
-                print(f"Errore generico: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"API request error: {e}")
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+        except Exception as e:
+            print(f"Generic error: {e}")
 
-            # Wait for 1 hour before the next update
-            next_update = datetime.now() + timedelta(hours=1)
-            print(f"Prossimo aggiornamento alle {next_update.strftime('%H:%M')}")
-            time.sleep(60 * 60)  # 1 hour in seconds
-
-    except KeyboardInterrupt:
-        print("\nProgramma terminato dall'utente.")
-        sys.exit(0)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     estrai_dati_meteo()
