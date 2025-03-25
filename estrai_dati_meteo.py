@@ -11,25 +11,21 @@ import os
 # Disable SSL warning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Global dictionary to track rainfall state
+PREVIOUS_RAINFALL_VALUES = {}
+
 def estrai_dati_meteo():
     """
     Extracts weather data from API and appends it to a Google Sheet.
     Modified to run once per execution for GitHub Actions.
     """
+    global PREVIOUS_RAINFALL_VALUES
+
     # Google Sheets setup
     nome_foglio = "Dati Meteo Stazioni"
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-    # State to track previous rainfall values (with persistence between runs)
-    rainfall_state_file = 'rainfall_state.json'
-
     try:
-        # Load previous rainfall state
-        previous_rainfall_values = {}
-        if os.path.exists(rainfall_state_file):
-            with open(rainfall_state_file, 'r') as f:
-                previous_rainfall_values = json.load(f)
-
         # Load credentials from environment variable
         credentials_json = os.environ.get("GCP_CREDENTIALS_JSON")
         if not credentials_json:
@@ -120,7 +116,7 @@ def estrai_dati_meteo():
                                 pioggia_key = f"{nome_stazione} - Pioggia Ora (mm)"
                                 
                                 # Get previous rainfall value, defaulting to 0 if not found
-                                valore_precedente = previous_rainfall_values.get(nome_stazione, 0)
+                                valore_precedente = PREVIOUS_RAINFALL_VALUES.get(nome_stazione, 0)
 
                                 # Validate input types
                                 if isinstance(valore_sensore, (int, float)) and isinstance(valore_precedente, (int, float)):
@@ -132,19 +128,15 @@ def estrai_dati_meteo():
                                         # Case where counter might have reset or been recalibrated
                                         # Use the current total rainfall as the amount
                                         pioggia_ora = valore_sensore
+
+                                    # Update previous rainfall value for next iteration
+                                    PREVIOUS_RAINFALL_VALUES[nome_stazione] = valore_sensore
                                 else:
                                     # Handle case of invalid types
                                     pioggia_ora = 0
 
-                                # Update previous rainfall value for next iteration
-                                previous_rainfall_values[nome_stazione] = valore_sensore
-
                                 intestazioni_per_stazione[pioggia_key] = True
                                 pioggia_ora_per_stazione[pioggia_key] = round(pioggia_ora, 2)
-
-            # Update local state file with current rainfall values
-            with open(rainfall_state_file, 'w') as f:
-                json.dump(previous_rainfall_values, f)
 
             dati_per_stazione.update(pioggia_ora_per_stazione)
 
