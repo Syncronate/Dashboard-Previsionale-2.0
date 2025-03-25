@@ -16,31 +16,54 @@ RAINFALL_STATE = {}
 
 def calculate_hourly_rainfall(current_total, station_name):
     """
-    Calculate hourly rainfall with more robust tracking
+    Calculate hourly rainfall with more robust tracking and handling of edge cases
     """
-    # Retrieve previous state for this station
+    # Retrieve previous state for this station, with default values
     station_data = RAINFALL_STATE.get(station_name, {
         'previous_total': 0,
-        'last_hourly_total': 0
+        'last_update_time': None,
+        'hourly_periods': []
     })
 
-    # If current total is less than or equal to previous total, something might be wrong
-    if current_total <= station_data['previous_total']:
-        # This could mean:
-        # 1. Counter reset
-        # 2. No new rainfall
+    # Convert current_total to float to handle potential type issues
+    try:
+        current_total = float(current_total)
+    except (ValueError, TypeError):
+        print(f"Warning: Invalid rainfall value for {station_name}: {current_total}")
+        return 0
+
+    # Current timestamp
+    current_time = datetime.now()
+
+    # If no previous data or if the previous total is invalid
+    if (station_data['last_update_time'] is None or 
+        current_total < station_data['previous_total']):
+        # Initialize or reset tracking
         hourly_rainfall = 0
+        new_hourly_periods = []
     else:
         # Calculate rainfall since last measurement
-        hourly_rainfall = current_total - station_data['previous_total']
+        hourly_rainfall = max(0, current_total - station_data['previous_total'])
+        
+        # Maintain a list of recent hourly measurements
+        new_hourly_periods = station_data.get('hourly_periods', []) + [hourly_rainfall]
+        
+        # Keep only the last 3 measurements to smooth out potential anomalies
+        new_hourly_periods = new_hourly_periods[-3:]
+
+    # If we have multiple periods, use the average to smooth out potential spikes
+    if len(new_hourly_periods) > 1:
+        hourly_rainfall = sum(new_hourly_periods) / len(new_hourly_periods)
 
     # Update state for this station
     RAINFALL_STATE[station_name] = {
         'previous_total': current_total,
-        'last_hourly_total': hourly_rainfall
+        'last_update_time': current_time,
+        'hourly_periods': new_hourly_periods
     }
 
-    return round(hourly_rainfall, 2)
+    # Round to 2 decimal places, ensure non-negative
+    return max(0, round(hourly_rainfall, 2))
 
 def estrai_dati_meteo():
     """
@@ -143,8 +166,11 @@ def estrai_dati_meteo():
                                 pioggia_key = f"{nome_stazione} - Pioggia Ora (mm)"
                                 
                                 # Calculate hourly rainfall
-                                if isinstance(valore_sensore, (int, float)):
-                                    pioggia_ora = calculate_hourly_rainfall(valore_sensore, nome_stazione)
+                                if isinstance(valore_sensore, (int, float, str)):
+                                    try:
+                                        pioggia_ora = calculate_hourly_rainfall(float(valore_sensore), nome_stazione)
+                                    except (ValueError, TypeError):
+                                        pioggia_ora = 0
                                 else:
                                     pioggia_ora = 0
 
@@ -177,7 +203,7 @@ def estrai_dati_meteo():
             print(f"Weather data added to Google Sheet '{nome_foglio}'")
 
             # Debug print of rainfall calculations
-            print("Rainfall State:", RAINFALL_STATE)
+            print("Rainfall State:", json.dumps(RAINFALL_STATE, default=str))
 
         except requests.exceptions.RequestException as e:
             print(f"API request error: {e}")
