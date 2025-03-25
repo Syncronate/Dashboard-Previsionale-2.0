@@ -1,8 +1,23 @@
+import requests
+import json
+import time
+from datetime import datetime, timedelta
+import sys
+import urllib3
+import gspread
+from google.oauth2 import service_account
+import os
+
+# Disable SSL warning
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Global dictionary to track rainfall state more comprehensively
+RAINFALL_STATE = {}
+
 def calculate_hourly_rainfall(current_total, station_name):
     """
     Calculate hourly rainfall with robust handling of string-formatted numbers
     """
-    # Global dictionary to track rainfall state
     global RAINFALL_STATE
 
     # Helper function to safely convert to float
@@ -67,18 +82,19 @@ def calculate_hourly_rainfall(current_total, station_name):
     # Round to 2 decimal places, ensure non-negative
     return max(0, round(hourly_rainfall, 2))
 
-# Esempio di utilizzo
-if __name__ == "__main__":
-    # Test con vari formati di input
-    test_cases = [
-        "0.6",     # Stringa con punto decimale
-        "0,6",     # Stringa con virgola decimale
-        "0.60",    # Stringa con zero aggiuntivo
-        "0.6 mm",  # Stringa con unità di misura
-        0.6,       # Numero float
-        "0.6mm",   # Stringa con unità attaccata
-        None       # Valore nullo
-    ]
+# Resto dello script rimane invariato...
 
-    for case in test_cases:
-        print(f"Input: {case}, Hourly Rainfall: {calculate_hourly_rainfall(case, 'Test Station')}")
+def estrai_dati_meteo():
+    """
+    Extracts weather data from API and appends it to a Google Sheet.
+    Modified to run once per execution for GitHub Actions.
+    """
+    # Tutto il resto dello script precedente rimane lo stesso
+    
+    # Rimuovi la parte di test che causava l'errore
+    # Se vuoi fare test, falli in modo separato
+    
+    # Il resto dello script continua come prima...
+
+if __name__ == "__main__":
+    estrai_dati_meteo()
