@@ -20,7 +20,16 @@ def estrai_dati_meteo():
     nome_foglio = "Dati Meteo Stazioni"
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
+    # State to track previous rainfall values (with persistence between runs)
+    rainfall_state_file = 'rainfall_state.json'
+
     try:
+        # Load previous rainfall state
+        previous_rainfall_values = {}
+        if os.path.exists(rainfall_state_file):
+            with open(rainfall_state_file, 'r') as f:
+                previous_rainfall_values = json.load(f)
+
         # Load credentials from environment variable
         credentials_json = os.environ.get("GCP_CREDENTIALS_JSON")
         if not credentials_json:
@@ -65,7 +74,6 @@ def estrai_dati_meteo():
             intestazione_attuale = []
 
         # Prepare for data extraction
-        valori_precedenti_pioggia = {}
         current_time = datetime.now()
         formatted_time = current_time.strftime('%d/%m/%Y %H:%M')
         print(f"\nExtracting data at {formatted_time}...")
@@ -107,26 +115,36 @@ def estrai_dati_meteo():
                             intestazioni_per_stazione[intestazione] = True
                             dati_per_stazione[intestazione] = valore_sensore
 
+                            # Improved rainfall calculation
                             if "Pioggia TOT Oggi" in descr_sensore and valore_sensore is not None:
                                 pioggia_key = f"{nome_stazione} - Pioggia Ora (mm)"
-                                valore_precedente = valori_precedenti_pioggia.get(nome_stazione, 0)
+                                
+                                # Get previous rainfall value, defaulting to 0 if not found
+                                valore_precedente = previous_rainfall_values.get(nome_stazione, 0)
 
+                                # Validate input types
                                 if isinstance(valore_sensore, (int, float)) and isinstance(valore_precedente, (int, float)):
-                                    current_hour = current_time.hour
-
-                                    if current_hour == 0:
-                                        pioggia_ora = valore_sensore
-                                    elif valore_sensore < valore_precedente:
-                                        pioggia_ora = valore_sensore
-                                    else:
+                                    # Calculate rainfall amount
+                                    if valore_sensore >= valore_precedente:
+                                        # Normal case: current value is greater or equal to previous
                                         pioggia_ora = valore_sensore - valore_precedente
-
+                                    else:
+                                        # Case where counter might have reset or been recalibrated
+                                        # Use the current total rainfall as the amount
+                                        pioggia_ora = valore_sensore
                                 else:
+                                    # Handle case of invalid types
                                     pioggia_ora = 0
 
-                                valori_precedenti_pioggia[nome_stazione] = valore_sensore
+                                # Update previous rainfall value for next iteration
+                                previous_rainfall_values[nome_stazione] = valore_sensore
+
                                 intestazioni_per_stazione[pioggia_key] = True
-                                pioggia_ora_per_stazione[pioggia_key] = pioggia_ora
+                                pioggia_ora_per_stazione[pioggia_key] = round(pioggia_ora, 2)
+
+            # Update local state file with current rainfall values
+            with open(rainfall_state_file, 'w') as f:
+                json.dump(previous_rainfall_values, f)
 
             dati_per_stazione.update(pioggia_ora_per_stazione)
 
