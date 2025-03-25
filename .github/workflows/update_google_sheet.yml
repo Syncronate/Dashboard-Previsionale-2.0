@@ -1,29 +1,27 @@
-name: Aggiorna Foglio Google  # Nome del tuo workflow (apparirà nella UI di Actions di GitHub)
-
+name: Update Google Sheet
 on:
   schedule:
-    - cron: '0 * * * *'    # Pianifica l'esecuzione (es. ogni ora allo scoccare dell'ora)
-  workflow_dispatch:      # Permetti l'esecuzione manuale del workflow dalla UI di GitHub Actions
+    - cron: '0 * * * *'  # Run every hour
+  workflow_dispatch:     # Allow manual triggering
 
 jobs:
-  update-sheet:           # Nome del job (arbitrario)
-    runs-on: ubuntu-latest  # Ambiente di esecuzione (Ubuntu più recente)
-
+  update-sheet:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout codice repository  # Nome del primo step
-        uses: actions/checkout@v3       # Usa l'action 'checkout' per scaricare il codice del repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Imposta Python 3.9       # Nome del secondo step
-        uses: actions/setup-python@v4     # Usa l'action 'setup-python' per configurare Python
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'         # Specifica la versione di Python da usare
+          python-version: '3.9'
 
-      - name: Installa dipendenze Python  # Nome del terzo step
-        run: pip install -r requirements.txt # Esegui 'pip install' per installare le dipendenze da requirements.txt
-        # OPPURE (se non hai requirements.txt):
-        # run: pip install gspread google-auth pandas  # Elenca direttamente le dipendenze
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests gspread google-auth
 
-      - name: Esegui script Python di aggiornamento foglio Google  # Nome del quarto step
-        run: python estrai_dati_meteo.py  # MODIFICA QUI: NOME SCRIPT CORRETTO - Esegui il tuo script Python (ora con il nome corretto)
-        env: # Definisci variabili d'ambiente che saranno accessibili allo script Python
-          GCP_CREDENTIALS_JSON: ${{ secrets.GCP_CREDENTIALS_JSON }} # Passa il segreto come variabile d'ambiente
+      - name: Run weather data extraction script
+        run: python estrai_dati_meteo.py
+        env:
+          GCP_CREDENTIALS_JSON: ${{ secrets.GCP_CREDENTIALS_JSON }}
