@@ -815,48 +815,36 @@ elif page == 'Simulazione':
                     import gspread
                     from google.oauth2.service_account import Credentials
 
-                    # Percorso del file delle credenziali
-                    credentials_path = st.secrets.get("gcp_credentials_path", "credentials.json")
+                    # **MODIFICA IMPORTANTE: Carica le credenziali da Streamlit Secrets**
+                    credentials = Credentials.from_service_account_info(
+                        st.secrets["GOOGLE_CREDENTIALS"], scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+                    )
+                    gc = gspread.authorize(credentials)
 
-                    # Scope necessari per l'accesso
-                    scope = ['https://spreadsheets.google.com/feeds',
-                             'https://www.googleapis.com/auth/drive']
+                    # Apri il foglio per ID
+                    sh = gc.open_by_key(sheet_id)
+                    worksheet = sh.sheet1  # Primo foglio
 
-                    # Carica le credenziali
-                    try:
-                        credentials = Credentials.from_service_account_file(
-                            credentials_path, scopes=scope
-                        )
-                        gc = gspread.authorize(credentials)
+                    # Ottieni tutte le righe, inclusa l'intestazione
+                    data = worksheet.get_all_values()
 
-                        # Apri il foglio per ID
-                        sh = gc.open_by_key(sheet_id)
-                        worksheet = sh.sheet1  # Primo foglio
+                    # Crea un DataFrame pandas
+                    headers = data[0]
+                    rows = data[1:]
+                    df_sheet = pd.DataFrame(rows, columns=headers)
 
-                        # Ottieni tutte le righe, inclusa l'intestazione
-                        data = worksheet.get_all_values()
+                    # Converte la colonna di data in datetime
+                    df_sheet['Data_Ora'] = pd.to_datetime(df_sheet['Data_Ora'], errors='coerce')
 
-                        # Crea un DataFrame pandas
-                        headers = data[0]
-                        rows = data[1:]
-                        df_sheet = pd.DataFrame(rows, columns=headers)
+                    # Ordina per data e prendi le ultime 24 ore (INPUT_WINDOW righe)
+                    df_sheet = df_sheet.sort_values('Data_Ora').tail(INPUT_WINDOW)
 
-                        # Converte la colonna di data in datetime
-                        df_sheet['Data_Ora'] = pd.to_datetime(df_sheet['Data_Ora'], errors='coerce')
+                    # Converti le colonne numeriche
+                    for col in df_sheet.columns:
+                        if col != 'Data_Ora':
+                            df_sheet[col] = pd.to_numeric(df_sheet[col], errors='coerce')
 
-                        # Ordina per data e prendi le ultime 24 ore (INPUT_WINDOW righe)
-                        df_sheet = df_sheet.sort_values('Data_Ora').tail(INPUT_WINDOW)
-
-                        # Converti le colonne numeriche
-                        for col in df_sheet.columns:
-                            if col != 'Data_Ora':
-                                df_sheet[col] = pd.to_numeric(df_sheet[col], errors='coerce')
-
-                        return df_sheet
-
-                    except Exception as e:
-                        st.error(f"Errore durante il caricamento delle credenziali: {str(e)}")
-                        return None
+                    return df_sheet
 
                 except Exception as e:
                     st.error(f"Errore durante l'importazione dei dati: {str(e)}")
