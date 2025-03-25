@@ -11,16 +11,42 @@ import os
 # Disable SSL warning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Global dictionary to track rainfall state
-PREVIOUS_RAINFALL_VALUES = {}
+# Global dictionary to track rainfall state more comprehensively
+RAINFALL_STATE = {}
+
+def calculate_hourly_rainfall(current_total, station_name):
+    """
+    Calculate hourly rainfall with more robust tracking
+    """
+    # Retrieve previous state for this station
+    station_data = RAINFALL_STATE.get(station_name, {
+        'previous_total': 0,
+        'last_hourly_total': 0
+    })
+
+    # If current total is less than or equal to previous total, something might be wrong
+    if current_total <= station_data['previous_total']:
+        # This could mean:
+        # 1. Counter reset
+        # 2. No new rainfall
+        hourly_rainfall = 0
+    else:
+        # Calculate rainfall since last measurement
+        hourly_rainfall = current_total - station_data['previous_total']
+
+    # Update state for this station
+    RAINFALL_STATE[station_name] = {
+        'previous_total': current_total,
+        'last_hourly_total': hourly_rainfall
+    }
+
+    return round(hourly_rainfall, 2)
 
 def estrai_dati_meteo():
     """
     Extracts weather data from API and appends it to a Google Sheet.
     Modified to run once per execution for GitHub Actions.
     """
-    global PREVIOUS_RAINFALL_VALUES
-
     # Google Sheets setup
     nome_foglio = "Dati Meteo Stazioni"
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -111,32 +137,19 @@ def estrai_dati_meteo():
                             intestazioni_per_stazione[intestazione] = True
                             dati_per_stazione[intestazione] = valore_sensore
 
-                            # Improved rainfall calculation
+                            # Rainfall calculation
                             if "Pioggia TOT Oggi" in descr_sensore and valore_sensore is not None:
+                                # Hourly rainfall key
                                 pioggia_key = f"{nome_stazione} - Pioggia Ora (mm)"
                                 
-                                # Get previous rainfall value, defaulting to 0 if not found
-                                valore_precedente = PREVIOUS_RAINFALL_VALUES.get(nome_stazione, 0)
-
-                                # Validate input types
-                                if isinstance(valore_sensore, (int, float)) and isinstance(valore_precedente, (int, float)):
-                                    # Calculate rainfall amount
-                                    if valore_sensore >= valore_precedente:
-                                        # Normal case: current value is greater or equal to previous
-                                        pioggia_ora = valore_sensore - valore_precedente
-                                    else:
-                                        # Case where counter might have reset or been recalibrated
-                                        # Use the current total rainfall as the amount
-                                        pioggia_ora = valore_sensore
-
-                                    # Update previous rainfall value for next iteration
-                                    PREVIOUS_RAINFALL_VALUES[nome_stazione] = valore_sensore
+                                # Calculate hourly rainfall
+                                if isinstance(valore_sensore, (int, float)):
+                                    pioggia_ora = calculate_hourly_rainfall(valore_sensore, nome_stazione)
                                 else:
-                                    # Handle case of invalid types
                                     pioggia_ora = 0
 
                                 intestazioni_per_stazione[pioggia_key] = True
-                                pioggia_ora_per_stazione[pioggia_key] = round(pioggia_ora, 2)
+                                pioggia_ora_per_stazione[pioggia_key] = pioggia_ora
 
             dati_per_stazione.update(pioggia_ora_per_stazione)
 
@@ -162,6 +175,9 @@ def estrai_dati_meteo():
 
             foglio.append_row(riga_dati)
             print(f"Weather data added to Google Sheet '{nome_foglio}'")
+
+            # Debug print of rainfall calculations
+            print("Rainfall State:", RAINFALL_STATE)
 
         except requests.exceptions.RequestException as e:
             print(f"API request error: {e}")
