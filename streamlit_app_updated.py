@@ -1261,14 +1261,53 @@ elif page == 'Analisi Dati Storici':
                  st.markdown(get_table_download_link(filtered_df, f"dati_filtrati_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"), unsafe_allow_html=True)
 
 # --- PAGINA ALLENAMENTO MODELLO ---
+# --- PAGINA ALLENAMENTO MODELLO ---
 elif page == 'Allenamento Modello':
     st.header('Allenamento Nuovo Modello LSTM')
+    df_training_page = st.session_state.get('df', None)
+    # ... (Codice debug e controllo df_training_page) ...
 
-    # ... (Codice per controllo df, configurazione allenamento, bottone Addestra) ...
+    if df_training_page is None:
+        st.warning("⚠️ Dati storici non caricati o caricamento fallito.")
+    else:
+        st.success(f"Dati disponibili per l'addestramento: {len(df_training_page)} righe.")
+        st.subheader('Configurazione Addestramento')
 
-    if train_button and ready_to_train:
-         st.info(f"Avvio addestramento per '{save_model_name}'...")
-         # ... (Codice preparazione dati) ...
+        save_model_name = st.text_input("Nome base file modello", value=f"modello_{datetime.now().strftime('%y%m%d_%H%M')}")
+
+        st.write("**1. Seleziona Target:**"); selected_targets_train = []
+        # ... (Codice selezione target con checkbox) ...
+
+        st.write("**2. Imposta Parametri:**")
+        # ... (Codice expander con input parametri iw, ow, vs, hs, nl, do, lr, bs, ep) ...
+
+        st.write("**3. Avvia Addestramento:**")
+
+        # --- INIZIO BLOCCO MODIFICATO ---
+
+        # Validazione nome e targets
+        valid_name = bool(save_model_name and re.match(r'^[a-zA-Z0-9_-]+$', save_model_name))
+        valid_targets = bool(selected_targets_train)
+        ready_to_train = valid_name and valid_targets
+
+        # Mostra i warning se non pronto
+        if not valid_targets: st.warning("Seleziona almeno un idrometro target.")
+        if not valid_name: st.warning("Inserisci un nome valido per il modello (lettere, numeri, -, _).")
+
+        # Definisci SEMPRE il bottone, ma disabilitalo se non pronto
+        train_button = st.button(
+            "Addestra Nuovo Modello",
+            type="primary",
+            disabled=not ready_to_train, # Disabilita se non valido
+            key="train_run"
+        )
+
+        # Ora controlla se il bottone è stato cliccato (sarà True solo se non era disabilitato E cliccato)
+        if train_button: # Non serve più controllare `ready_to_train` qui, perché se era False, train_button sarà False
+             st.info(f"Avvio addestramento per '{save_model_name}'...")
+             # ... (Resto della logica: preparazione dati, train_model, salvataggio/download) ...
+
+        # --- FINE BLOCCO MODIFICATO ---
 
          # Addestramento
          st.subheader("Addestramento in corso...")
