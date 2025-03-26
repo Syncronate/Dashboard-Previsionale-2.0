@@ -51,8 +51,8 @@ GSHEET_RELEVANT_COLS = [
     'Ponte Garibaldi - Livello Misa 2 (mt)'
 ]
 DASHBOARD_REFRESH_INTERVAL_SECONDS = 300 # Aggiorna dashboard ogni 5 minuti (300 sec)
-# --- OTTIMIZZAZIONE: Ridotto numero di righe storiche per migliorare performance grafici ---
-DASHBOARD_HISTORY_ROWS = 24 # MODIFICATO: Numero di righe storiche da recuperare (es. 24 per 1 giorno)
+# --- MODIFICATO: Aumentato numero di righe per coprire 24h con intervalli di 30min ---
+DASHBOARD_HISTORY_ROWS = 48 # MODIFICATO: Numero di righe storiche da recuperare (48 righe = 24 ore @ 30 min/riga)
 DEFAULT_THRESHOLDS = { # Soglie predefinite (l'utente può modificarle)
     'Arcevia - Pioggia Ora (mm)': 10.0,
     'Barbara - Pioggia Ora (mm)': 10.0,
@@ -316,18 +316,25 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
         st.error(f"Errore imprevisto durante predict: {e}");
         st.error(traceback.format_exc()); return None
 
-# --- plot_predictions invariata ---
+# --- MODIFICATA: plot_predictions usa intervalli di 30 min ---
 def plot_predictions(predictions, config, start_time=None):
-    # ... (codice invariato) ...
+    """
+    Genera grafici Plotly per le previsioni del modello.
+    Utilizza intervalli di 30 minuti per l'asse temporale.
+    """
     if config is None or predictions is None: return []
     output_w = config["output_window"]; target_cols = config["target_columns"]
     figs = []
     for i, sensor in enumerate(target_cols):
         fig = go.Figure()
         if start_time:
-            hours = [start_time + timedelta(hours=h+1) for h in range(output_w)]
-            x_axis, x_title = hours, "Data e Ora Previste"
-        else: hours = np.arange(1, output_w + 1); x_axis, x_title = hours, "Ore Future"
+            # MODIFICATO: Calcola step temporali ogni 30 minuti
+            steps = [start_time + timedelta(minutes=30*(h+1)) for h in range(output_w)]
+            x_axis, x_title = steps, "Data e Ora Previste (intervalli 30 min)"
+        else:
+            # Usa indici come fallback se non c'è start_time
+            steps_idx = np.arange(1, output_w + 1)
+            x_axis, x_title = steps_idx, f"Passi Futuri ({output_w} x 30 min)"
 
         # Estrai nome stazione per titolo grafico
         station_name_graph = get_station_label(sensor, short=False) # Usa la funzione helper
@@ -335,7 +342,7 @@ def plot_predictions(predictions, config, start_time=None):
         fig.add_trace(go.Scatter(x=x_axis, y=predictions[:, i], mode='lines+markers', name=f'Previsto'))
         fig.update_layout(
             title=f'Previsione Simulazione - {station_name_graph}', # Titolo aggiornato
-            xaxis_title=x_title,
+            xaxis_title=x_title, # Titolo asse X aggiornato
             yaxis_title=f'{sensor.split("(")[-1].split(")")[0].strip()}', # Estrae unità
             height=400,
             hovermode="x unified"
@@ -982,7 +989,8 @@ if st.session_state.active_model and st.session_state.active_config:
     active_name = st.session_state.active_model_name # Dovrebbe essere aggiornato correttamente
     # Gestisci nome per modello caricato manualmente
     display_feedback_name = cfg.get("display_name", active_name if active_name != MODEL_CHOICE_UPLOAD else "Modello Caricato")
-    st.sidebar.success(f"Modello ATTIVO: '{display_feedback_name}' (In:{cfg['input_window']}h, Out:{cfg['output_window']}h)")
+    # MODIFICATO: Aggiunto il tempo equivalente in ore nella sidebar
+    st.sidebar.success(f"Modello ATTIVO: '{display_feedback_name}' (In:{cfg['input_window']} rilevazioni [~{cfg['input_window']/2:.1f}h], Out:{cfg['output_window']} rilevazioni [~{cfg['output_window']/2:.1f}h])")
 elif load_error_sidebar and selected_model_display_name not in [MODEL_CHOICE_NONE, MODEL_CHOICE_UPLOAD]:
      st.sidebar.error(f"Caricamento modello '{selected_model_display_name}' fallito.")
 elif selected_model_display_name == MODEL_CHOICE_UPLOAD and not st.session_state.active_model:
@@ -1039,7 +1047,7 @@ default_page_idx = 0 # Default alla Dashboard
 
 for i, opt in enumerate(radio_options):
     caption = ""; disabled = False
-    if opt == 'Dashboard': caption = "Monitoraggio GSheet"
+    if opt == 'Dashboard': caption = "Monitoraggio GSheet (30 min)" # MODIFICATO: Aggiunto riferimento frequenza
     elif opt == 'Simulazione':
         if not model_ready: caption = "Richiede Modello attivo"; disabled = True
         else: caption = "Esegui previsioni" # Testo più conciso
@@ -1109,7 +1117,8 @@ date_col_name_csv = st.session_state.date_col_name_csv # Nome colonna data per C
 
 # --- PAGINA DASHBOARD (Rivista leggermente, usa DASHBOARD_HISTORY_ROWS aggiornato) ---
 if page == 'Dashboard':
-    st.header(f'📊 Dashboard Monitoraggio Idrologico')
+    # MODIFICATO: Titolo per chiarezza sulla frequenza
+    st.header(f'📊 Dashboard Monitoraggio Idrologico (Aggiornamento @ 30 min)')
 
     # Controllo credenziali Google
     if "GOOGLE_CREDENTIALS" not in st.secrets:
@@ -1129,7 +1138,7 @@ if page == 'Dashboard':
         GSHEET_RELEVANT_COLS,
         GSHEET_DATE_COL,
         GSHEET_DATE_FORMAT,
-        num_rows_to_fetch=DASHBOARD_HISTORY_ROWS # Usa la costante (modificata a 24)
+        num_rows_to_fetch=DASHBOARD_HISTORY_ROWS # Usa la costante (modificata a 48)
     )
 
     # Salva risultati in session state per riferimento (es. ultimo fetch time)
@@ -1145,9 +1154,10 @@ if page == 'Dashboard':
         if last_fetch_dt_sess:
             fetch_time_ago = datetime.now(italy_tz) - last_fetch_dt_sess
             fetch_secs_ago = int(fetch_time_ago.total_seconds())
-            # Usa f-string per leggibilità
+            # MODIFICATO: Aggiorna testo status per riflettere le 48 righe / 24 ore / 30 min
+            hours_represented = DASHBOARD_HISTORY_ROWS / 2 # Calcola ore rappresentate
             status_text = (
-                f"Dati GSheet recuperati ({DASHBOARD_HISTORY_ROWS} righe) alle: "
+                f"Dati GSheet recuperati (ultime ~{hours_represented:.0f} ore, {DASHBOARD_HISTORY_ROWS} rilevazioni @ 30 min) alle: "
                 f"{last_fetch_dt_sess.strftime('%d/%m/%Y %H:%M:%S')} "
                 f"({fetch_secs_ago}s fa). "
                 f"Refresh auto: {DASHBOARD_REFRESH_INTERVAL_SECONDS}s."
@@ -1197,9 +1207,14 @@ if page == 'Dashboard':
              else: time_ago_str = f"circa {minutes_ago // 60} ore fa"
 
              st.success(f"**Ultimo rilevamento nei dati:** {time_str} ({time_ago_str})")
-             # Warning se i dati sono troppo vecchi
-             if minutes_ago > 60: # Aumentato a 1 ora
-                 st.warning(f"⚠️ Attenzione: Ultimo dato ricevuto oltre {minutes_ago} minuti fa.")
+             # Warning se i dati sono troppo vecchi (oltre 60 min?)
+             # MODIFICATO: Aumentato warning a 90 min (3 intervalli mancati)
+             if minutes_ago > 90:
+                 st.warning(f"⚠️ Attenzione: Ultimo dato ricevuto oltre {minutes_ago} minuti fa (atteso ogni 30 min).")
+             # Aggiunto info se l'aggiornamento è molto recente
+             elif minutes_ago <= 35: # Entro ~30 min
+                 st.info(f"L'ultimo aggiornamento sembra recente (rilevato {minutes_ago} min fa).")
+
         else:
              st.warning("⚠️ Timestamp dell'ultimo rilevamento non disponibile o non valido nei dati GSheet più recenti.")
 
@@ -1322,9 +1337,11 @@ if page == 'Dashboard':
                     name=label,
                     hovertemplate=f'<b>{label}</b><br>%{{x|%d/%m %H:%M}}<br>Val: %{{y:.2f}}<extra></extra>'
                 ))
+
+            # MODIFICATO: Titolo aggiornato per riflettere le ore corrette
+            hours_represented_compare = DASHBOARD_HISTORY_ROWS / 2
             fig_compare.update_layout(
-                # Titolo aggiornato per riflettere lo storico ridotto
-                title=f"Andamento Storico Comparato (ultime ~{DASHBOARD_HISTORY_ROWS} ore)",
+                title=f"Andamento Storico Comparato (ultime ~{hours_represented_compare:.0f} ore)",
                 xaxis_title='Data e Ora',
                 yaxis_title='Valore Misurato',
                 height=500,
@@ -1468,7 +1485,7 @@ if page == 'Dashboard':
          st.warning(f"Impossibile impostare auto-refresh: {e_js}")
 
 
-# --- PAGINA SIMULAZIONE (leggermente rivista per chiarezza) ---
+# --- PAGINA SIMULAZIONE (MODIFICATA per chiarezza su intervalli 30 min) ---
 elif page == 'Simulazione':
     st.header('🧪 Simulazione Idrologica')
     if not model_ready:
@@ -1481,8 +1498,11 @@ elif page == 'Simulazione':
         target_columns_model = active_config["target_columns"]
         # feature_columns_current_model definito globalmente all'inizio della sezione Pagine
 
+        # MODIFICATO: Caption più chiare su 'rilevazioni' e tempo equivalente
+        input_hours = input_window / 2.0
+        output_hours = output_window / 2.0
         st.info(f"Simulazione con Modello Attivo: **{st.session_state.active_model_name}**")
-        st.caption(f"Finestra Input: {input_window} ore | Finestra Output: {output_window} ore")
+        st.caption(f"Finestra Input: {input_window} rilevazioni (~{input_hours:.1f} ore) | Finestra Output: {output_window} rilevazioni (~{output_hours:.1f} ore)")
         target_labels = [get_station_label(t, short=True) for t in target_columns_model]
         st.caption(f"Target previsti ({len(target_labels)}): {', '.join(target_labels)}")
         with st.expander(f"Feature richieste dal modello ({len(feature_columns_current_model)})"):
@@ -1492,15 +1512,16 @@ elif page == 'Simulazione':
         sim_start_time_info = None # Timestamp per l'inizio della previsione
 
         # --- Selezione Metodo Input Simulazione ---
-        sim_method_options = ['Manuale (Valori Costanti)', 'Importa da Google Sheet (Ultime Ore)', 'Orario Dettagliato (Tabella)']
+        sim_method_options = ['Manuale (Valori Costanti)', 'Importa da Google Sheet (Ultime Rilevazioni)', 'Dettagliato per Intervallo (Tabella)']
         # Aggiunge opzione CSV solo se i dati CSV sono disponibili
-        if data_ready_csv: sim_method_options.append('Usa Ultime Ore da CSV Caricato')
+        if data_ready_csv: sim_method_options.append('Usa Ultime Rilevazioni da CSV Caricato')
 
         sim_method = st.radio("Metodo preparazione dati input simulazione:", sim_method_options, key="sim_method_radio_select", horizontal=True)
 
         # --- Simulazione: Manuale Costante ---
         if sim_method == 'Manuale (Valori Costanti)':
-            st.subheader(f'Inserisci valori costanti per le {input_window} ore di input')
+            # MODIFICATO: Subheader
+            st.subheader(f'Inserisci valori costanti per le {input_window} rilevazioni di input (~{input_hours:.1f} ore)')
             st.caption("Il modello userà questi valori ripetuti per tutta la finestra di input.")
             temp_sim_values = {}
             cols_manual = st.columns(3)
@@ -1521,7 +1542,7 @@ elif page == 'Simulazione':
             # Popola colonne con i gruppi
             if feature_groups['Pioggia']:
                  with cols_manual[col_idx_man % 3]:
-                      st.markdown("**Pioggia (mm/h)**")
+                      st.markdown("**Pioggia (mm/30min)**") # MODIFICATO: Unità di tempo
                       for feature, label_feat in feature_groups['Pioggia']:
                            # Cerca valore mediano da CSV se disponibile
                            default_val = df_current_csv[feature].median() if data_ready_csv and feature in df_current_csv and pd.notna(df_current_csv[feature].median()) else 0.0
@@ -1562,8 +1583,9 @@ elif page == 'Simulazione':
                 sim_data_input = None
 
         # --- Simulazione: Google Sheet ---
-        elif sim_method == 'Importa da Google Sheet (Ultime Ore)':
-             st.subheader(f'Importa le ultime {input_window} ore di dati da Google Sheet')
+        # MODIFICATO: Subheader
+        elif sim_method == 'Importa da Google Sheet (Ultime Rilevazioni)':
+             st.subheader(f'Importa le ultime {input_window} rilevazioni (~{input_hours:.1f} ore) da Google Sheet')
              st.warning("⚠️ Funzionalità sperimentale: Assicurati che le colonne GSheet e la mappatura siano corrette!")
              # Usa ID GSheet di default (quello della dashboard) come suggerimento
              sheet_url_sim = st.text_input("URL Foglio Google da cui importare", f"https://docs.google.com/spreadsheets/d/{GSHEET_ID}/edit", key="sim_gsheet_url_input")
@@ -1572,19 +1594,23 @@ elif page == 'Simulazione':
              # Mappatura da GSheet a nomi feature del modello (NECESSARIA VERIFICA MANUALE!)
              # Presumo che i nomi GSheet siano quelli in GSHEET_RELEVANT_COLS
              # e i nomi modello siano quelli in feature_columns_current_model
+             # !! IMPORTANTE !!: Questa mappatura deve essere VERIFICATA e AGGIORNATA
+             # in base ai nomi ESATTI delle colonne nel TUO foglio Google e nel TUO modello.
              column_mapping_gsheet_to_model_sim = {
                 # NOME_COLONNA_GSHEET : NOME_FEATURE_MODELLO
-                'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
+                # Esempio (da adattare):
+                'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)', # Nome modello può variare
                 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
                 'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
                 'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)', # Assunzione Bettolelle
-                # Manca Umidità Montemurello nella lista GSheet di default
+                # Manca Umidità Montemurello nella lista GSheet di default - AGGIUNGERE SE NECESSARIO
                 # 'NomeColonnaUmidita_nel_GSheet': 'Umidita\' Sensore 3452 (Montemurello)',
                 'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
                 'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)', # Assunzione Bettolelle
                 'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)', # Assunzione Corinaldo
                 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
                 'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
+                # AGGIUNGERE/MODIFICARE ALTRE COLONNE NECESSARIE QUI
              }
              # Rimuovi dal mapping le colonne GSheet non richieste dal modello corrente
              column_mapping_gsheet_to_model_sim = {
@@ -1772,7 +1798,7 @@ elif page == 'Simulazione':
                          st.session_state.imported_sim_data_gs_df = None # Resetta cache sessione
                          sim_data_input = None
                      elif imported_df_numeric is not None:
-                          st.success(f"Importate e processate {len(imported_df_numeric)} righe da GSheet.")
+                          st.success(f"Importate e processate {len(imported_df_numeric)} rilevazioni da GSheet.")
                           # Verifica shape finale
                           if imported_df_numeric.shape == (input_window, len(feature_columns_current_model)):
                               # Salva in session state per possibile riutilizzo senza re-import
@@ -1793,22 +1819,24 @@ elif page == 'Simulazione':
                           sim_data_input = None
 
              # Se i dati sono già stati importati in una run precedente, riutilizzali
-             elif sim_method == 'Importa da Google Sheet (Ultime Ore)' and 'imported_sim_data_gs_df' in st.session_state:
+             elif sim_method == 'Importa da Google Sheet (Ultime Rilevazioni)' and 'imported_sim_data_gs_df' in st.session_state:
                  imported_df_state = st.session_state.imported_sim_data_gs_df
                  if isinstance(imported_df_state, pd.DataFrame) and imported_df_state.shape == (input_window, len(feature_columns_current_model)):
                      sim_data_input = imported_df_state.values
                      # Recupera anche il timestamp se lo abbiamo salvato (non implementato sopra, usiamo now)
-                     sim_start_time_info = datetime.now(italy_tz) # TODO: Salvare anche il timestamp in sessione
-                     st.info("Utilizzo dati importati precedentemente da Google Sheet.")
+                     # TODO: Salvare anche il timestamp 'last_ts_gs' in session state se si vuole essere precisi
+                     sim_start_time_info = datetime.now(italy_tz)
+                     st.info("Utilizzo dati importati precedentemente da Google Sheet (da cache sessione).")
                      with st.expander("Mostra Dati Importati (da cache sessione)"):
                          st.dataframe(imported_df_state.round(3))
                  # else: Non mostrare warning se non ci sono dati validi in cache, l'utente deve importare
 
 
-        # --- Simulazione: Orario Dettagliato (Tabella) ---
-        elif sim_method == 'Orario Dettagliato (Tabella)':
-            st.subheader(f'Inserisci dati orari dettagliati per le {input_window} ore di input')
-            st.caption("Modifica la tabella sottostante con i valori orari desiderati.")
+        # --- Simulazione: Dettagliato per Intervallo (Tabella) ---
+        # MODIFICATO: Subheader e caption
+        elif sim_method == 'Dettagliato per Intervallo (Tabella)':
+            st.subheader(f'Inserisci dati dettagliati per le {input_window} rilevazioni di input (~{input_hours:.1f} ore)')
+            st.caption("Modifica la tabella sottostante con i valori desiderati per ogni intervallo di 30 minuti.")
 
             # Chiave univoca per session state basata su parametri modello
             session_key_hourly = f"sim_hourly_data_{input_window}_{'_'.join(sorted(feature_columns_current_model))}"
@@ -1821,7 +1849,7 @@ elif page == 'Simulazione':
                      needs_reinit = False
 
             if needs_reinit:
-                 st.caption("Inizializzazione tabella dati orari...")
+                 st.caption("Inizializzazione tabella dati...")
                  init_vals = {}
                  for col in feature_columns_current_model:
                       med_val = 0.0
@@ -1851,9 +1879,10 @@ elif page == 'Simulazione':
             for col in feature_columns_current_model:
                  label_edit = get_station_label(col, short=True)
                  fmt = "%.3f"; step = 0.01; min_v=None; max_v=None
-                 if 'Cumulata' in col or 'Pioggia' in col: fmt = "%.1f"; step = 0.5; min_v=0.0
+                 if 'Cumulata' in col or 'Pioggia' in col: fmt = "%.1f"; step = 0.5; min_v=0.0; label_edit += " (mm/30m)" # MODIFICATO: Aggiunto unità
                  elif 'Umidita' in col: fmt = "%.1f"; step = 1.0; min_v=0.0; max_v=100.0
-                 elif 'Livello' in col: fmt = "%.3f"; step = 0.01 # Nessun min/max stringente qui?
+                 elif 'Livello' in col: fmt = "%.3f"; step = 0.01; label_edit += " (m)" # MODIFICATO: Aggiunto unità
+
                  column_config_editor[col] = st.column_config.NumberColumn(label=label_edit, help=col, format=fmt, step=step, min_value=min_v, max_value=max_v, required=True) # Rende la colonna obbligatoria
 
             # Mostra data editor
@@ -1871,7 +1900,7 @@ elif page == 'Simulazione':
             if not isinstance(edited_df, pd.DataFrame):
                 st.error("Errore interno: L'editor non ha restituito un DataFrame.")
             elif edited_df.shape[0] != input_window:
-                st.error(f"Errore: La tabella deve avere esattamente {input_window} righe (ore).")
+                st.error(f"Errore: La tabella deve avere esattamente {input_window} righe (intervalli).")
             elif list(edited_df.columns) != feature_columns_current_model:
                  # Questo non dovrebbe succedere con column_config, ma controlliamo
                  st.error("Errore: Colonne della tabella modificate in modo imprevisto.")
@@ -1895,13 +1924,15 @@ elif page == 'Simulazione':
                       st.error(f"Errore finale conversione dati tabella: {e_edit_final}")
 
 
-        # --- Simulazione: Ultime Ore da CSV ---
-        elif sim_method == 'Usa Ultime Ore da CSV Caricato':
-             st.subheader(f"Usa le ultime {input_window} ore dai dati CSV caricati")
+        # --- Simulazione: Ultime Rilevazioni da CSV ---
+        # MODIFICATO: Subheader
+        elif sim_method == 'Usa Ultime Rilevazioni da CSV Caricato':
+             st.subheader(f"Usa le ultime {input_window} rilevazioni (~{input_hours:.1f} ore) dai dati CSV caricati")
+             st.warning("⚠️ Assicurati che l'intervallo temporale dei dati CSV sia coerente con quello su cui il modello è stato addestrato!")
              if not data_ready_csv:
                  st.error("Dati CSV non caricati. Carica un file CSV nella sidebar.")
              elif len(df_current_csv) < input_window:
-                 st.error(f"Dati CSV ({len(df_current_csv)} righe) insufficienti per la finestra di input richiesta ({input_window} ore).")
+                 st.error(f"Dati CSV ({len(df_current_csv)} righe) insufficienti per la finestra di input richiesta ({input_window} rilevazioni).")
              else:
                   try:
                        # Seleziona le ultime 'input_window' righe e le feature richieste DAL MODELLO
@@ -1909,8 +1940,8 @@ elif page == 'Simulazione':
 
                        # Verifica NaN nelle righe selezionate
                        if latest_csv_data_df.isnull().sum().sum() > 0:
-                            st.error(f"Trovati valori mancanti (NaN) nelle ultime {input_window} ore delle colonne richieste nel CSV. Impossibile usare per simulazione.")
-                            with st.expander("Mostra righe CSV con NaN (ultime ore)"):
+                            st.error(f"Trovati valori mancanti (NaN) nelle ultime {input_window} rilevazioni delle colonne richieste nel CSV. Impossibile usare per simulazione.")
+                            with st.expander("Mostra righe CSV con NaN (ultime rilevazioni)"):
                                  st.dataframe(latest_csv_data_df[latest_csv_data_df.isnull().any(axis=1)])
                             sim_data_input = None
                        else:
@@ -1964,12 +1995,14 @@ elif page == 'Simulazione':
                        predictions_sim = predict(active_model, sim_data_input, active_scaler_features, active_scaler_targets, active_config, active_device)
 
                   if predictions_sim is not None and isinstance(predictions_sim, np.ndarray) and predictions_sim.shape == (output_window, len(target_columns_model)):
-                       st.subheader(f'📊 Risultato Simulazione: Previsione per le prossime {output_window} ore')
+                       # MODIFICATO: Subheader
+                       st.subheader(f'📊 Risultato Simulazione: Previsione per le prossime {output_window} rilevazioni (~{output_hours:.1f} ore)')
 
                        start_pred_time = sim_start_time_info if sim_start_time_info else datetime.now(italy_tz)
                        st.caption(f"Previsione calcolata a partire da: {start_pred_time.strftime('%d/%m/%Y %H:%M %Z')}")
 
-                       pred_times_sim = [start_pred_time + timedelta(hours=i+1) for i in range(output_window)]
+                       # MODIFICATO: Calcola tempi ogni 30 min
+                       pred_times_sim = [start_pred_time + timedelta(minutes=30*(i+1)) for i in range(output_window)]
                        # 1. Crea DataFrame iniziale dai risultati numerici
                        results_df_sim = pd.DataFrame(predictions_sim, columns=target_columns_model)
                        # 2. Inserisci la colonna 'Ora Prevista' come stringa
@@ -1992,7 +2025,6 @@ elif page == 'Simulazione':
 
                        results_df_sim.rename(columns=rename_dict, inplace=True)
 
-                       # --- MODIFICA QUI ---
                        # 4. Arrotonda SOLO le colonne numeriche (quelle che derivano dalle previsioni)
                        #    Identifica i nomi delle colonne numeriche DOPO la rinomina
                        numeric_cols_renamed = [original_to_renamed_map[col] for col in target_columns_model if col in original_to_renamed_map]
@@ -2017,12 +2049,11 @@ elif page == 'Simulazione':
                             st.write("Visualizzazione DataFrame originale (senza arrotondamento specifico):")
                             st.dataframe(results_df_sim) # Fallback
 
-                       # --- FINE MODIFICA ---
 
                        # 6. Link per il download (usa il DataFrame originale NON arrotondato specificamente per display)
                        st.markdown(get_table_download_link(results_df_sim, f"simulazione_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
 
-                       # --- Grafici (codice invariato) ---
+                       # --- Grafici (funzione plot_predictions è stata modificata) ---
                        st.subheader('📈 Grafici Previsioni Simulate')
                        figs_sim = plot_predictions(predictions_sim, active_config, start_pred_time)
                        sim_cols = st.columns(min(len(figs_sim), 2))
@@ -2331,8 +2362,9 @@ elif page == 'Allenamento Modello':
              default_lr = active_config.get("learning_rate", 0.001) if active_config else 0.001
              default_ep = active_config.get("epochs_run", 50) if active_config else 50
 
-             iw_t = c1t.number_input("Finestra Input (ore)", 6, 168, default_iw, 6, key="t_param_in_win")
-             ow_t = c1t.number_input("Finestra Output (ore)", 1, 72, default_ow, 1, key="t_param_out_win")
+             # NOTA: iw_t e ow_t si riferiscono al NUMERO DI RIGHE/RILEVAZIONI, non ore direttamente
+             iw_t = c1t.number_input("Finestra Input (n. rilevazioni)", 6, 168, default_iw, 6, key="t_param_in_win")
+             ow_t = c1t.number_input("Finestra Output (n. rilevazioni)", 1, 72, default_ow, 1, key="t_param_out_win")
              vs_t = c1t.slider("% Dati per Validazione", 0, 50, default_vs, 1, key="t_param_val_split", help="0% = nessun set di validazione")
 
              hs_t = c2t.number_input("Neuroni Nascosti (Hidden Size)", 16, 1024, default_hs, 16, key="t_param_hidden")
@@ -2487,4 +2519,4 @@ elif page == 'Allenamento Modello':
 
 # --- Footer (invariato) ---
 st.sidebar.divider()
-st.sidebar.info('App Idrologica Dashboard & Predict © 2025 Alberto Bussaglia') # Anno aggiornato se necessario
+st.sidebar.info('App Idrologica Dashboard & Predict © 2024 Alberto Bussaglia') # Mantenuto anno originale
