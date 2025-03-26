@@ -218,7 +218,7 @@ def estrai_dati_meteo():
                                 print(f"    -> Identificato come Pioggia Totale Giornaliera, ma valore non è float ({valore_convertito}).")
 
                 # --- Calcolo Pioggia Oraria per la stazione corrente (solo se process_this_station è True) ---
-                pioggia_ora_key = f"{nome_stazione} - Pioggia Ora (mm)"
+                pioggia_ora_key = f"{nome_stazione} - Pioggia 30 Min (mm)"
                 intestazioni_da_api[pioggia_ora_key] = True # Assicura che la colonna calcolata sia considerata
 
                 pioggia_ora_calcolata = 'N/A'
