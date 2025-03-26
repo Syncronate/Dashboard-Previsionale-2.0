@@ -71,6 +71,135 @@ class HydroLSTM(nn.Module):
 
 # --- Funzioni Utilità Modello/Dati ---
 
+# ... (dopo la definizione di HydroLSTM e prima di load_model_config) ...
+
+# Funzione per preparare i dati per l'addestramento
+def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, val_split=20):
+    """
+    Prepara i dati per il training: crea sequenze, normalizza e splitta.
+    Args:
+        df (pd.DataFrame): DataFrame con i dati storici.
+        feature_columns (list): Lista nomi colonne input.
+        target_columns (list): Lista nomi colonne output (target).
+        input_window (int): Lunghezza sequenza input.
+        output_window (int): Lunghezza sequenza output.
+        val_split (int): Percentuale dati per validazione (dal fondo).
+
+    Returns:
+        tuple: (X_train, y_train, X_val, y_val, scaler_features, scaler_targets) o None se errore.
+    """
+    st.write(f"Prepare Data: Input Window={input_window}, Output Window={output_window}, Val Split={val_split}%")
+    st.write(f"Prepare Data: Feature Cols ({len(feature_columns)}): {', '.join(feature_columns[:3])}...")
+    st.write(f"Prepare Data: Target Cols ({len(target_columns)}): {', '.join(target_columns)}")
+
+    # Assicurati che le colonne siano numeriche (già fatto nel caricamento df, ma doppia sicurezza)
+    try:
+        for col in feature_columns + target_columns:
+            if col not in df.columns:
+                 raise ValueError(f"Colonna '{col}' richiesta per training non trovata nel DataFrame.")
+            # La conversione numerica e gestione NaN è già fatta nel blocco caricamento df
+            # df[col] = pd.to_numeric(df[col], errors='coerce')
+        # df = df.fillna(method='ffill').fillna(method='bfill') # Già fatto
+        if df[feature_columns + target_columns].isnull().sum().sum() > 0:
+             st.warning("NaN residui rilevati prima della creazione sequenze! Controlla caricamento dati.")
+             # Potresti decidere di fermare qui o procedere con cautela
+             # return None, None, None, None, None, None
+
+    except ValueError as e:
+        st.error(f"Errore colonne in prepare_training_data: {e}")
+        return None, None, None, None, None, None
+
+    # Creazione delle sequenze di input (X) e output (y)
+    X, y = [], []
+    total_len = len(df)
+    required_len = input_window + output_window
+
+    if total_len < required_len:
+         st.error(f"Dati insufficienti ({total_len} righe) per creare sequenze (richieste {required_len} righe per input+output).")
+         return None, None, None, None, None, None
+
+    st.write(f"Creazione sequenze da {total_len - required_len + 1} punti possibili...")
+    for i in range(total_len - required_len + 1):
+        X.append(df.iloc[i : i + input_window][feature_columns].values)
+        y.append(df.iloc[i + input_window : i + required_len][target_columns].values)
+
+    if not X or not y:
+        st.error("Errore: Nessuna sequenza X/y creata. Controlla finestre e lunghezza dati.")
+        return None, None, None, None, None, None
+
+    X = np.array(X, dtype=np.float32) # Specifica dtype per evitare problemi dopo
+    y = np.array(y, dtype=np.float32)
+    st.write(f"Sequenze create: X shape={X.shape}, y shape={y.shape}") # Log shape
+
+    # Normalizzazione dei dati
+    scaler_features = MinMaxScaler()
+    scaler_targets = MinMaxScaler()
+
+    # Verifica dimensioni prima del reshape
+    if X.size == 0 or y.size == 0:
+        st.error("Dati X o y vuoti prima della normalizzazione.")
+        return None, None, None, None, None, None
+
+    # Il reshape deve avvenire prima del fit_transform
+    num_sequences, seq_len_in, num_features = X.shape
+    num_sequences_y, seq_len_out, num_targets = y.shape # y ha già 3 dimensioni
+
+    X_flat = X.reshape(-1, num_features)
+    y_flat = y.reshape(-1, num_targets) # y è (num_seq, output_window, num_targets), quindi reshape a (num_seq*output_window, num_targets)
+
+    st.write(f"Shape per scaling: X_flat={X_flat.shape}, y_flat={y_flat.shape}") # Log shape
+
+    try:
+        X_scaled_flat = scaler_features.fit_transform(X_flat)
+        y_scaled_flat = scaler_targets.fit_transform(y_flat)
+    except Exception as e_scale:
+         st.error(f"Errore durante scaling: {e_scale}")
+         st.error(f"NaN in X_flat: {np.isnan(X_flat).sum()}, NaN in y_flat: {np.isnan(y_flat).sum()}")
+         return None, None, None, None, None, None
+
+
+    # Riporta alla forma originale 3D
+    X_scaled = X_scaled_flat.reshape(num_sequences, seq_len_in, num_features)
+    y_scaled = y_scaled_flat.reshape(num_sequences_y, seq_len_out, num_targets)
+    st.write(f"Shape post scaling: X_scaled={X_scaled.shape}, y_scaled={y_scaled.shape}") # Log shape
+
+
+    # Divisione in set di addestramento e validazione
+    split_idx = int(len(X_scaled) * (1 - val_split / 100))
+    if split_idx == 0 or split_idx == len(X_scaled):
+         st.warning(f"Split indice ({split_idx}) non valido per divisione train/val. Controlla val_split e lunghezza dati.")
+         # Potresti usare tutto per training o dare errore
+         if len(X_scaled) < 2: # Non si può splittare
+              st.error("Dataset troppo piccolo per creare set di validazione.")
+              return None, None, None, None, None, None
+         # Fallback: usa almeno 1 campione per validazione se possibile
+         split_idx = max(1, len(X_scaled) - 1) if split_idx == len(X_scaled) else split_idx
+         split_idx = min(len(X_scaled) - 1, split_idx) if split_idx == 0 else split_idx
+
+
+    X_train = X_scaled[:split_idx]
+    y_train = y_scaled[:split_idx]
+    X_val = X_scaled[split_idx:]
+    y_val = y_scaled[split_idx:]
+
+    st.write(f"Split Dati: Train={len(X_train)}, Validation={len(X_val)}")
+
+    # Controlla che i set non siano vuoti
+    if X_train.size == 0 or y_train.size == 0:
+         st.error("Set di Training vuoto dopo lo split.")
+         return None, None, None, None, None, None
+    # Il set di validazione può essere vuoto se val_split è 0 o quasi
+    if X_val.size == 0 or y_val.size == 0:
+         st.warning("Set di Validazione vuoto dopo lo split.")
+         # Imposta a array vuoti con shape corretta se necessario per evitare errori dopo
+         X_val = np.empty((0, seq_len_in, num_features), dtype=np.float32)
+         y_val = np.empty((0, seq_len_out, num_targets), dtype=np.float32)
+
+
+    return X_train, y_train, X_val, y_val, scaler_features, scaler_targets
+
+# ... (resto delle funzioni di utilità come load_model_config, load_specific_model, etc.)
+
 @st.cache_data # Cache basata sugli argomenti (percorsi file)
 def load_model_config(_config_path): # Aggiunto underscore per evitare conflitti nome cache
     """Carica la configurazione JSON di un modello."""
