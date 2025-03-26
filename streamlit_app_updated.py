@@ -16,6 +16,8 @@ from torch.utils.data import Dataset, DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import plotly.graph_objects as go
 import time
+import gspread # Importa gspread
+from google.oauth2.service_account import Credentials # Importa Credentials
 
 # Configurazione della pagina
 st.set_page_config(page_title="Modello Predittivo Idrologico", page_icon="🌊", layout="wide")
@@ -23,6 +25,11 @@ st.set_page_config(page_title="Modello Predittivo Idrologico", page_icon="🌊",
 # Costanti globali
 INPUT_WINDOW = 24  # Finestra di input di 24 ore
 OUTPUT_WINDOW = 12  # Previsione per le prossime 12 ore
+
+# --- INIZIO DEFINIZIONI FUNZIONI (Dataset, Modello LSTM, Loaders, Train, Predict, Plot, Download, etc.) ---
+# (Le definizioni delle funzioni rimangono invariate rispetto al codice originale,
+#  le includo qui per completezza ma senza modifiche rispetto a prima, eccetto
+#  import_data_from_sheet)
 
 # Dataset personalizzato per le serie temporali
 class TimeSeriesDataset(Dataset):
@@ -92,7 +99,12 @@ def load_model(model_path, input_size, hidden_size, output_size, output_window, 
 
     # Caricamento dei pesi del modello
     try:
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        # Se model_path è un file caricato, usa il suo buffer
+        if hasattr(model_path, 'getvalue'):
+            model_path.seek(0) # Assicura che la lettura parta dall'inizio
+            model.load_state_dict(torch.load(model_path, map_location=device))
+        else: # Altrimenti è un percorso di file
+            model.load_state_dict(torch.load(model_path, map_location=device))
     except Exception as e:
         st.error(f"Errore durante il caricamento dei pesi del modello: {e}")
         return None, device # Return None model and device
@@ -104,8 +116,19 @@ def load_model(model_path, input_size, hidden_size, output_size, output_window, 
 @st.cache_resource
 def load_scalers(scaler_features_path, scaler_targets_path):
     try:
-        scaler_features = joblib.load(scaler_features_path)
-        scaler_targets = joblib.load(scaler_targets_path)
+         # Gestione sia percorsi file che file caricati
+        if hasattr(scaler_features_path, 'getvalue'):
+            scaler_features_path.seek(0)
+            scaler_features = joblib.load(scaler_features_path)
+        else:
+            scaler_features = joblib.load(scaler_features_path)
+
+        if hasattr(scaler_targets_path, 'getvalue'):
+            scaler_targets_path.seek(0)
+            scaler_targets = joblib.load(scaler_targets_path)
+        else:
+            scaler_targets = joblib.load(scaler_targets_path)
+
         return scaler_features, scaler_targets
     except Exception as e:
         st.error(f"Errore durante il caricamento degli scaler: {e}")
@@ -113,21 +136,40 @@ def load_scalers(scaler_features_path, scaler_targets_path):
 
 # Funzione per preparare i dati per l'addestramento
 def prepare_training_data(df, feature_columns, target_columns, input_window=INPUT_WINDOW, output_window=OUTPUT_WINDOW, val_split=20):
+    # Assicurati che le colonne target siano numeriche
+    for col in target_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    # Gestisci eventuali NaN introdotti
+    df = df.fillna(method='ffill').fillna(method='bfill') # Forward fill then backward fill
+
     # Creazione delle sequenze di input (X) e output (y)
     X, y = [], []
     for i in range(len(df) - input_window - output_window + 1):
         X.append(df.iloc[i:i+input_window][feature_columns].values)
         y.append(df.iloc[i+input_window:i+input_window+output_window][target_columns].values)
+
+    if not X or not y:
+        st.error("Non è stato possibile creare sequenze di training/validazione. Controlla la lunghezza dei dati e le finestre temporali.")
+        return None, None, None, None, None, None
+
     X = np.array(X)
     y = np.array(y)
 
     # Normalizzazione dei dati
     scaler_features = MinMaxScaler()
     scaler_targets = MinMaxScaler()
+
+    # Verifica dimensioni prima del reshape
+    if X.size == 0 or y.size == 0:
+        st.error("Dati di input o output vuoti prima della normalizzazione.")
+        return None, None, None, None, None, None
+
     X_flat = X.reshape(-1, X.shape[-1])
     y_flat = y.reshape(-1, y.shape[-1])
+
     X_scaled_flat = scaler_features.fit_transform(X_flat)
     y_scaled_flat = scaler_targets.fit_transform(y_flat)
+
     X_scaled = X_scaled_flat.reshape(X.shape)
     y_scaled = y_scaled_flat.reshape(y.shape)
 
@@ -171,20 +213,21 @@ def train_model(
 
     progress_bar = st.progress(0)
     status_text = st.empty()
-    loss_chart = st.empty()
+    loss_chart_placeholder = st.empty() # Placeholder per il grafico
 
-    # Creazione del grafico interattivo di perdita
-    def update_loss_chart(train_losses, val_losses):
+    # Creazione del grafico interattivo di perdita (Plotly)
+    def update_loss_chart(train_losses, val_losses, placeholder):
         fig = go.Figure()
-        fig.add_trace(go.Scatter(y=train_losses, mode='lines', name='Train Loss'))
-        fig.add_trace(go.Scatter(y=val_losses, mode='lines', name='Validation Loss'))
+        fig.add_trace(go.Scatter(y=train_losses, mode='lines+markers', name='Train Loss'))
+        fig.add_trace(go.Scatter(y=val_losses, mode='lines+markers', name='Validation Loss'))
         fig.update_layout(
-            title='Andamento della perdita',
+            title='Andamento della perdita (Train vs Validation)',
             xaxis_title='Epoca',
-            yaxis_title='Loss',
-            height=400
+            yaxis_title='Loss (MSE)',
+            height=400,
+            legend_title_text='Legenda'
         )
-        loss_chart.plotly_chart(fig, use_container_width=True)
+        placeholder.plotly_chart(fig, use_container_width=True)
 
     for epoch in range(epochs):
         # Training
@@ -224,22 +267,31 @@ def train_model(
         scheduler.step(val_loss)
 
         # Aggiornamento della progress bar e del testo di stato
-        progress_bar.progress((epoch + 1) / epochs)
-        status_text.text(f'Epoca {epoch+1}/{epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}')
+        progress_percentage = (epoch + 1) / epochs
+        progress_bar.progress(progress_percentage)
+        status_text.text(f'Epoca {epoch+1}/{epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f} - LR: {optimizer.param_groups[0]["lr"]:.6f}')
 
-        # Aggiornamento del grafico di perdita
-        update_loss_chart(train_losses, val_losses)
+        # Aggiornamento del grafico di perdita (ogni epoca)
+        update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
         # Salvataggio del modello migliore
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model = model.state_dict().copy()
+            # Salva lo stato del modello in memoria RAM
+            best_model_state_dict = {k: v.cpu() for k, v in model.state_dict().items()} # Sposta su CPU per sicurezza
+            st.text(f"Nuovo miglior modello trovato all'epoca {epoch+1} con Val Loss: {best_val_loss:.6f}")
+
 
         # Breve pausa per consentire l'aggiornamento dell'interfaccia
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     # Caricamento del modello migliore
-    model.load_state_dict(best_model)
+    if best_model_state_dict:
+        model.load_state_dict(best_model_state_dict)
+        st.success(f"Caricato modello migliore dall'epoca con Val Loss: {best_val_loss:.6f}")
+    else:
+        st.warning("Nessun modello migliore salvato durante l'addestramento.")
+
 
     return model, train_losses, val_losses
 
@@ -247,95 +299,271 @@ def train_model(
 def predict(model, input_data, scaler_features, scaler_targets, target_columns, device, output_window):
     """
     Funzione per fare previsioni con il modello addestrato.
-
-    Args:
-        model: Il modello addestrato
-        input_data: Dati di input non normalizzati (array di forma [input_window, num_features])
-        scaler_features: Scaler per normalizzare i dati di input
-        scaler_targets: Scaler per denormalizzare le previsioni
-        target_columns: Nomi dei target (sensori idrometrici)
-        device: Dispositivo (CPU/GPU)
-        output_window: Numero di timestep futuri da prevedere
-
-    Returns:
-        Previsioni denormalizzate
     """
     if model is None or scaler_features is None or scaler_targets is None:
         st.error("Modello o scaler non caricati correttamente. Impossibile fare previsioni.")
         return None
 
+    if input_data.shape[0] != INPUT_WINDOW:
+         st.error(f"I dati di input hanno {input_data.shape[0]} righe, ma ne sono attese {INPUT_WINDOW}. Impossibile fare previsioni.")
+         return None
+    if input_data.shape[1] != len(feature_columns):
+         st.error(f"I dati di input hanno {input_data.shape[1]} colonne, ma ne sono attese {len(feature_columns)}. Impossibile fare previsioni.")
+         return None
+
     model.eval()
 
-    # Normalizzazione dei dati di input
-    input_normalized = scaler_features.transform(input_data)
+    try:
+        # Normalizzazione dei dati di input
+        input_normalized = scaler_features.transform(input_data)
 
-    # Conversione in tensore PyTorch
-    input_tensor = torch.FloatTensor(input_normalized).unsqueeze(0).to(device)
+        # Conversione in tensore PyTorch
+        input_tensor = torch.FloatTensor(input_normalized).unsqueeze(0).to(device)
 
-    # Previsione
-    with torch.no_grad():
-        output = model(input_tensor)
+        # Previsione
+        with torch.no_grad():
+            output = model(input_tensor)
 
-    # Conversione in numpy
-    output_np = output.cpu().numpy().reshape(-1, len(target_columns))
+        # Conversione in numpy
+        output_np = output.cpu().numpy().reshape(-1, len(target_columns)) # Usa len(target_columns) dinamicamente
 
-    # Denormalizzazione
-    predictions = scaler_targets.inverse_transform(output_np)
+        # Denormalizzazione
+        # Assicurati che scaler_targets sia stato fittato sul numero corretto di target
+        if output_np.shape[1] != scaler_targets.n_features_in_:
+             st.error(f"Errore di dimensione: l'output del modello ha {output_np.shape[1]} feature, ma lo scaler target ne attende {scaler_targets.n_features_in_}.")
+             return None
 
-    # Reshape per ottenere [output_window, num_target_columns]
-    predictions = predictions.reshape(output_window, len(target_columns))
+        predictions = scaler_targets.inverse_transform(output_np)
 
-    return predictions
+        # Reshape per ottenere [output_window, num_target_columns]
+        predictions = predictions.reshape(output_window, len(target_columns)) # Usa len(target_columns)
 
-# Funzione per plot dei risultati
+        return predictions
+
+    except Exception as e:
+        st.error(f"Errore durante la fase di previsione: {e}")
+        st.error(f"Shape dati input: {input_data.shape}")
+        st.error(f"Shape dati normalizzati: {input_normalized.shape if 'input_normalized' in locals() else 'N/A'}")
+        st.error(f"Shape output modello: {output.shape if 'output' in locals() else 'N/A'}")
+        st.error(f"Shape output numpy: {output_np.shape if 'output_np' in locals() else 'N/A'}")
+        st.error(f"Numero colonne target attese dallo scaler: {scaler_targets.n_features_in_ if scaler_targets else 'N/A'}")
+        return None
+
+
+# Funzione per plot dei risultati (usando Plotly per interattività)
 def plot_predictions(predictions, target_columns, output_window, start_time=None):
     figures = []
 
     # Per ogni sensore idrometrico target
     for i, sensor_name in enumerate(target_columns):
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig = go.Figure()
 
         # Creazione dell'asse x per le ore future
         if start_time:
-            hours = [start_time + timedelta(hours=h) for h in range(output_window)]
-            ax.plot(hours, predictions[:, i], marker='o', linestyle='-', label=f'Previsione {sensor_name}')
-            plt.gcf().autofmt_xdate()
+            hours = [start_time + timedelta(hours=h+1) for h in range(output_window)] # Parte da h+1 per la previsione
+            x_axis = hours
+            x_title = "Data e Ora Previste"
         else:
-            hours = np.arange(output_window)
-            ax.plot(hours, predictions[:, i], marker='o', linestyle='-', label=f'Previsione {sensor_name}')
-            ax.set_xlabel('Ore future')
+            hours = np.arange(1, output_window + 1) # Ore da 1 a OUTPUT_WINDOW
+            x_axis = hours
+            x_title = "Ore Future"
 
-        ax.set_title(f'Previsione - {sensor_name}')
-        ax.set_ylabel('Livello idrometrico [m]')
-        ax.legend()
-        ax.grid(True)
-        plt.tight_layout()
+        fig.add_trace(go.Scatter(x=x_axis, y=predictions[:, i], mode='lines+markers', name=f'Previsione {sensor_name}'))
+
+        fig.update_layout(
+            title=f'Previsione - {sensor_name}',
+            xaxis_title=x_title,
+            yaxis_title='Livello idrometrico [m]',
+            height=400,
+            hovermode="x unified"
+        )
+        fig.update_yaxes(rangemode='tozero') # Assicura che l'asse Y parta da 0 se i valori sono positivi
 
         figures.append(fig)
 
     return figures
 
-# Funzione per ottenere un link di download per un file
+# Funzione per ottenere un link di download per un file CSV
 def get_table_download_link(df, filename="previsioni.csv"):
     """Genera un link per scaricare il dataframe come file CSV"""
-    csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
+    csv = df.to_csv(index=False, sep=';', decimal=',') # Usa ; e , per coerenza
+    b64 = base64.b64encode(csv.encode('utf-8')).decode() # Specifica encoding
     return f'<a href="data:file/csv;base64,{b64}" download="{filename}">Scarica i dati CSV</a>'
 
-# Funzione per ottenere un link di download per un file pkl/joblib
+# Funzione per ottenere un link di download per un file pkl/joblib o pth
 def get_binary_file_download_link(file_object, filename, text):
-    """Genera un link per scaricare un file binario"""
+    """Genera un link per scaricare un file binario (modello o scaler)"""
+    file_object.seek(0) # Assicura di partire dall'inizio del buffer
     b64 = base64.b64encode(file_object.getvalue()).decode()
     return f'<a href="data:application/octet-stream;base64,{b64}" download="{filename}">{text}</a>'
 
-# Funzione per scaricare grafici
-def get_image_download_link(fig, filename, text):
-    """Genera un link per scaricare il grafico come immagine"""
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png')
-    buf.seek(0)
-    b64 = base64.b64encode(buf.getvalue()).decode()
-    return f'<a href="data:image/png;base64,{b64}" download="{filename}">{text}</a>'
+# Funzione per scaricare grafici Plotly come HTML o PNG (richiede kaleido)
+def get_plotly_download_link(fig, filename_base, text_html="Scarica Grafico (HTML)", text_png="Scarica Grafico (PNG)"):
+    """Genera link per scaricare un grafico Plotly come HTML e PNG (se kaleido è installato)"""
+    # HTML Link
+    buffer_html = io.StringIO()
+    fig.write_html(buffer_html)
+    b64_html = base64.b64encode(buffer_html.getvalue().encode()).decode()
+    href_html = f'<a href="data:text/html;base64,{b64_html}" download="{filename_base}.html">{text_html}</a>'
+
+    # PNG Link (opzionale, richiede kaleido: pip install -U kaleido)
+    href_png = ""
+    try:
+        buffer_png = io.BytesIO()
+        fig.write_image(buffer_png, format="png")
+        buffer_png.seek(0)
+        b64_png = base64.b64encode(buffer_png.getvalue()).decode()
+        href_png = f'<a href="data:image/png;base64,{b64_png}" download="{filename_base}.png">{text_png}</a>'
+    except Exception as e:
+        # st.warning(f"Impossibile generare PNG per {filename_base}: {e}. Installa kaleido (`pip install -U kaleido`)")
+        pass # Non mostrare warning, semplicemente non mostrare il link PNG
+
+    return f"{href_html} {href_png}" # Restituisce entrambi i link (o solo HTML se PNG fallisce)
+
+# Funzione per estrarre l'ID del foglio dall'URL
+def extract_sheet_id(url):
+    # Pattern più robusto per estrarre l'ID
+    patterns = [
+        r'/spreadsheets/d/([a-zA-Z0-9-_]+)', # Pattern standard
+        r'/d/([a-zA-Z0-9-_]+)/'             # Altro pattern comune
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None # Se nessun pattern corrisponde
+
+
+# --- FUNZIONE DI IMPORTAZIONE DA GOOGLE SHEET MODIFICATA ---
+# Funzione per importare i dati dal foglio Google
+def import_data_from_sheet(sheet_id, expected_cols, date_col_name='Data_Ora', date_format='%d/%m/%Y %H:%M'):
+    """
+    Importa dati da Google Sheet, pulisce i valori numerici (gestendo virgole e 'N/A'),
+    e restituisce le ultime INPUT_WINDOW righe valide.
+
+    Args:
+        sheet_id (str): L'ID del foglio Google.
+        expected_cols (list): Lista dei nomi delle colonne come appaiono nel foglio Google.
+        date_col_name (str): Nome della colonna data/ora nel foglio Google.
+        date_format (str): Formato della data/ora nel foglio Google.
+
+    Returns:
+        pd.DataFrame or None: DataFrame con i dati puliti e pronti, o None se errore.
+    """
+    try:
+        # Utilizzo di gspread per accedere al foglio
+        # Carica le credenziali da Streamlit Secrets
+        # Assicurati che "GOOGLE_CREDENTIALS" sia configurato nei secrets di Streamlit
+        if "GOOGLE_CREDENTIALS" not in st.secrets:
+             st.error("Credenziali Google non trovate nei secrets di Streamlit. Configura 'GOOGLE_CREDENTIALS'.")
+             return None
+
+        credentials_dict = st.secrets["GOOGLE_CREDENTIALS"]
+        credentials = Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        )
+        gc = gspread.authorize(credentials)
+
+        # Apri il foglio per ID
+        sh = gc.open_by_key(sheet_id)
+        worksheet = sh.sheet1  # Assumiamo il primo foglio
+
+        # Ottieni tutte le righe, inclusa l'intestazione
+        data = worksheet.get_all_values()
+
+        # Crea un DataFrame pandas
+        if not data or len(data) < 2: # Deve esserci almeno intestazione + 1 riga dati
+            st.error("Il foglio Google sembra essere vuoto o contiene solo l'intestazione.")
+            return None
+
+        headers = data[0]
+        rows = data[1:]
+
+        # Verifica che le colonne attese esistano nel foglio
+        actual_headers_set = set(headers)
+        missing_cols = [col for col in expected_cols if col not in actual_headers_set]
+        if missing_cols:
+             st.error(f"Le seguenti colonne attese non sono state trovate nel foglio Google: {', '.join(missing_cols)}")
+             st.info(f"Colonne trovate: {', '.join(headers)}")
+             return None
+
+        df_sheet = pd.DataFrame(rows, columns=headers)
+
+        # Seleziona solo le colonne che ci servono effettivamente (quelle nel mapping + data)
+        columns_to_keep = expected_cols[:] # Crea una copia
+        if date_col_name not in columns_to_keep:
+            columns_to_keep.append(date_col_name)
+        df_sheet = df_sheet[columns_to_keep]
+
+
+        # --- PULIZIA E CONVERSIONE DATI ---
+        # 1. Converte la colonna di data in datetime
+        if date_col_name in df_sheet.columns:
+            df_sheet[date_col_name] = pd.to_datetime(df_sheet[date_col_name], format=date_format, errors='coerce')
+        else:
+            # Questo caso non dovrebbe accadere per via del check precedente, ma per sicurezza
+            st.error(f"La colonna data '{date_col_name}' non è presente dopo la selezione.")
+            return None
+
+        # 2. Ordina per data e gestisci NaT prima di ordinare
+        df_sheet = df_sheet.dropna(subset=[date_col_name]) # Rimuovi righe dove la data non è valida
+        df_sheet = df_sheet.sort_values(by=date_col_name, ascending=True)
+
+        # 3. Converti le colonne numeriche (tutte tranne la data)
+        numeric_cols = [col for col in df_sheet.columns if col != date_col_name]
+        for col in numeric_cols:
+            # Sostituisci 'N/A', stringhe vuote, '-' con NaN di numpy
+            df_sheet[col] = df_sheet[col].replace(['N/A', '', '-', ' '], np.nan, regex=False)
+            # Sostituisci la virgola con il punto per il separatore decimale
+            df_sheet[col] = df_sheet[col].astype(str).str.replace(',', '.', regex=False)
+            # Tenta la conversione a numerico. 'coerce' imposterà a NaN i valori non convertibili
+            df_sheet[col] = pd.to_numeric(df_sheet[col], errors='coerce')
+
+        # --- FINE PULIZIA E CONVERSIONE ---
+
+        # 4. Prendi le ultime INPUT_WINDOW righe valide
+        df_sheet = df_sheet.tail(INPUT_WINDOW)
+
+        # 5. Verifica se sono rimaste abbastanza righe
+        if len(df_sheet) < INPUT_WINDOW:
+             st.warning(f"Attenzione: dopo la pulizia dei dati dal Google Sheet, sono disponibili solo {len(df_sheet)} righe valide delle {INPUT_WINDOW} richieste. Assicurati che il foglio contenga dati sufficienti e validi.")
+             if len(df_sheet) == 0:
+                 st.error("Nessuna riga valida trovata dopo la pulizia dei dati dal Google Sheet.")
+                 return None
+        elif len(df_sheet) > INPUT_WINDOW:
+             # Questo non dovrebbe succedere con .tail(), ma per sicurezza
+             st.warning(f"Trovate più righe ({len(df_sheet)}) del previsto ({INPUT_WINDOW}) dopo il tail().")
+             df_sheet = df_sheet.tail(INPUT_WINDOW)
+
+        st.success(f"Importate e pulite {len(df_sheet)} righe dal foglio Google.")
+        return df_sheet
+
+    except gspread.exceptions.APIError as api_e:
+        # Dettagli sull'errore API
+        error_details = api_e.response.json()
+        error_message = error_details.get('error', {}).get('message', str(api_e))
+        st.error(f"Errore API Google Sheets: {error_message}. Verifica l'URL, le autorizzazioni dell'account di servizio sul foglio e le credenziali.")
+        return None
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error(f"Foglio Google non trovato. Verifica che l'ID '{sheet_id}' sia corretto e che l'account di servizio abbia accesso.")
+        return None
+    except ValueError as ve:
+         if "time data" in str(ve) and "does not match format" in str(ve):
+             st.error(f"Errore nel formato data/ora: {ve}. Verifica che i dati nella colonna '{date_col_name}' siano nel formato '{date_format}' (es. '25/03/2025 17:41').")
+         else:
+             st.error(f"Errore durante la conversione dei dati: {ve}")
+         return None
+    except Exception as e:
+        st.error(f"Errore generico durante l'importazione da Google Sheet: {type(e).__name__} - {str(e)}")
+        import traceback
+        st.error(traceback.format_exc()) # Stampa traceback per debug
+        return None
+
+# --- FINE DEFINIZIONI FUNZIONI ---
+
+
+# --- INIZIO LAYOUT STREAMLIT ---
 
 # Titolo dell'app
 st.title('Dashboard Modello Predittivo Idrologico')
@@ -346,17 +574,40 @@ st.sidebar.header('Impostazioni')
 # Opzione per caricare i propri file o usare quelli demo
 use_demo_files = st.sidebar.checkbox('Usa file di esempio', value=True)
 
+# Definisci i percorsi/variabili qui, verranno aggiornati dopo
+DATA_PATH = None
+MODEL_PATH = None
+SCALER_FEATURES_PATH = None
+SCALER_TARGETS_PATH = None
+# Parametri modello (inizializzati a None o default)
+hidden_size = 128
+num_layers = 2
+dropout = 0.2
+
 if use_demo_files:
-    # Qui dovresti fornire percorsi ai file di esempio
-    DATA_PATH = 'dati_idro.csv'  # Sostituisci con il percorso corretto
-    MODEL_PATH = 'best_hydro_model.pth'  # Sostituisci con il percorso corretto
-    SCALER_FEATURES_PATH = 'scaler_features.joblib'  # Sostituisci con il percorso corretto
-    SCALER_TARGETS_PATH = 'scaler_targets.joblib'  # Sostituisci con il percorso corretto
-    # Parametri del modello DEMO
-    DEMO_HIDDEN_SIZE = 128
-    DEMO_NUM_LAYERS = 2
-    DEMO_DROPOUT = 0.2
+    st.sidebar.info("Stai usando i file di esempio predefiniti.")
+    # Qui dovresti fornire percorsi ai file di esempio (assicurati che esistano)
+    # Sostituisci con i percorsi corretti dove esegui lo script
+    DATA_PATH = 'dati_idro.csv'  # Esempio: 'data/dati_idro.csv'
+    MODEL_PATH = 'best_hydro_model.pth'  # Esempio: 'models/best_hydro_model.pth'
+    SCALER_FEATURES_PATH = 'scaler_features.joblib' # Esempio: 'models/scaler_features.joblib'
+    SCALER_TARGETS_PATH = 'scaler_targets.joblib' # Esempio: 'models/scaler_targets.joblib'
+    # Parametri del modello DEMO (corrispondenti ai file demo caricati)
+    hidden_size = 128 # Assicurati che questi corrispondano al modello .pth fornito
+    num_layers = 2
+    dropout = 0.2
+    # Verifica esistenza file demo
+    missing_demo_files = []
+    if not os.path.exists(DATA_PATH): missing_demo_files.append(DATA_PATH)
+    if not os.path.exists(MODEL_PATH): missing_demo_files.append(MODEL_PATH)
+    if not os.path.exists(SCALER_FEATURES_PATH): missing_demo_files.append(SCALER_FEATURES_PATH)
+    if not os.path.exists(SCALER_TARGETS_PATH): missing_demo_files.append(SCALER_TARGETS_PATH)
+    if missing_demo_files:
+         st.sidebar.error(f"File di esempio mancanti: {', '.join(missing_demo_files)}. Verifica i percorsi.")
+         st.stop() # Ferma l'esecuzione se i file demo non ci sono
+
 else:
+    st.sidebar.info("Carica i tuoi file personalizzati.")
     # Caricamento dei file dall'utente
     st.sidebar.subheader('Carica i tuoi file')
     data_file = st.sidebar.file_uploader('File CSV con i dati storici', type=['csv'])
@@ -364,948 +615,990 @@ else:
     scaler_features_file = st.sidebar.file_uploader('File scaler features (.joblib)', type=['joblib'])
     scaler_targets_file = st.sidebar.file_uploader('File scaler targets (.joblib)', type=['joblib'])
 
-    # Configurazione parametri modello
-    st.sidebar.subheader('Configurazione Modello')
-    hidden_size = st.sidebar.number_input("Dimensione hidden layer", min_value=16, max_value=512, value=128, step=16)
-    num_layers = st.sidebar.number_input("Numero di layer LSTM", min_value=1, max_value=5, value=2)
-    dropout = st.sidebar.slider("Dropout", 0.0, 0.5, 0.2, 0.05)
+    # Configurazione parametri modello (solo se si usano file propri)
+    st.sidebar.subheader('Configurazione Modello (se carichi il tuo)')
+    hidden_size = st.sidebar.number_input("Dimensione hidden layer", min_value=16, max_value=1024, value=128, step=16)
+    num_layers = st.sidebar.number_input("Numero di layer LSTM", min_value=1, max_value=8, value=2)
+    dropout = st.sidebar.slider("Dropout", 0.0, 0.7, 0.2, 0.05)
+
+    # Assegnazione dei file caricati ai path (usiamo i buffer direttamente)
+    if data_file: DATA_PATH = data_file
+    if model_file: MODEL_PATH = model_file
+    if scaler_features_file: SCALER_FEATURES_PATH = scaler_features_file
+    if scaler_targets_file: SCALER_TARGETS_PATH = scaler_targets_file
+
+    # Controllo se tutti i file sono stati caricati quando non si usano i demo
+    if not (DATA_PATH and MODEL_PATH and SCALER_FEATURES_PATH and SCALER_TARGETS_PATH):
+        st.sidebar.warning('Carica tutti i file necessari (CSV, pth, 2x joblib) per procedere.')
+        # Non fermare l'app, ma alcune sezioni potrebbero non funzionare
+        # st.stop() # Decommenta se vuoi bloccare l'app senza tutti i file
 
 
-    # Controllo se tutti i file sono stati caricati
-    if not use_demo_files and not (data_file and model_file and scaler_features_file and scaler_targets_file):
-        st.sidebar.warning('Carica tutti i file necessari per procedere')
-    elif not use_demo_files:
-        # Salvataggio temporaneo dei file caricati
-        DATA_PATH = data_file
-        MODEL_PATH = model_file
-        SCALER_FEATURES_PATH = scaler_features_file
-        SCALER_TARGETS_PATH = scaler_targets_file
-
-# Estrazione delle caratteristiche (colonne del dataframe)
+# Estrazione delle caratteristiche (colonne del dataframe) - ASSICURATI CHE QUESTI NOMI CORRISPONDANO AL TUO CSV
+# Questi nomi DEVONO corrispondere esattamente alle intestazioni nel file CSV caricato o demo
 rain_features = [
     'Cumulata Sensore 1295 (Arcevia)',
-    'Cumulata Sensore 2637 (Bettolelle)',
+    'Cumulata Sensore 2637 (Bettolelle)', # Verifica se nel tuo CSV è 'Misa - Pioggia Ora (mm)' o altro
     'Cumulata Sensore 2858 (Barbara)',
     'Cumulata Sensore 2964 (Corinaldo)'
 ]
-
-humidity_feature = ['Umidita\' Sensore 3452 (Montemurello)']
+# Assicurati che questa colonna esista nel tuo CSV
+humidity_feature = ['Umidita\' Sensore 3452 (Montemurello)'] # Verifica se esiste
 
 hydro_features = [
     'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
-    'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
-    'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
-    'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
-    'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
+    'Livello Idrometrico Sensore 1112 [m] (Bettolelle)', # Verifica se nel tuo CSV è 'Misa - Livello Misa (mt)' o altro
+    'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)', # Verifica se nel tuo CSV è 'Nevola - Livello Nevola (mt)' o altro
+    'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)', # Verifica se nel tuo CSV è 'Pianello di Ostra - Livello Misa (m)' o altro
+    'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)' # Verifica se nel tuo CSV è 'Ponte Garibaldi - Livello Misa 2 (mt)' o altro
 ]
 
 feature_columns = rain_features + humidity_feature + hydro_features
 
 
 # Caricamento dei dati storici
-df = None  # Initialize df to None
-try:
-    if use_demo_files:
-        df = pd.read_csv(DATA_PATH, sep=';', parse_dates=['Data e Ora'], decimal=',')
-        df['Data e Ora'] = pd.to_datetime(df['Data e Ora'], format='%d/%m/%Y %H:%M')
-    elif data_file is not None:  # Check if data_file is loaded
-        df = pd.read_csv(data_file, sep=';', parse_dates=['Data e Ora'], decimal=',')
-        df['Data e Ora'] = pd.to_datetime(df['Data e Ora'], format='%d/%m/%Y %H:%M')
-    if df is not None:
-        st.sidebar.success(f'Dati caricati: {len(df)} righe')
-except Exception as e:
-    st.sidebar.error(f'Errore nel caricamento dei dati: {e}')
+df = None
+df_load_error = None
+if DATA_PATH:
+    try:
+        # Gestisce sia file caricato che percorso
+        if hasattr(DATA_PATH, 'getvalue'):
+            DATA_PATH.seek(0) # Resetta il puntatore del buffer
+            df = pd.read_csv(DATA_PATH, sep=';', decimal=',', encoding='utf-8') # Aggiungi encoding
+        else:
+            df = pd.read_csv(DATA_PATH, sep=';', decimal=',', encoding='utf-8')
+
+        # Conversione Data e Ora - Assicurati che il nome 'Data e Ora' sia corretto
+        date_col_name_csv = 'Data e Ora' # Modifica se il nome nel CSV è diverso
+        if date_col_name_csv not in df.columns:
+             raise ValueError(f"Colonna '{date_col_name_csv}' non trovata nel file CSV. Colonne presenti: {', '.join(df.columns)}")
+
+        # Prova diversi formati comuni se quello standard fallisce
+        try:
+             df[date_col_name_csv] = pd.to_datetime(df[date_col_name_csv], format='%d/%m/%Y %H:%M', errors='raise')
+        except ValueError:
+             st.warning("Formato data '%d/%m/%Y %H:%M' fallito, tentativo con inferenza automatica...")
+             try:
+                 df[date_col_name_csv] = pd.to_datetime(df[date_col_name_csv], errors='coerce') # Lascia che pandas indovini
+             except Exception as e_dt:
+                 raise ValueError(f"Impossibile convertire la colonna data '{date_col_name_csv}': {e_dt}")
+
+        df = df.dropna(subset=[date_col_name_csv]) # Rimuovi righe con date non valide
+        df = df.sort_values(by=date_col_name_csv).reset_index(drop=True) # Ordina e resetta indice
+
+        # Verifica presenza di tutte le feature columns nel DataFrame caricato
+        missing_features = [col for col in feature_columns if col not in df.columns]
+        if missing_features:
+            st.sidebar.error(f"Colonne feature mancanti nel CSV: {', '.join(missing_features)}. Verifica i nomi in `feature_columns` e nel file.")
+            df = None # Invalida il dataframe se mancano colonne essenziali
+        else:
+            st.sidebar.success(f'Dati CSV caricati: {len(df)} righe, {len(df.columns)} colonne.')
+            # Conversione numerica robusta per tutte le feature (dopo caricamento)
+            for col in feature_columns:
+                 if col != date_col_name_csv: # Salta colonna data
+                      # Sostituisci eventuali separatori di migliaia (es. '.') se presenti
+                      if df[col].dtype == 'object': # Solo se è stringa
+                           df[col] = df[col].str.replace('.', '', regex=False) # Rimuove punti (migliaia)
+                           df[col] = df[col].str.replace(',', '.', regex=False) # Virgola -> Punto (decimali)
+                           df[col] = df[col].replace(['N/A', '', '-'], np.nan, regex=False) # Gestisce N/A etc.
+                      df[col] = pd.to_numeric(df[col], errors='coerce')
+            # Gestione NaN post-conversione (riempimento semplice)
+            n_nan_before = df[feature_columns].isnull().sum().sum()
+            if n_nan_before > 0:
+                 st.sidebar.warning(f"Trovati {n_nan_before} valori mancanti/non numerici nelle colonne feature. Verranno riempiti con forward/backward fill.")
+                 df[feature_columns] = df[feature_columns].fillna(method='ffill').fillna(method='bfill')
+                 n_nan_after = df[feature_columns].isnull().sum().sum()
+                 if n_nan_after > 0:
+                      st.sidebar.error(f"Ancora {n_nan_after} valori mancanti dopo il fill. Controlla l'inizio/fine del dataset.")
+                      df = None # Invalida se ci sono ancora NaN
+
+    except ValueError as ve:
+        df_load_error = f"Errore di valore durante il caricamento CSV: {ve}"
+    except FileNotFoundError:
+        df_load_error = f"Errore: File CSV non trovato al percorso '{DATA_PATH}'."
+    except Exception as e:
+        df_load_error = f'Errore imprevisto nel caricamento/processamento dati CSV: {type(e).__name__} - {e}'
+
+    if df_load_error:
+        st.sidebar.error(df_load_error)
+        df = None # Assicura che df sia None se il caricamento fallisce
 
 # Caricamento del modello e degli scaler
 model = None
 device = None
 scaler_features = None
 scaler_targets = None
+target_columns = [] # Lista delle colonne target effettivamente usate/previste
+load_error = False
 
-if use_demo_files or (data_file and model_file and scaler_features_file and scaler_targets_file):
+# Procedi solo se i path/file necessari sono definiti
+if MODEL_PATH and SCALER_FEATURES_PATH and SCALER_TARGETS_PATH:
     try:
-        # Calcola input_size correttamente in base alle feature columns
-        input_size = len(feature_columns)
-
+        # Definisci quali sono i target che il modello deve prevedere.
+        # Questo dipende da COME il modello è stato addestrato.
+        # Se usi i file demo, DEVI sapere quali target prevede quel modello.
+        # Se l'utente carica il suo, dovremmo idealmente salvarlo con il modello,
+        # ma per ora usiamo tutti gli idrometri come default per i file utente.
         if use_demo_files:
-            demo_target_columns = hydro_features[:4] # Use only first 4 for demo model
-            output_size = len(demo_target_columns) # output_size = 4 for demo model
-            target_columns = demo_target_columns # Update target_columns to be used in the app for demo mode
-            # Usa parametri DEMO
-            model, device = load_model(MODEL_PATH, input_size, DEMO_HIDDEN_SIZE, output_size, OUTPUT_WINDOW, DEMO_NUM_LAYERS, DEMO_DROPOUT)
-            scaler_features, scaler_targets = load_scalers(SCALER_FEATURES_PATH, SCALER_TARGETS_PATH)
+            # *** IMPORTANTE: Modifica questa lista se il tuo modello demo prevede target diversi ***
+            target_columns = hydro_features[:4] # Esempio: il modello demo prevede solo i primi 4 idrometri
+            st.sidebar.info(f"Modalità Demo: Il modello prevede {len(target_columns)} idrometri: {', '.join(target_columns)}")
         else:
-            target_columns = hydro_features # Use all 5 hydro features for user uploaded model
-            output_size = len(target_columns) # output_size = 5 for user-uploaded model
-            # Usa parametri configurati dall'utente
-            model, device = load_model(model_file, input_size, hidden_size, output_size, OUTPUT_WINDOW, num_layers, dropout)
-            scaler_features, scaler_targets = load_scalers(scaler_features_file, scaler_targets_file)
+            # Quando l'utente carica i file, assumiamo che il modello preveda tutti gli idrometri,
+            # a meno che non si aggiunga un modo per specificarlo.
+            target_columns = hydro_features # Assume tutti gli idrometri
+            st.sidebar.info(f"Modalità Utente: Si assume che il modello preveda {len(target_columns)} idrometri.")
 
-        if model is not None and scaler_features is not None and scaler_targets is not None:
-            st.sidebar.success('Modello e scaler caricati con successo')
+        # Calcola input_size e output_size in base alle feature e ai target SELEZIONATI
+        input_size = len(feature_columns)
+        output_size = len(target_columns) # Basato sui target definiti sopra
+
+        # Carica modello e scaler usando i parametri corretti
+        model, device = load_model(MODEL_PATH, input_size, hidden_size, output_size, OUTPUT_WINDOW, num_layers, dropout)
+        scaler_features, scaler_targets = load_scalers(SCALER_FEATURES_PATH, SCALER_TARGETS_PATH)
+
+        # Verifica post-caricamento
+        if model is None or scaler_features is None or scaler_targets is None:
+            load_error = True
+            # Gli errori specifici sono già stati mostrati da load_model/load_scalers
+            st.sidebar.error("Caricamento modello o scaler fallito.")
+        else:
+            # Verifica compatibilità scaler targets con output_size
+            if scaler_targets.n_features_in_ != output_size:
+                 st.sidebar.error(f"Incompatibilità: Lo scaler target è stato fittato su {scaler_targets.n_features_in_} features, ma il modello ne prevede {output_size} ({', '.join(target_columns)}).")
+                 load_error = True
+                 model, scaler_features, scaler_targets = None, None, None # Invalida tutto
+            else:
+                 st.sidebar.success('Modello e scaler caricati e verificati.')
+
     except Exception as e:
-        st.sidebar.error(f'Errore nel caricamento del modello o degli scaler: {e}')
+        st.sidebar.error(f'Errore generico nel caricamento modello/scaler: {e}')
+        load_error = True
+else:
+    if not use_demo_files: # Mostra solo se l'utente doveva caricare i file
+       st.sidebar.warning("Mancano i percorsi per modello o scaler.")
+    load_error = True # Considera errore se mancano file essenziali
 
 # Menu principale
 st.sidebar.header('Menu')
-page = st.sidebar.radio('Scegli una funzionalità',
-                        ['Dashboard', 'Simulazione', 'Analisi Dati Storici', 'Allenamento Modello'])
+# Disabilita opzioni se i dati o il modello non sono caricati
+disable_dashboard = df is None or load_error
+disable_sim = load_error # La simulazione richiede solo modello/scaler
+disable_analysis = df is None
+disable_training = df is None # L'allenamento richiede solo dati iniziali
 
+page = st.sidebar.radio(
+    'Scegli una funzionalità',
+    ['Dashboard', 'Simulazione', 'Analisi Dati Storici', 'Allenamento Modello'],
+    captions=[
+        "Visualizza dati e previsioni" if not disable_dashboard else "Richiede dati e modello carichi",
+        "Esegui previsioni con dati custom" if not disable_sim else "Richiede modello/scaler carichi",
+        "Esplora i dati caricati" if not disable_analysis else "Richiede dati carichi",
+        "Allena un nuovo modello" if not disable_training else "Richiede dati carichi"
+    ],
+    # index=0 # Pagina iniziale di default
+    # disabled non è un argomento diretto di radio, gestiamo l'accesso dopo
+)
+
+# Logica di navigazione e gestione disabilitazione
 if page == 'Dashboard':
-    st.header('Dashboard Idrologica')
-
-    if df is None or model is None or scaler_features is None or scaler_targets is None:
-        st.warning("Attenzione: Alcuni file necessari non sono stati caricati correttamente. Alcune funzionalità potrebbero non essere disponibili.")
+    if disable_dashboard:
+        st.warning("Funzionalità non disponibile: carica correttamente i dati storici (CSV) e i file del modello (pth, joblib).")
     else:
+        # --- CODICE DASHBOARD ---
+        st.header('Dashboard Idrologica')
+        st.success("Dati e modello caricati correttamente.")
+
         # Mostra ultimi dati disponibili
         st.subheader('Ultimi dati disponibili')
         last_data = df.iloc[-1]
-        last_date = last_data['Data e Ora']
+        last_date = last_data[date_col_name_csv] # Usa il nome corretto della colonna data
 
         # Formattazione dei dati per la visualizzazione
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.write(f"**Data e ora ultimo rilevamento:** {last_date}")
-
-            # Ultimi dati idrologici
-            st.subheader('Livelli idrometrici attuali')
-            hydro_data = []
-            for feature in hydro_features:
-                if feature in target_columns: # Only display target hydro features
-                    hydro_data.append({'Sensore': feature, 'Valore [m]': last_data[feature]})
-            st.dataframe(pd.DataFrame(hydro_data).round(3))
+            st.metric(label="Ultimo Rilevamento", value=last_date.strftime('%d/%m/%Y %H:%M'))
 
         with col2:
-            # Ultimi dati di pioggia
-            st.subheader('Precipitazioni cumulate attuali')
-            rain_data = []
-            for feature in rain_features:
-                rain_data.append({'Sensore': feature, 'Valore [mm]': last_data[feature]})
-            st.dataframe(pd.DataFrame(rain_data).round(2))
+             st.subheader('Livelli idrometrici [m]')
+             # Mostra solo i target columns previsti dal modello
+             hydro_data_display = last_data[target_columns].round(3).to_frame(name="Valore")
+             hydro_data_display.index.name = "Sensore"
+             st.dataframe(hydro_data_display)
+             # Aggiungi eventuali altri idrometri non target, se si vuole
+             other_hydro = [h for h in hydro_features if h not in target_columns]
+             if other_hydro:
+                  st.caption("Altri Idrometri (non previsti dal modello):")
+                  st.dataframe(last_data[other_hydro].round(3).to_frame(name="Valore"))
 
-            # Umidità
-            st.subheader('Umidità attuale')
-            st.write(f"{humidity_feature[0]}: {last_data[humidity_feature[0]]:.1f}%")
+
+        with col3:
+            st.subheader('Precipitazioni Cumulate [mm]')
+            rain_data_display = last_data[rain_features].round(2).to_frame(name="Valore")
+            rain_data_display.index.name = "Sensore Pioggia"
+            st.dataframe(rain_data_display)
+
+            st.subheader('Umidità [%]')
+            # Gestisci caso in cui humidity_feature non sia nei dati
+            if humidity_feature[0] in last_data:
+                st.metric(label=humidity_feature[0], value=f"{last_data[humidity_feature[0]]:.1f}%")
+            else:
+                st.caption("Dato Umidità non disponibile.")
+
 
         # Previsione basata sugli ultimi dati disponibili
-        st.header('Previsione in base agli ultimi dati')
+        st.header('Previsione basata sugli ultimi dati')
 
-        if st.button('Genera previsione'):
-            if model is None or scaler_features is None or scaler_targets is None:
-                st.error("Modello o scaler non caricati correttamente. Impossibile generare la previsione.")
-            else:
-                with st.spinner('Generazione previsione in corso...'):
-                    # Preparazione dei dati di input (ultime INPUT_WINDOW ore)
-                    latest_data = df.iloc[-INPUT_WINDOW:][feature_columns].values
+        if st.button('Genera previsione dagli ultimi dati', type="primary"):
+            with st.spinner('Generazione previsione in corso...'):
+                 # Preparazione dei dati di input (ultime INPUT_WINDOW ore)
+                 # Assicurati di usare le feature_columns corrette
+                 try:
+                      latest_data = df.iloc[-INPUT_WINDOW:][feature_columns].values
+                      if latest_data.shape[0] < INPUT_WINDOW:
+                           st.error(f"Dati insufficienti ({latest_data.shape[0]}) per la finestra di input ({INPUT_WINDOW}). Impossibile prevedere.")
+                      else:
+                           # Previsione
+                           predictions = predict(model, latest_data, scaler_features, scaler_targets, target_columns, device, OUTPUT_WINDOW)
 
-                    # Previsione
-                    predictions = predict(model, latest_data, scaler_features, scaler_targets, target_columns, device, OUTPUT_WINDOW)
+                           if predictions is not None:  # Check if prediction was successful
+                                # Visualizzazione dei risultati
+                                st.subheader(f'Previsione per le prossime {OUTPUT_WINDOW} ore')
 
-                    if predictions is not None:  # Check if prediction was successful
-                        # Visualizzazione dei risultati
-                        st.subheader(f'Previsione per le prossime {OUTPUT_WINDOW} ore')
+                                # Creazione dataframe risultati
+                                start_pred_time = last_date # La previsione inizia dall'ora successiva all'ultimo dato
+                                prediction_times = [start_pred_time + timedelta(hours=i+1) for i in range(OUTPUT_WINDOW)]
+                                results_df = pd.DataFrame(predictions, columns=target_columns)
+                                results_df['Ora previsione'] = prediction_times
+                                # Formatta ora per leggibilità
+                                results_df['Ora previsione'] = results_df['Ora previsione'].dt.strftime('%d/%m %H:%M')
+                                results_df = results_df[['Ora previsione'] + target_columns]
 
-                        # Creazione dataframe risultati
-                        start_time = last_date
-                        prediction_times = [start_time + timedelta(hours=i) for i in range(OUTPUT_WINDOW)]
-                        results_df = pd.DataFrame(predictions, columns=target_columns)
-                        results_df['Ora previsione'] = prediction_times
-                        results_df = results_df[['Ora previsione'] + target_columns]
+                                # Visualizzazione tabella risultati
+                                st.dataframe(results_df.round(3))
 
-                        # Visualizzazione tabella risultati
-                        st.dataframe(results_df.round(3))
+                                # Download dei risultati
+                                st.markdown(get_table_download_link(results_df, filename=f"previsione_{last_date.strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
 
-                        # Download dei risultati
-                        st.markdown(get_table_download_link(results_df), unsafe_allow_html=True)
+                                # Grafici Plotly per ogni sensore target
+                                st.subheader('Grafici delle previsioni')
+                                figs = plot_predictions(predictions, target_columns, OUTPUT_WINDOW, start_pred_time)
 
-                        # Grafici per ogni sensore
-                        st.subheader('Grafici delle previsioni')
-                        figs = plot_predictions(predictions, target_columns, OUTPUT_WINDOW, start_time)
+                                # Visualizzazione grafici
+                                for i, fig in enumerate(figs):
+                                    sensor_name_safe = target_columns[i].replace('[', '').replace(']', '').replace('/', '_').replace(' ', '_')
+                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.markdown(
+                                        get_plotly_download_link(fig, f"grafico_{sensor_name_safe}_{last_date.strftime('%Y%m%d_%H%M')}", text_html="Scarica Grafico Interattivo (HTML)", text_png="Scarica Immagine (PNG)"),
+                                        unsafe_allow_html=True
+                                    )
+                 except Exception as e_pred:
+                      st.error(f"Errore durante la preparazione dei dati o la previsione: {e_pred}")
 
-                        # Visualizzazione grafici
-                        for i, fig in enumerate(figs):
-                            st.pyplot(fig)
-                            sensor_name = target_columns[i].replace(' ', '_').replace('/', '_')
-                            st.markdown(get_image_download_link(fig, f"{sensor_name}.png", f"Scarica il grafico di {target_columns[i]}"), unsafe_allow_html=True)
 
 elif page == 'Simulazione':
-    st.header('Simulazione Idrologica')
-    st.write('Inserisci i valori per simulare uno scenario idrologico')
-
-    if df is None or model is None or scaler_features is None or scaler_targets is None:
-        st.warning("Attenzione: Alcuni file necessari non sono stati caricati correttamente. La simulazione potrebbe non funzionare.")
+    if disable_sim:
+         st.warning("Funzionalità non disponibile: carica correttamente i file del modello (pth, joblib).")
     else:
+        # --- CODICE SIMULAZIONE ---
+        st.header('Simulazione Idrologica')
+        st.write(f'Prepara i dati per le ultime {INPUT_WINDOW} ore per generare una previsione delle prossime {OUTPUT_WINDOW} ore.')
+        st.info(f"Il modello attualmente caricato prevede i seguenti idrometri: {', '.join(target_columns)}")
+
+        # Variabile per contenere i dati finali per la simulazione
+        sim_data_input = None
+
         # Opzioni per la simulazione
         sim_method = st.radio(
-            "Metodo di simulazione",
-            ['Inserisci dati orari', 'Modifica dati recenti', 'Inserisci manualmente tutti i valori', 'Importa da Google Sheet']
+            "Metodo di preparazione dati per la simulazione",
+            ['Inserisci manualmente valori costanti', 'Importa da Google Sheet', 'Inserisci dati orari (Avanzato)'] # Riordinato per semplicità
         )
 
-        if sim_method == 'Inserisci dati orari':
-            st.subheader(f'Inserisci dati per ogni ora ({INPUT_WINDOW} ore precedenti)')
+        # --- SIMULAZIONE: Inserimento Manuale Costante ---
+        if sim_method == 'Inserisci manualmente valori costanti':
+            st.subheader(f'Inserisci valori costanti per le {INPUT_WINDOW} ore precedenti')
+            st.caption("Questi valori verranno ripetuti per tutte le ore della finestra di input.")
 
-            # Creiamo un dataframe vuoto per i dati della simulazione
-            sim_data = np.zeros((INPUT_WINDOW, len(feature_columns)))
+            # Creiamo un dataframe temporaneo per l'inserimento
+            temp_sim_values = {}
 
-            # Opzioni per la compilazione rapida (pioggia e umidità)
-            st.subheader("Strumenti di compilazione rapida")
-            quick_fill_col1, quick_fill_col2 = st.columns(2)
+            cols_manual = st.columns(3)
+            with cols_manual[0]:
+                 st.write("**Pioggia Cumulata (mm)**")
+                 for feature in rain_features:
+                      # Usa la media storica come valore di default se df è disponibile
+                      default_val = df[feature].mean() if df is not None and feature in df else 0.0
+                      temp_sim_values[feature] = st.number_input(f'{feature}', min_value=0.0, max_value=200.0, value=round(default_val,1), step=0.5, format="%.1f")
 
-            with quick_fill_col1:
-                # Opzioni per compilare rapidamente pioggia
-                st.write("Scenario di pioggia")
-                rain_scenario = st.selectbox(
-                    "Seleziona uno scenario predefinito",
-                    ["Nessuna pioggia", "Pioggia leggera", "Pioggia moderata", "Pioggia intensa", "Evento estremo"]
-                )
+            with cols_manual[1]:
+                 st.write("**Umidità (%)**")
+                 for feature in humidity_feature:
+                      default_val = df[feature].mean() if df is not None and feature in df else 70.0
+                      temp_sim_values[feature] = st.number_input(f'{feature}', min_value=0.0, max_value=100.0, value=round(default_val,1), step=1.0, format="%.1f")
 
-                rain_values = {
-                    "Nessuna pioggia": 0.0,
-                    "Pioggia leggera": 2.0,
-                    "Pioggia moderata": 5.0,
-                    "Pioggia intensa": 10.0,
-                    "Evento estremo": 20.0
-                }
+            with cols_manual[2]:
+                 st.write("**Livelli Idrometrici (m)**")
+                 for feature in hydro_features:
+                      default_val = df[feature].mean() if df is not None and feature in df else 0.5
+                      temp_sim_values[feature] = st.number_input(f'{feature}', min_value=-2.0, max_value=15.0, value=round(default_val,2), step=0.05, format="%.2f")
 
-                rain_duration = st.slider("Durata pioggia (ore)", 0, INPUT_WINDOW, 3)
-                rain_start = st.slider("Ora di inizio pioggia", 0, INPUT_WINDOW-1, 0)
+            # Crea l'array numpy per la simulazione replicando i valori
+            sim_data_list = []
+            for feature in feature_columns: # Mantieni l'ordine corretto!
+                 sim_data_list.append(np.repeat(temp_sim_values[feature], INPUT_WINDOW))
+            sim_data_input = np.column_stack(sim_data_list)
 
-                apply_rain = st.button("Applica scenario di pioggia")
-
-            with quick_fill_col2:
-                # Opzioni per compilare rapidamente umidità
-                st.write("Umidità del terreno")
-                humidity_preset = st.selectbox(
-                    "Seleziona condizione di umidità",
-                    ["Molto secco", "Secco", "Normale", "Umido", "Saturo"]
-                )
-
-                humidity_values = {
-                    "Molto secco": 20.0,
-                    "Secco": 40.0,
-                    "Normale": 60.0,
-                    "Umido": 80.0,
-                    "Saturo": 95.0
-                }
-
-                apply_humidity = st.button("Applica umidità")
-
-            # Creiamo tabs per separare i diversi tipi di dati
-            data_tabs = st.tabs(["Cumulate Pioggia", "Umidità", "Idrometri"])
-
-            # Utilizziamo session_state per mantenere i valori tra le interazioni
-            if 'rain_data' not in st.session_state:
-                st.session_state.rain_data = np.zeros((INPUT_WINDOW, len(rain_features)))
-            if 'humidity_data' not in st.session_state:
-                st.session_state.humidity_data = np.zeros((INPUT_WINDOW, len(humidity_feature)))
-            if 'hydro_data' not in st.session_state:
-                st.session_state.hydro_data = np.zeros((INPUT_WINDOW, len(hydro_features)))
-
-            # Riferimenti più corti per maggiore leggibilità
-            rain_data = st.session_state.rain_data
-            humidity_data = st.session_state.humidity_data
-            hydro_data = st.session_state.hydro_data
-
-            # Se l'utente ha cliccato su applica scenario di pioggia
-            if apply_rain:
-                for h in range(rain_duration):
-                    hour_idx = (rain_start + h) % INPUT_WINDOW
-                    if hour_idx < INPUT_WINDOW:
-                        for i in range(len(rain_features)):
-                            rain_data[hour_idx, i] = rain_values[rain_scenario]
-
-            # Se l'utente ha cliccato su applica umidità
-            if apply_humidity:
-                for h in range(INPUT_WINDOW):
-                    humidity_data[h, 0] = humidity_values[humidity_preset]
-
-            # Tab per la pioggia
-            with data_tabs[0]:
-                st.write("Inserisci i valori di pioggia cumulata per ogni ora (mm)")
-
-                # Creiamo un layout a griglia per l'inserimento dei dati orari
-                num_cols = 4  # Adatta se necessario
-                num_rows = math.ceil(INPUT_WINDOW / num_cols)
-
-                for feature_idx, feature in enumerate(rain_features):
-                    st.write(f"### {feature}")
-
-                    for row in range(num_rows):
-                        cols = st.columns(num_cols)
-                        for col in range(num_cols):
-                            hour_idx = row * num_cols + col
-                            if hour_idx < INPUT_WINDOW:
-                                with cols[col]:
-                                    # Creiamo una chiave univoca per ogni input
-                                    input_key = f"rain_{feature_idx}_{hour_idx}"
-
-                                    # Inizializziamo il valore nel session_state se non esiste
-                                    if input_key not in st.session_state:
-                                        st.session_state[input_key] = rain_data[hour_idx, feature_idx]
-
-                                    # Aggiorniamo il valore nel session_state se è stato modificato dallo scenario
-                                    if apply_rain and hour_idx >= rain_start and hour_idx < rain_start + rain_duration:
-                                        st.session_state[input_key] = rain_values[rain_scenario]
-
-                                    # Usiamo il valore dal session_state
-                                    value = st.number_input(
-                                        f"Ora {hour_idx}",
-                                        0.0, 100.0,
-                                        st.session_state[input_key], 0.5,
-                                        key=input_key
-                                    )
-
-                                    # Aggiorniamo l'array con il valore corrente
-                                    rain_data[hour_idx, feature_idx] = value
-
-            # Tab per l'umidità
-            with data_tabs[1]:
-                st.write("Inserisci i valori di umidità per ogni ora (%)")
-
-                for feature_idx, feature in enumerate(humidity_feature):
-                    st.write(f"### {feature}")
-
-                    for row in range(num_rows):
-                        cols = st.columns(num_cols)
-                        for col in range(num_cols):
-                            hour_idx = row * num_cols + col
-                            if hour_idx < INPUT_WINDOW:
-                                with cols[col]:
-                                    # Creiamo una chiave univoca per ogni input
-                                    input_key = f"humidity_{feature_idx}_{hour_idx}"
-
-                                    # Inizializziamo il valore nel session_state se non esiste
-                                    if input_key not in st.session_state:
-                                        st.session_state[input_key] = humidity_data[hour_idx, feature_idx]
-
-                                    # Aggiorniamo il valore nel session_state se è stato modificato dallo scenario
-                                    if apply_humidity:
-                                        st.session_state[input_key] = humidity_values[humidity_preset]
-
-                                    # Usiamo il valore dal session_state
-                                    value = st.number_input(
-                                        f"Ora {hour_idx}",
-                                        0.0, 100.0,
-                                        st.session_state[input_key], 0.5,
-                                        key=input_key
-                                    )
-
-                                    # Aggiorniamo l'array con il valore corrente
-                                    humidity_data[hour_idx, feature_idx] = value
-
-            # Tab per gli idrometri
-            with data_tabs[2]:
-                st.write("Inserisci i livelli idrometrici per ogni ora (m)")
-
-                for feature_idx, feature in enumerate(hydro_features):
-                    st.write(f"### {feature}")
-
-                    # Aggiungiamo un modo per impostare un valore costante
-                    const_col1, const_col2 = st.columns([3, 1])
-
-                    # Chiave univoca per ogni valore costante
-                    const_key = f"const_hydro_{feature_idx}"
-                    if const_key not in st.session_state:
-                        st.session_state[const_key] = 0.0
-
-                    with const_col1:
-                        const_value = st.number_input(
-                            f"Valore costante per {feature}",
-                            -1.0, 10.0,
-                            st.session_state[const_key],
-                            0.01,
-                            key=const_key
-                        )
-
-                    # Creiamo una funzione di callback per applicare il valore costante
-                    def apply_constant_value(feature_idx=feature_idx, value=const_value):
-                        for h in range(INPUT_WINDOW):
-                            st.session_state.hydro_data[h, feature_idx] = value
-                            input_key = f"hydro_{feature_idx}_{h}" # Generate input key
-                            st.session_state[input_key] = value # Update input widget session state
-
-                    with const_col2:
-                        if st.button(f"Applica a tutte le ore", key=f"apply_const_hydro_{feature_idx}", on_click=apply_constant_value):
-                            pass # Callback già gestisce l'aggiornamento
-
-                    for row in range(num_rows):
-                        cols = st.columns(num_cols)
-                        for col in range(num_cols):
-                            hour_idx = row * num_cols + col
-                            if hour_idx < INPUT_WINDOW:
-                                with cols[col]:
-                                    # Creiamo una chiave univoca per ogni input
-                                    input_key = f"hydro_{feature_idx}_{hour_idx}"
-
-                                    # Inizializziamo il valore nel session_state se non esiste
-                                    if input_key not in st.session_state:
-                                        st.session_state[input_key] = hydro_data[hour_idx, feature_idx]
-
-                                    # Usiamo il valore dal session_state
-                                    value = st.number_input(
-                                        f"Ora {hour_idx}",
-                                        -1.0, 10.0,
-                                        st.session_state[input_key], 0.01,
-                                        key=input_key
-                                    )
-
-                                    # Aggiorniamo l'array con il valore corrente
-                                    hydro_data[hour_idx, feature_idx] = value
-
-            # Componiamo i dati per la simulazione
-            rain_offset = 0
-            humidity_offset = len(rain_features)
-            hydro_offset = humidity_offset + len(humidity_feature)
-
-            for h in range(INPUT_WINDOW):
-                # Copiamo i dati di pioggia
-                for i in range(len(rain_features)):
-                    sim_data[h, rain_offset + i] = rain_data[h, i]
-
-                # Copiamo i dati di umidità
-                for i in range(len(humidity_feature)):
-                    sim_data[h, humidity_offset + i] = humidity_data[h, i]
-
-                # Copiamo i dati degli idrometri
-                for i in range(len(hydro_features)):
-                    sim_data[h, hydro_offset + i] = hydro_data[h, i]
-
-            # Visualizziamo un'anteprima dei dati
-            st.subheader("Anteprima dei dati inseriti")
-            preview_df = pd.DataFrame(sim_data, columns=feature_columns)
-            preview_df.index = [f"Ora {i}" for i in range(INPUT_WINDOW)]
+            st.subheader("Anteprima Dati (valori costanti)")
+            preview_df = pd.DataFrame([temp_sim_values[col] for col in feature_columns], index=feature_columns, columns=['Valore Costante'])
             st.dataframe(preview_df.round(2))
 
-        elif sim_method == 'Importa da Google Sheet':
-            st.subheader('Importa dati dal foglio Google "Dati Meteo Stazioni"')
 
-            # Informazioni di connessione al Google Sheet
+        # --- SIMULAZIONE: Importa da Google Sheet ---
+        elif sim_method == 'Importa da Google Sheet':
+            st.subheader(f'Importa le ultime {INPUT_WINDOW} ore dal foglio Google')
+            st.markdown("""
+            Assicurati che:
+            1.  Il foglio Google sia accessibile dall'account di servizio le cui credenziali sono nei secrets di Streamlit (`GOOGLE_CREDENTIALS`).
+            2.  L'URL fornito sia corretto.
+            3.  Il foglio contenga le colonne mappate qui sotto con dati numerici (o 'N/A'). La virgola come decimale è gestita.
+            4.  La colonna data/ora sia nel formato `GG/MM/AAAA HH:MM`.
+            5.  Ci siano almeno `INPUT_WINDOW` righe di dati validi e recenti.
+            """)
+
+            # Input URL foglio
             sheet_url = st.text_input(
                 "URL del foglio Google Sheet",
-                "https://docs.google.com/spreadsheets/d/your-google-sheet-id/edit"
+                "https://docs.google.com/spreadsheets/d/your-google-sheet-id/edit#gid=0" # Esempio
             )
 
-            # Mappatura tra i nomi delle colonne del foglio e i nomi attesi dal modello
-            column_mapping = {
-                'Data_Ora': 'Data e Ora',
+            # Mappatura tra i nomi delle colonne del foglio e i nomi attesi dal MODELLO (feature_columns)
+            # Modifica questa mappatura SE i nomi nel tuo foglio Google sono DIVERSI
+            column_mapping_gsheet_to_model = {
+                # NOME_COLONNA_FOGLIO_GOOGLE : NOME_COLONNA_MODELLO (da feature_columns)
+                'Data_Ora': 'Data e Ora', # Nome colonna data nel foglio -> Nome colonna data usato internamente (non è una feature)
                 'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
                 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
                 'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
-                'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
+                'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)', # Associazione Misa -> Bettolelle
                 'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
                 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
                 'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
-                'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
+                'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)', # Associazione Misa -> Bettolelle
                 'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
+                # AGGIUNGI QUI ALTRE EVENTUALI MAPPATURE SE NECESSARIO
             }
 
-            # Funzione per estrarre l'ID del foglio dall'URL
-            def extract_sheet_id(url):
-                if '/d/' in url and '/edit' in url:
-                    sheet_id = url.split('/d/')[1].split('/edit')[0]
-                    return sheet_id
-                return None
+            # Verifica se la colonna Umidità è nel mapping, altrimenti chiedila manualmente
+            humidity_col_in_model = humidity_feature[0]
+            humidity_col_in_gsheet = None
+            for gsheet_name, model_name in column_mapping_gsheet_to_model.items():
+                 if model_name == humidity_col_in_model:
+                      humidity_col_in_gsheet = gsheet_name
+                      break # Trovata
 
-            # Funzione per importare i dati dal foglio Google
-            def import_data_from_sheet(sheet_id):
-                try:
-                    # Utilizzo di gspread per accedere al foglio
-                    # Nota: richiede configurazione di credenziali
-                    import gspread
-                    from google.oauth2.service_account import Credentials
+            selected_humidity_gsheet = None
+            if humidity_col_in_gsheet:
+                 st.info(f"La colonna Umidità '{humidity_col_in_model}' verrà letta dalla colonna '{humidity_col_in_gsheet}' del foglio Google.")
+            else:
+                 st.warning(f"La colonna Umidità '{humidity_col_in_model}' non è stata trovata nel mapping del foglio Google.")
+                 # Valore di umidità manuale
+                 humidity_preset_gsheet = st.selectbox(
+                     "Seleziona condizione di umidità del terreno (verrà usata per tutte le ore importate)",
+                     ["Molto secco (20%)", "Secco (40%)", "Normale (60%)", "Umido (80%)", "Saturo (95%)"], index=2
+                 )
+                 # Estrai valore numerico dal preset
+                 selected_humidity_gsheet = float(humidity_preset_gsheet.split('(')[1].split('%')[0])
+                 st.info(f"Verrà usato un valore costante di {selected_humidity_gsheet}% per l'umidità.")
 
-                    # **MODIFICA IMPORTANTE: Carica le credenziali da Streamlit Secrets**
-                    credentials = Credentials.from_service_account_info(
-                        st.secrets["GOOGLE_CREDENTIALS"], scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-                    )
-                    gc = gspread.authorize(credentials)
 
-                    # Apri il foglio per ID
-                    sh = gc.open_by_key(sheet_id)
-                    worksheet = sh.sheet1  # Primo foglio
-
-                    # Ottieni tutte le righe, inclusa l'intestazione
-                    data = worksheet.get_all_values()
-
-                    # Crea un DataFrame pandas
-                    headers = data[0]
-                    rows = data[1:]
-                    df_sheet = pd.DataFrame(rows, columns=headers)
-
-                    # Converte la colonna di data in datetime
-                    df_sheet['Data_Ora'] = pd.to_datetime(df_sheet['Data_Ora'], errors='coerce')
-
-                    # Ordina per data e prendi le ultime 24 ore (INPUT_WINDOW righe)
-                    df_sheet = df_sheet.sort_values('Data_Ora').tail(INPUT_WINDOW)
-
-                    # Converti le colonne numeriche
-                    for col in df_sheet.columns:
-                        if col != 'Data_Ora':
-                            df_sheet[col] = pd.to_numeric(df_sheet[col], errors='coerce')
-
-                    return df_sheet
-
-                except Exception as e:
-                    st.error(f"Errore durante l'importazione dei dati: {str(e)}")
-                    return None
-
-            # Valore di umidità manuale (poiché non è presente nel foglio)
-            humidity_preset = st.selectbox(
-                "Seleziona condizione di umidità del terreno",
-                ["Molto secco", "Secco", "Normale", "Umido", "Saturo"]
-            )
-
-            humidity_values = {
-                "Molto secco": 20.0,
-                "Secco": 40.0,
-                "Normale": 60.0,
-                "Umido": 80.0,
-                "Saturo": 95.0
-            }
-
-            selected_humidity = humidity_values[humidity_preset]
+            # Nomi delle colonne attese nel foglio Google (chiavi del mapping)
+            expected_google_sheet_cols = list(column_mapping_gsheet_to_model.keys())
+            date_col_name_gsheet = 'Data_Ora' # Nome colonna data nel foglio Google
 
             # Bottone per importare i dati
-            if st.button("Importa dati dal foglio"):
-                sheet_id = extract_sheet_id(sheet_url)
+            if st.button("Importa e Prepara dati dal foglio Google"):
+                 sheet_id = extract_sheet_id(sheet_url) # Usa la funzione per estrarre l'ID
 
-                if not sheet_id:
-                    st.error("URL del foglio non valido. Assicurati che sia nel formato corretto.")
-                else:
-                    with st.spinner("Importazione dati in corso..."):
-                        sheet_data = import_data_from_sheet(sheet_id)
+                 if not sheet_id:
+                     st.error("URL del foglio Google non valido o ID non estraibile. Assicurati che sia nel formato corretto (es. .../d/SHEET_ID/edit...).")
+                 else:
+                     st.info(f"Tentativo di connessione al foglio con ID: {sheet_id}")
+                     with st.spinner("Importazione e pulizia dati da Google Sheet in corso..."):
+                         # Importa e pulisci i dati usando la funzione aggiornata
+                         sheet_data_cleaned = import_data_from_sheet(
+                             sheet_id,
+                             expected_google_sheet_cols,
+                             date_col_name=date_col_name_gsheet,
+                             date_format='%d/%m/%Y %H:%M' # Formato atteso
+                         )
 
-                        if sheet_data is not None and not sheet_data.empty:
-                            # Creiamo un dataframe con la mappatura corretta delle colonne
-                            mapped_data = pd.DataFrame()
+                         if sheet_data_cleaned is not None:
+                             # Mappatura dei nomi delle colonne da GSheet a quelli del modello
+                             mapped_data = pd.DataFrame()
+                             successful_mapping = True
+                             for gsheet_col, model_col in column_mapping_gsheet_to_model.items():
+                                 if gsheet_col in sheet_data_cleaned.columns:
+                                     # Rinomina la colonna dal nome GSheet al nome atteso dal modello
+                                     mapped_data[model_col] = sheet_data_cleaned[gsheet_col]
+                                 else:
+                                      # Questo non dovrebbe succedere se import_data_from_sheet funziona
+                                      st.error(f"Errore interno: la colonna '{gsheet_col}' non è presente nei dati puliti.")
+                                      successful_mapping = False
+                                      break
 
-                            # Mappiamo la colonna della data
-                            mapped_data[column_mapping.get('Data_Ora', 'Data e Ora')] = sheet_data['Data_Ora']
-
-                            # Mappiamo le altre colonne
-                            for sheet_col, model_col in column_mapping.items():
-                                if sheet_col != 'Data_Ora' and sheet_col in sheet_data.columns:
-                                    mapped_data[model_col] = sheet_data[sheet_col]
-
-                            # Aggiungiamo la colonna di umidità (valore costante scelto dall'utente)
-                            mapped_data[humidity_feature[0]] = selected_humidity
-
-                            # Salviamo i dati nel session_state per poterli usare nella simulazione
-                            st.session_state.imported_data = mapped_data
-
-                            # Visualizziamo i dati importati
-                            st.subheader("Dati importati dal foglio Google")
-                            st.dataframe(mapped_data)
-
-                            # Prepariamo i dati per la simulazione
-                            sim_data = mapped_data[feature_columns].values
-
-                            # Visualizziamo un'anteprima dei dati
-                            st.subheader("Anteprima dei dati per la simulazione")
-                            preview_df = pd.DataFrame(sim_data, columns=feature_columns)
-                            preview_df.index = [f"Ora {i}" for i in range(len(sim_data))]
-                            st.dataframe(preview_df.round(2))
-
-                            # Avviso di procedere con la simulazione
-                            st.success("Dati importati con successo! Clicca su 'Esegui simulazione' per procedere.")
-                        else:
-                            st.error("Non è stato possibile importare i dati dal foglio Google.")
-
-            # Se ci sono dati importati, mostriamo l'anteprima
-            if 'imported_data' in st.session_state:
-                st.subheader("Dati pronti per la simulazione")
-                st.dataframe(st.session_state.imported_data)
-
-                # Prepariamo i dati per la simulazione
-                sim_data = st.session_state.imported_data[feature_columns].values
+                             if successful_mapping:
+                                  # Aggiungi la colonna di umidità se non era nel foglio
+                                  if humidity_col_in_model not in mapped_data.columns and selected_humidity_gsheet is not None:
+                                       mapped_data[humidity_col_in_model] = selected_humidity_gsheet
+                                       st.info(f"Aggiunta colonna umidità '{humidity_col_in_model}' con valore costante {selected_humidity_gsheet}%.")
+                                  elif humidity_col_in_model not in mapped_data.columns and selected_humidity_gsheet is None:
+                                       st.error(f"Errore: la colonna umidità '{humidity_col_in_model}' non è nel foglio e non è stato fornito un valore manuale.")
+                                       successful_mapping = False
 
 
-        else:  # Inserimento manuale completo
-            st.subheader('Inserisci valori per ogni parametro')
+                             if successful_mapping:
+                                  # Verifica finale se tutte le feature_columns sono presenti in mapped_data
+                                  missing_model_features = [col for col in feature_columns if col not in mapped_data.columns]
+                                  if missing_model_features:
+                                       st.error(f"Errore dopo la mappatura: mancano le seguenti colonne richieste dal modello: {', '.join(missing_model_features)}")
+                                  else:
+                                       # Riordina le colonne secondo feature_columns per sicurezza
+                                       sim_data_input = mapped_data[feature_columns].values
 
-            # Creiamo un dataframe vuoto per i dati della simulazione
-            sim_data = np.zeros((INPUT_WINDOW, len(feature_columns)))
+                                       # Salva in session state per evitare ricaricamenti
+                                       st.session_state.imported_sim_data = sim_data_input
+                                       st.session_state.imported_sim_df_preview = mapped_data # Salva anche il df per preview
 
-            # Raggruppiamo i controlli per tipo di sensore
-            with st.expander("Imposta valori di pioggia cumulata"):
-                for i, feature in enumerate(rain_features):
-                    value = st.number_input(f'{feature} (mm)', 0.0, 100.0, 0.0, 0.5)
-                    sim_data[:, i] = value
+                                       st.success(f"Dati importati e mappati con successo ({sim_data_input.shape[0]} righe). Premi 'Esegui simulazione'.")
 
-            with st.expander("Imposta valore di umidità"):
-                value = st.number_input(f'{humidity_feature[0]} (%)', 0.0, 100.0, 50.0, 0.5)
-                sim_data[:, len(rain_features)] = value
+                         # Se sheet_data_cleaned è None, l'errore è già stato mostrato dalla funzione
 
-            with st.expander("Imposta livelli idrometrici"):
-                offset = len(rain_features) + len(humidity_feature)
-                for i, feature in enumerate(hydro_features):
-                    value = st.number_input(f'{feature} (m)', -1.0, 10.0, 0.0, 0.01)
-                    sim_data[:, offset + i] = value
+            # Mostra anteprima se i dati sono stati importati con successo
+            if 'imported_sim_data' in st.session_state and 'imported_sim_df_preview' in st.session_state:
+                 st.subheader("Anteprima dei dati importati e mappati (ultime righe)")
+                 # Mostra solo le colonne feature nell'ordine corretto + data
+                 preview_cols = [column_mapping_gsheet_to_model.get(date_col_name_gsheet, date_col_name_gsheet)] + feature_columns
+                 # Filtra colonne esistenti nel dataframe di preview
+                 preview_cols = [col for col in preview_cols if col in st.session_state.imported_sim_df_preview.columns]
+                 st.dataframe(st.session_state.imported_sim_df_preview[preview_cols].tail().round(3))
+                 sim_data_input = st.session_state.imported_sim_data # Recupera i dati numpy per la simulazione
 
-        # Bottone per eseguire la simulazione
-        if st.button('Esegui simulazione', type="primary"):
-            if model is None or scaler_features is None or scaler_targets is None:
-                st.error("Modello o scaler non caricati correttamente. Impossibile eseguire la simulazione.")
+
+        # --- SIMULAZIONE: Inserimento Orario Dettagliato ---
+        elif sim_method == 'Inserisci dati orari (Avanzato)':
+            st.subheader(f'Inserisci dati specifici per ogni ora ({INPUT_WINDOW} ore precedenti)')
+            st.warning("Questo metodo richiede l'inserimento manuale di molti valori.")
+
+            # Inizializza/recupera i dati della simulazione da session_state
+            if 'sim_hourly_data' not in st.session_state:
+                 # Inizializza con valori medi o zero se df non disponibile
+                 init_values = {}
+                 for col in feature_columns:
+                      init_values[col] = df[col].mean() if df is not None and col in df else 0.0
+                 # Crea un dataframe con valori iniziali ripetuti
+                 st.session_state.sim_hourly_data = pd.DataFrame(
+                     np.repeat([list(init_values.values())], INPUT_WINDOW, axis=0),
+                     columns=feature_columns,
+                     index=[f"Ora T-{INPUT_WINDOW-i}" for i in range(INPUT_WINDOW)]
+                 )
             else:
-                with st.spinner('Simulazione in corso...'):
-                    # Previsione
-                    predictions = predict(model, sim_data, scaler_features, scaler_targets, target_columns, device, OUTPUT_WINDOW)
+                 # Assicurati che abbia la dimensione corretta se cambia INPUT_WINDOW
+                 if len(st.session_state.sim_hourly_data) != INPUT_WINDOW:
+                      del st.session_state.sim_hourly_data # Resetta se la dimensione è cambiata
+                      # Riprova a inizializzare
+                      init_values = {}
+                      for col in feature_columns:
+                           init_values[col] = df[col].mean() if df is not None and col in df else 0.0
+                      st.session_state.sim_hourly_data = pd.DataFrame(
+                          np.repeat([list(init_values.values())], INPUT_WINDOW, axis=0),
+                          columns=feature_columns,
+                          index=[f"Ora T-{INPUT_WINDOW-i}" for i in range(INPUT_WINDOW)]
+                      )
 
-                    if predictions is not None:  # Check if prediction was successful
-                        # Visualizzazione dei risultati
-                        st.subheader(f'Previsione per le prossime {OUTPUT_WINDOW} ore')
 
-                        # Creazione dataframe risultati
-                        current_time = datetime.now()
-                        prediction_times = [current_time + timedelta(hours=i) for i in range(OUTPUT_WINDOW)]
-                        results_df = pd.DataFrame(predictions, columns=target_columns)
-                        results_df['Ora previsione'] = prediction_times
-                        results_df = results_df[['Ora previsione'] + target_columns]
+            # Usa st.data_editor per un inserimento tabellare
+            st.caption(f"Modifica direttamente la tabella sottostante. Le colonne sono le features richieste dal modello. Le righe rappresentano le {INPUT_WINDOW} ore che precedono la simulazione (T-{INPUT_WINDOW} è la più vecchia).")
 
-                        # Visualizzazione tabella risultati
-                        st.dataframe(results_df.round(3))
+            edited_df = st.data_editor(
+                st.session_state.sim_hourly_data,
+                num_rows="dynamic", # Permette aggiunta/rimozione righe (anche se dovremmo limitarlo a INPUT_WINDOW)
+                use_container_width=True,
+                # Configura colonne per tipo numerico e limiti (opzionale ma utile)
+                column_config={
+                    col: st.column_config.NumberColumn(format="%.2f") for col in feature_columns
+                    # Aggiungi limiti specifici se necessario, es:
+                    # rain_features[0]: st.column_config.NumberColumn(min_value=0, max_value=200, format="%.1f"),
+                    # humidity_feature[0]: st.column_config.NumberColumn(min_value=0, max_value=100, format="%.1f"),
+                }
+            )
 
-                        # Download dei risultati
-                        st.markdown(get_table_download_link(results_df), unsafe_allow_html=True)
+            # Verifica se il numero di righe è corretto dopo l'editing
+            if len(edited_df) != INPUT_WINDOW:
+                 st.warning(f"Attenzione: la tabella contiene {len(edited_df)} righe, ma ne sono richieste {INPUT_WINDOW}. Verranno usate le ultime {INPUT_WINDOW} righe se ce ne sono di più, o verrà generato un errore se sono meno.")
+                 if len(edited_df) > INPUT_WINDOW:
+                      edited_df = edited_df.iloc[-INPUT_WINDOW:]
+                 elif len(edited_df) < INPUT_WINDOW:
+                      st.error(f"Numero di righe insufficiente ({len(edited_df)}). Inserisci esattamente {INPUT_WINDOW} righe.")
+                      # Non procedere con la simulazione
+                      edited_df = None # Invalida
 
-                        # Grafici per ogni sensore
-                        st.subheader('Grafici delle previsioni')
+            if edited_df is not None:
+                 # Assicurati che le colonne siano nell'ordine corretto
+                 try:
+                      sim_data_input = edited_df[feature_columns].values
+                      st.session_state.sim_hourly_data = edited_df # Salva modifiche
+                      st.success("Dati orari pronti per la simulazione.")
+                 except KeyError as ke:
+                      st.error(f"Errore: colonna mancante dopo l'editing: {ke}. Assicurati che tutte le colonne {feature_columns} siano presenti.")
+                      sim_data_input = None # Invalida
 
-                        # Mostra sia i dati inseriti che le previsioni
-                        for i, feature in enumerate(target_columns):
-                            fig, ax = plt.subplots(figsize=(10, 6))
 
-                            # Indice per i dati degli idrometri nel sim_data
-                            hydro_idx = len(rain_features) + len(humidity_feature) + i
 
-                            # Simulazione di datestamp per i dati di input
-                            input_times = [current_time - timedelta(hours=INPUT_WINDOW-j) for j in range(INPUT_WINDOW)]
+        # --- ESECUZIONE DELLA SIMULAZIONE ---
+        st.divider()
+        run_simulation = st.button('Esegui simulazione', type="primary", disabled=(sim_data_input is None))
 
-                            # Dati storici (input)
-                            ax.plot(input_times, sim_data[:, hydro_idx], 'b-', label='Dati inseriti')
+        if run_simulation and sim_data_input is not None:
+             # Verifica finale dimensioni prima di chiamare predict
+             if sim_data_input.shape[0] != INPUT_WINDOW or sim_data_input.shape[1] != len(feature_columns):
+                  st.error(f"Errore dimensionale nei dati di input per la simulazione. Atteso: ({INPUT_WINDOW}, {len(feature_columns)}), Ottenuto: {sim_data_input.shape}")
+             else:
+                  st.info(f"Esecuzione previsione con dati di input shape: {sim_data_input.shape}")
+                  with st.spinner('Simulazione in corso...'):
+                       # Previsione
+                       predictions_sim = predict(model, sim_data_input, scaler_features, scaler_targets, target_columns, device, OUTPUT_WINDOW)
 
-                            # Dati previsti (output)
-                            ax.plot(prediction_times, predictions[:, i], 'r-', label='Previsione')
+                       if predictions_sim is not None:
+                           # Visualizzazione dei risultati
+                           st.subheader(f'Risultato Simulazione: Previsione per le prossime {OUTPUT_WINDOW} ore')
 
-                            # Linea verticale per separare dati storici e previsione
-                            ax.axvline(x=current_time, color='black', linestyle='--')
-                            ax.annotate('Ora attuale', (current_time, ax.get_ylim()[0]),
-                                        xytext=(10, 10), textcoords='offset points')
+                           # Creazione dataframe risultati
+                           current_time_sim = datetime.now() # Ora di esecuzione simulazione
+                           prediction_times_sim = [current_time_sim + timedelta(hours=i+1) for i in range(OUTPUT_WINDOW)]
+                           results_df_sim = pd.DataFrame(predictions_sim, columns=target_columns)
+                           results_df_sim['Ora previsione'] = prediction_times_sim
+                           # Formatta ora
+                           results_df_sim['Ora previsione'] = results_df_sim['Ora previsione'].dt.strftime('%d/%m %H:%M')
+                           results_df_sim = results_df_sim[['Ora previsione'] + target_columns]
 
-                            ax.set_title(f'Idrometro: {feature}')
-                            ax.set_xlabel('Data/Ora')
-                            ax.set_ylabel('Livello (m)')
-                            ax.legend()
-                            ax.grid(True)
 
-                            # Formattazione delle date sull'asse x
-                            plt.xticks(rotation=45)
-                            plt.tight_layout()
+                           # Visualizzazione tabella risultati
+                           st.dataframe(results_df_sim.round(3))
 
-                            st.pyplot(fig)
-                            sensor_name = feature.replace(' ', '_').replace('/', '_')
-                            st.markdown(get_image_download_link(fig, f"sim_{sensor_name}.png", f"Scarica il grafico di {feature}"), unsafe_allow_html=True)
+                           # Download dei risultati
+                           st.markdown(get_table_download_link(results_df_sim, filename=f"simulazione_{current_time_sim.strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
+
+                           # Grafici Plotly per ogni sensore target
+                           st.subheader('Grafici delle previsioni simulate')
+                           figs_sim = plot_predictions(predictions_sim, target_columns, OUTPUT_WINDOW, current_time_sim)
+
+                           for i, fig_sim in enumerate(figs_sim):
+                               sensor_name_sim_safe = target_columns[i].replace('[', '').replace(']', '').replace('/', '_').replace(' ', '_')
+                               st.plotly_chart(fig_sim, use_container_width=True)
+                               st.markdown(
+                                   get_plotly_download_link(fig_sim, f"grafico_sim_{sensor_name_sim_safe}_{current_time_sim.strftime('%Y%m%d_%H%M')}", text_html="Scarica Grafico Interattivo (HTML)", text_png="Scarica Immagine (PNG)"),
+                                   unsafe_allow_html=True
+                               )
+        elif run_simulation and sim_data_input is None:
+             st.error("Dati di input per la simulazione non pronti o non validi. Completa la preparazione dei dati.")
+
 
 elif page == 'Analisi Dati Storici':
-    st.header('Analisi Dati Storici')
-
-    if df is None:
-        st.warning("Non sono stati caricati dati storici. Carica un file CSV per procedere.")
+    if disable_analysis:
+         st.warning("Funzionalità non disponibile: carica correttamente i dati storici (CSV).")
     else:
+        # --- CODICE ANALISI DATI ---
+        st.header('Analisi Dati Storici')
+        st.info(f"Dataset caricato: {len(df)} righe, dal {df[date_col_name_csv].min().strftime('%d/%m/%Y')} al {df[date_col_name_csv].max().strftime('%d/%m/%Y')}")
+
         # Selezione del range temporale
         st.subheader('Seleziona il periodo di analisi')
 
         # Otteniamo il range di date disponibili
-        min_date = df['Data e Ora'].min()
-        max_date = df['Data e Ora'].max()
+        min_date = df[date_col_name_csv].min().date() # Prendi solo la data
+        max_date = df[date_col_name_csv].max().date()
 
-        # Conversione in formato datetime per il selezione
-        min_date_input = min_date.to_pydatetime()
-        max_date_input = max_date.to_pydatetime()
-
-        # Selezione del range di date
         col1, col2 = st.columns(2)
         with col1:
-            start_date = st.date_input('Data inizio', min_date_input, min_value=min_date_input, max_value=max_date_input)
+            start_date = st.date_input('Data inizio', min_date, min_value=min_date, max_value=max_date)
         with col2:
-            end_date = st.date_input('Data fine', max_date_input, min_value=min_date_input, max_value=max_date_input)
+            end_date = st.date_input('Data fine', max_date, min_value=min_date, max_value=max_date)
 
-        # Filtraggio dei dati in base al range selezionato
-        mask = (df['Data e Ora'].dt.date >= start_date) & (df['Data e Ora'].dt.date <= end_date)
-        filtered_df = df.loc[mask]
-
-        if len(filtered_df) == 0:
-            st.warning("Nessun dato trovato nel periodo selezionato.")
+        # Validazione range date
+        if start_date > end_date:
+             st.error("La data di inizio non può essere successiva alla data di fine.")
         else:
-            st.success(f"Trovati {len(filtered_df)} dati nel periodo selezionato.")
+             # Filtraggio dei dati in base al range selezionato (considera l'intera giornata)
+             mask = (df[date_col_name_csv].dt.date >= start_date) & (df[date_col_name_csv].dt.date <= end_date)
+             filtered_df = df.loc[mask]
 
-            # Analisi statistica
-            st.subheader('Analisi statistica')
+             if len(filtered_df) == 0:
+                 st.warning("Nessun dato trovato nel periodo selezionato.")
+             else:
+                 st.success(f"Trovati {len(filtered_df)} record nel periodo dal {start_date.strftime('%d/%m/%Y')} al {end_date.strftime('%d/%m/%Y')}.")
 
-            # Selezione della feature da analizzare
-            feature_to_analyze = st.selectbox(
-                'Seleziona la feature da analizzare',
-                feature_columns
-            )
+                 tab1, tab2, tab3 = st.tabs(["Andamento Temporale", "Statistiche e Distribuzione", "Correlazione"])
 
-            # Statistiche descrittive
-            stats = filtered_df[feature_to_analyze].describe()
-            stats_df = pd.DataFrame(stats).transpose()
-            st.dataframe(stats_df.round(3))
+                 with tab1:
+                     st.subheader('Andamento temporale')
+                     # Selezione multipla delle feature da plottare
+                     features_to_plot = st.multiselect(
+                         'Seleziona una o più features da visualizzare',
+                         feature_columns, # Usa tutte le colonne numeriche disponibili
+                         default=target_columns[:1] if target_columns else feature_columns[:1] # Default al primo target o prima feature
+                     )
 
-            # Visualizzazione dell'andamento temporale
-            st.subheader('Andamento temporale')
+                     if features_to_plot:
+                          # Crea grafico Plotly interattivo
+                          fig_time = go.Figure()
+                          for feature in features_to_plot:
+                               fig_time.add_trace(go.Scatter(x=filtered_df[date_col_name_csv], y=filtered_df[feature], mode='lines', name=feature))
 
-            fig, ax = plt.subplots(figsize=(12, 6))
-            ax.plot(filtered_df['Data e Ora'], filtered_df[feature_to_analyze])
-            ax.set_title(f'Andamento temporale di {feature_to_analyze}')
-            ax.set_xlabel('Data e Ora')
-            ax.set_ylabel(feature_to_analyze)
-            ax.grid(True)
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            st.pyplot(fig)
+                          fig_time.update_layout(
+                               title='Andamento Temporale Features Selezionate',
+                               xaxis_title='Data e Ora',
+                               yaxis_title='Valore',
+                               height=500,
+                               hovermode="x unified"
+                          )
+                          st.plotly_chart(fig_time, use_container_width=True)
+                     else:
+                          st.info("Seleziona almeno una feature da visualizzare.")
 
-            # Analisi di correlazione
-            st.subheader('Analisi di correlazione')
+                 with tab2:
+                     st.subheader('Statistiche descrittive e Distribuzione')
 
-            # Selezione delle features per la correlazione
-            corr_features = st.multiselect(
-                'Seleziona le features per la correlazione',
-                feature_columns,
-                default=[hydro_features[0], rain_features[0], humidity_feature[0]]
-            )
+                     # Selezione della feature da analizzare
+                     feature_to_analyze_stat = st.selectbox(
+                         'Seleziona la feature per statistiche e distribuzione',
+                         feature_columns,
+                         index = feature_columns.index(target_columns[0]) if target_columns else 0 # Default al primo target
+                     )
 
-            if len(corr_features) > 1:
-                # Calcolo della matrice di correlazione
-                corr_matrix = filtered_df[corr_features].corr()
+                     # Statistiche descrittive
+                     st.write(f"**Statistiche per '{feature_to_analyze_stat}'**")
+                     stats = filtered_df[feature_to_analyze_stat].describe()
+                     stats_df = pd.DataFrame(stats).transpose()
+                     # Rinomina indici per chiarezza
+                     stats_df.rename(index={'count': 'Numero Valori', 'mean': 'Media', 'std': 'Dev. Standard', 'min': 'Minimo', '25%': '1° Quartile', '50%': 'Mediana', '75%': '3° Quartile', 'max': 'Massimo'}, inplace=True)
+                     st.dataframe(stats_df.round(3))
 
-                # Visualizzazione della heatmap
-                fig, ax = plt.subplots(figsize=(10, 8))
-                sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', ax=ax)
-                ax.set_title('Matrice di correlazione')
-                plt.tight_layout()
-                st.pyplot(fig)
+                     # Istogramma della distribuzione (Plotly)
+                     st.write(f"**Distribuzione di '{feature_to_analyze_stat}'**")
+                     fig_hist = go.Figure()
+                     fig_hist.add_trace(go.Histogram(x=filtered_df[feature_to_analyze_stat], name='Distribuzione'))
 
-                # Scatterplot per coppie di features
-                if len(corr_features) == 2:
-                    st.subheader('Scatterplot')
+                     # Aggiungi linea della media
+                     mean_val = filtered_df[feature_to_analyze_stat].mean()
+                     fig_hist.add_vline(x=mean_val, line_dash="dash", line_color="red", annotation_text=f"Media: {mean_val:.2f}")
 
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    ax.scatter(filtered_df[corr_features[0]], filtered_df[corr_features[1]], alpha=0.5)
-                    ax.set_title(f'Scatterplot: {corr_features[0]} vs {corr_features[1]}')
-                    ax.set_xlabel(corr_features[0])
-                    ax.set_ylabel(corr_features[1])
-                    ax.grid(True)
-                    plt.tight_layout()
-                    st.pyplot(fig)
-            else:
-                st.info("Seleziona almeno due features per l'analisi di correlazione.")
+                     fig_hist.update_layout(
+                          title=f'Distribuzione Valori per {feature_to_analyze_stat}',
+                          xaxis_title='Valore',
+                          yaxis_title='Frequenza (Conteggio)',
+                          height=400
+                     )
+                     st.plotly_chart(fig_hist, use_container_width=True)
 
-            # Distribuzione dei valori
-            st.subheader('Distribuzione dei valori')
 
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.histplot(filtered_df[feature_to_analyze], kde=True, ax=ax)
-            ax.set_title(f'Distribuzione di {feature_to_analyze}')
-            ax.set_xlabel(feature_to_analyze)
-            ax.set_ylabel('Frequenza')
-            ax.grid(True)
-            plt.tight_layout()
-            st.pyplot(fig)
+                 with tab3:
+                     st.subheader('Analisi di correlazione')
+                     st.write("Mostra la correlazione lineare (di Pearson) tra le features selezionate.")
+                     # Selezione delle features per la correlazione
+                     corr_features_select = st.multiselect(
+                         'Seleziona le features per la matrice di correlazione',
+                         feature_columns,
+                         default=target_columns + rain_features[:1] if target_columns else feature_columns[:min(5, len(feature_columns))] # Default: targets + 1 pioggia o prime 5
+                     )
 
-            # Download dei dati filtrati
-            st.subheader('Download dei dati')
-            st.markdown(get_table_download_link(filtered_df, "dati_filtrati.csv"), unsafe_allow_html=True)
+                     if len(corr_features_select) > 1:
+                         # Calcolo della matrice di correlazione
+                         corr_matrix = filtered_df[corr_features_select].corr()
+
+                         # Visualizzazione della heatmap (Plotly)
+                         fig_heatmap = go.Figure(data=go.Heatmap(
+                             z=corr_matrix.values,
+                             x=corr_matrix.columns,
+                             y=corr_matrix.columns,
+                             colorscale='RdBu', # Scala di colori Rosso-Blu
+                             zmin=-1, zmax=1,  # Forza range da -1 a 1
+                             text=corr_matrix.round(2).values, # Mostra valori sulla heatmap
+                             texttemplate="%{text}",
+                             hoverongaps = False))
+
+                         fig_heatmap.update_layout(
+                              title='Matrice di Correlazione di Pearson',
+                              height=600 if len(corr_features_select) > 5 else 500
+                         )
+                         st.plotly_chart(fig_heatmap, use_container_width=True)
+
+                         # Scatterplot per coppie selezionate (opzionale)
+                         st.write("**Scatter Plot tra due Features**")
+                         col_scatter1, col_scatter2 = st.columns(2)
+                         with col_scatter1:
+                              feat1_scatter = st.selectbox("Feature Asse X", corr_features_select, index=0)
+                         with col_scatter2:
+                              # Filtra lista per non selezionare la stessa variabile
+                              options_y = [f for f in corr_features_select if f != feat1_scatter]
+                              if options_y:
+                                   feat2_scatter = st.selectbox("Feature Asse Y", options_y, index=0)
+                              else:
+                                   feat2_scatter = None # Se c'è solo una feature selezionata
+
+                         if feat1_scatter and feat2_scatter:
+                              fig_scatter = go.Figure(data=go.Scatter(
+                                   x=filtered_df[feat1_scatter],
+                                   y=filtered_df[feat2_scatter],
+                                   mode='markers',
+                                   marker=dict(opacity=0.6) # Punti leggermente trasparenti
+                              ))
+                              fig_scatter.update_layout(
+                                   title=f'Scatter Plot: {feat1_scatter} vs {feat2_scatter}',
+                                   xaxis_title=feat1_scatter,
+                                   yaxis_title=feat2_scatter,
+                                   height=500
+                              )
+                              st.plotly_chart(fig_scatter, use_container_width=True)
+
+                     else:
+                         st.info("Seleziona almeno due features per calcolare la correlazione.")
+
+                 # Download dei dati filtrati
+                 st.divider()
+                 st.subheader('Download Dati Filtrati')
+                 st.markdown(get_table_download_link(filtered_df, f"dati_filtrati_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"), unsafe_allow_html=True)
+
 
 elif page == 'Allenamento Modello':
-    st.header('Allenamento Modello')
-
-    if df is None:
-        st.warning("Non sono stati caricati dati per l'addestramento. Carica un file CSV per procedere.")
+    if disable_training:
+         st.warning("Funzionalità non disponibile: carica correttamente i dati storici (CSV).")
     else:
-        st.write(f"Dati disponibili: {len(df)} righe.")
+        # --- CODICE ALLENAMENTO MODELLO ---
+        st.header('Allenamento Nuovo Modello LSTM')
+        st.warning("L'allenamento può richiedere tempo e risorse computazionali significative.")
+        st.info(f"Dati disponibili per l'addestramento: {len(df)} righe.")
 
         # Opzioni di addestramento
         st.subheader('Configurazione dell\'addestramento')
 
         # Selezione target (quali idrometri prevedere)
-        st.write("Seleziona gli idrometri da prevedere:")
-        selected_targets = []
-
-        # Creiamo una colonna per ogni idrometro
-        columns = st.columns(len(hydro_features))
+        st.write("**1. Seleziona gli idrometri target da prevedere:**")
+        selected_targets_train = []
+        cols_targets = st.columns(len(hydro_features))
         for i, feature in enumerate(hydro_features):
-            with columns[i]:
-                if st.checkbox(feature.split("[m]")[-1].strip(), value=True):
-                    selected_targets.append(feature)
+            with cols_targets[i]:
+                 # Usa solo il nome breve come etichetta
+                 label = feature.split('(')[-1].replace(')', '').strip()
+                 if st.checkbox(label, value=(feature in target_columns), key=f"target_{i}"): # Default ai target correnti
+                     selected_targets_train.append(feature)
 
-        if len(selected_targets) == 0:
-            st.warning("Seleziona almeno un idrometro da prevedere.")
+        if not selected_targets_train:
+            st.error("Seleziona almeno un idrometro target da prevedere.")
+            st.stop() # Ferma se nessun target è selezionato
         else:
-            # Parametri del modello e dell'addestramento
-            with st.expander("Parametri avanzati", expanded=False):
-                col1, col2 = st.columns(2)
+            st.write(f"Idrometri selezionati per la previsione: {', '.join(selected_targets_train)}")
 
-                with col1:
-                    # Finestre temporali
-                    input_window = st.number_input("Finestra di input (ore)", min_value=1, max_value=72, value=INPUT_WINDOW)
-                    output_window = st.number_input("Finestra di output (ore)", min_value=1, max_value=72, value=OUTPUT_WINDOW)
 
-                    # Percentuale di validazione
-                    val_split = st.slider("% dati di validazione", 5, 30, 20)
+        # Parametri del modello e dell'addestramento
+        st.write("**2. Imposta i parametri del modello e dell'addestramento:**")
+        with st.expander("Parametri Finestre Temporali, Modello e Ottimizzazione", expanded=True):
+             col1_train, col2_train, col3_train = st.columns(3)
 
-                with col2:
-                    # Parametri del modello
-                    hidden_size_train = st.number_input("Dimensione hidden layer", min_value=16, max_value=512, value=128, step=16)
-                    num_layers_train = st.number_input("Numero di layer", min_value=1, max_value=5, value=2)
-                    dropout_train = st.slider("Dropout", 0.0, 0.5, 0.2, 0.05, key="dropout_train_slider") # chiave univoca per slider dropout in training
+             with col1_train:
+                 st.markdown("##### Finestre Temporali")
+                 input_window_train = st.number_input("Input Window (ore)", min_value=6, max_value=168, value=INPUT_WINDOW, step=6, help="Quante ore passate usare per prevedere.")
+                 output_window_train = st.number_input("Output Window (ore)", min_value=1, max_value=72, value=OUTPUT_WINDOW, step=1, help="Quante ore future prevedere.")
+                 val_split_train = st.slider("% Dati di Validazione", 5, 40, 20, step=1, help="Percentuale di dati più recenti usata per validare il modello durante l'allenamento.")
 
-                    # Parametri dell'addestramento
-                    learning_rate = st.number_input("Learning rate", min_value=0.0001, max_value=0.1, value=0.001, format="%.4f")
-                    batch_size = st.number_input("Batch size", min_value=8, max_value=256, value=32, step=8)
+             with col2_train:
+                 st.markdown("##### Architettura LSTM")
+                 hidden_size_train_cfg = st.number_input("Dimensione Hidden Layer", min_value=16, max_value=1024, value=hidden_size, step=16, key="hidden_train", help="Numero di neuroni negli strati LSTM.")
+                 num_layers_train_cfg = st.number_input("Numero Layer LSTM", min_value=1, max_value=8, value=num_layers, step=1, key="layers_train", help="Numero di strati LSTM impilati.")
+                 dropout_train_cfg = st.slider("Dropout", 0.0, 0.7, dropout, 0.05, key="dropout_train_slider", help="Probabilità di 'spegnere' neuroni per prevenire overfitting.")
 
-            # Numero di epoche
-            epochs = st.slider("Numero di epoche", 10, 200, 50)
+             with col3_train:
+                 st.markdown("##### Ottimizzazione")
+                 learning_rate_train = st.number_input("Learning Rate", min_value=1e-5, max_value=1e-2, value=0.001, format="%.5f", step=1e-4, help="Tasso di apprendimento dell'ottimizzatore Adam.")
+                 batch_size_train = st.select_slider("Batch Size", options=[8, 16, 32, 64, 128, 256], value=32, help="Numero di sequenze processate in parallelo per aggiornamento pesi.")
+                 epochs_train = st.number_input("Numero di Epoche", min_value=5, max_value=500, value=50, step=5, help="Numero di volte che l'intero dataset di training viene mostrato al modello.")
 
-            # Bottone per avviare l'addestramento
-            train_button = st.button("Addestra modello", type="primary")
 
-            if train_button:
-                with st.spinner('Preparazione dei dati in corso...'):
-                    # Preparazione dei dati
-                    X_train, y_train, X_val, y_val, scaler_features, scaler_targets = prepare_training_data(
-                        df, feature_columns, selected_targets, input_window, output_window, val_split
-                    )
+        # Bottone per avviare l'addestramento
+        st.write("**3. Avvia l'addestramento:**")
+        train_button = st.button("Addestra Nuovo Modello", type="primary")
 
-                    st.success(f"Dati preparati: {len(X_train)} esempi di training, {len(X_val)} esempi di validazione")
+        if train_button:
+             st.info("Inizio processo di addestramento...")
 
-                    # Visualizzazione della forma dei dati
-                    st.write(f"Forma dei dati di input: {X_train.shape}")
-                    st.write(f"Forma dei dati di output: {y_train.shape}")
+             # --- Preparazione Dati Training ---
+             with st.spinner('Preparazione dati di training e validazione...'):
+                 X_train, y_train, X_val, y_val, scaler_features_train, scaler_targets_train = prepare_training_data(
+                     df.copy(), # Usa una copia del dataframe per sicurezza
+                     feature_columns, # Usa sempre tutte le feature come input
+                     selected_targets_train, # Usa solo i target selezionati
+                     input_window_train,
+                     output_window_train,
+                     val_split_train
+                 )
 
-                # Addestramento del modello
-                st.subheader("Addestramento in corso")
+                 if X_train is None: # Controllo se prepare_training_data ha fallito
+                      st.error("Preparazione dati fallita. Controlla i log precedenti.")
+                      st.stop()
 
-                # Calcolo dell'input_size basato sulle feature
-                input_size = len(feature_columns)
-                output_size = len(selected_targets)
+                 st.success(f"Dati preparati: {len(X_train)} seq. training, {len(X_val)} seq. validazione.")
+                 st.write(f"Shape Input (X_train): `{X_train.shape}` -> (Num Sequenze, Input Window, Num Features)")
+                 st.write(f"Shape Output (y_train): `{y_train.shape}` -> (Num Sequenze, Output Window, Num Target = {len(selected_targets_train)})")
 
-                st.write(f"Dimensione input: {input_size}, Dimensione output: {output_size}")
+             # --- Addestramento Modello ---
+             st.subheader("Addestramento Modello in corso...")
+             st.write(f"Parametri: Hidden={hidden_size_train_cfg}, Layers={num_layers_train_cfg}, Dropout={dropout_train_cfg}, LR={learning_rate_train}, Batch={batch_size_train}")
 
-                # Addestramento
-                model, train_losses, val_losses = train_model(
-                    X_train, y_train, X_val, y_val,
-                    input_size, output_size, output_window,
-                    hidden_size_train, num_layers_train, epochs, batch_size, learning_rate, dropout_train
-                )
+             # Calcolo dimensioni input/output
+             input_size_train = len(feature_columns) # Numero totale di features in input
+             output_size_train = len(selected_targets_train) # Numero di target selezionati
 
-                # Visualizzazione dei risultati
-                st.success("Addestramento completato!")
+             # Chiamata alla funzione di addestramento
+             try:
+                 trained_model, train_losses, val_losses = train_model(
+                     X_train, y_train, X_val, y_val,
+                     input_size_train, output_size_train, output_window_train, # Passa le dimensioni corrette
+                     hidden_size_train_cfg,
+                     num_layers_train_cfg,
+                     epochs_train,
+                     batch_size_train,
+                     learning_rate_train,
+                     dropout_train_cfg
+                 )
+             except Exception as e_train:
+                  st.error(f"Errore durante l'addestramento: {type(e_train).__name__} - {e_train}")
+                  import traceback
+                  st.error(traceback.format_exc())
+                  st.stop()
 
-                # Grafico della loss finale
-                st.subheader("Andamento della loss durante l'addestramento")
-                fig, ax = plt.subplots(figsize=(10, 6))
-                ax.plot(train_losses, label='Train Loss')
-                ax.plot(val_losses, label='Validation Loss')
-                ax.set_title('Andamento della loss')
-                ax.set_xlabel('Epoca')
-                ax.set_ylabel('Loss')
-                ax.legend()
-                ax.grid(True)
-                st.pyplot(fig)
 
-                # Salvataggio del modello e degli scaler
-                st.subheader("Download del modello e degli scaler")
+             # --- Risultati e Salvataggio ---
+             if trained_model:
+                 st.success("Addestramento completato!")
 
-                # Salvataggio del modello
-                model_buffer = io.BytesIO()
-                torch.save(model.state_dict(), model_buffer)
-                model_buffer.seek(0)
+                 # Grafico della loss finale (non interattivo, mostra solo alla fine)
+                 # Il grafico interattivo è già stato mostrato durante l'allenamento
+                 st.subheader("Grafico Finale della Loss (Statico)")
+                 fig_loss_final, ax_loss_final = plt.subplots(figsize=(10, 5))
+                 ax_loss_final.plot(range(1, epochs_train + 1), train_losses, label='Train Loss')
+                 ax_loss_final.plot(range(1, epochs_train + 1), val_losses, label='Validation Loss')
+                 ax_loss_final.set_title('Andamento Loss Finale')
+                 ax_loss_final.set_xlabel('Epoca')
+                 ax_loss_final.set_ylabel('Loss (MSE)')
+                 ax_loss_final.legend()
+                 ax_loss_final.grid(True)
+                 st.pyplot(fig_loss_final)
 
-                # Salvataggio degli scaler
-                scaler_features_buffer = io.BytesIO()
-                joblib.dump(scaler_features, scaler_features_buffer)
-                scaler_features_buffer.seek(0)
+                 st.subheader("Download del Modello Addestrato e degli Scaler")
+                 st.info("Salva questi 3 file per poter usare il modello in futuro.")
 
-                scaler_targets_buffer = io.BytesIO()
-                joblib.dump(scaler_targets, scaler_targets_buffer)
-                scaler_targets_buffer.seek(0)
+                 # Crea i buffer in memoria per il download
+                 model_buffer = io.BytesIO()
+                 torch.save(trained_model.state_dict(), model_buffer)
 
-                # Link per il download
-                st.markdown(get_binary_file_download_link(model_buffer, "best_hydro_model.pth", "Scarica il modello addestrato"), unsafe_allow_html=True)
-                st.markdown(get_binary_file_download_link(scaler_features_buffer, "scaler_features.joblib", "Scarica lo scaler features"), unsafe_allow_html=True)
-                st.markdown(get_binary_file_download_link(scaler_targets_buffer, "scaler_targets.joblib", "Scarica lo scaler targets"), unsafe_allow_html=True)
+                 scaler_features_buffer = io.BytesIO()
+                 joblib.dump(scaler_features_train, scaler_features_buffer)
 
-                # Info sul modello
-                st.subheader("Informazioni sul modello")
-                model_info = {
-                    "Tipo di modello": "LSTM",
-                    "Input window": input_window,
-                    "Output window": output_window,
-                    "Hidden size": hidden_size_train,
-                    "Num layers": num_layers_train,
-                    "Dropout": dropout_train,
-                    "Sensori previsti": ", ".join(selected_targets),
-                    "Data di addestramento": datetime.now().strftime("%d/%m/%Y %H:%M")
-                }
+                 scaler_targets_buffer = io.BytesIO()
+                 joblib.dump(scaler_targets_train, scaler_targets_buffer)
 
-                # Visualizzazione delle info sul modello
-                st.json(model_info)
+                 # Crea i link per il download
+                 col_dl1, col_dl2, col_dl3 = st.columns(3)
+                 with col_dl1:
+                     st.markdown(get_binary_file_download_link(model_buffer, "trained_hydro_model.pth", "Scarica Modello (.pth)"), unsafe_allow_html=True)
+                 with col_dl2:
+                     st.markdown(get_binary_file_download_link(scaler_features_buffer, "trained_scaler_features.joblib", "Scarica Scaler Features (.joblib)"), unsafe_allow_html=True)
+                 with col_dl3:
+                    st.markdown(get_binary_file_download_link(scaler_targets_buffer, "trained_scaler_targets.joblib", "Scarica Scaler Target (.joblib)"), unsafe_allow_html=True)
 
-                # Esempio di utilizzo del modello per previsione
-                st.subheader("Test del modello")
 
-                if st.button("Esegui test su dati di validazione"):
-                    with st.spinner("Esecuzione test in corso..."):
-                        # Prendiamo un esempio dal set di validazione
-                        sample_idx = np.random.randint(0, len(X_val))
-                        sample_input = X_val[sample_idx]
-                        sample_target = y_val[sample_idx]
+                 # Info sul modello addestrato
+                 st.subheader("Informazioni sul Modello Addestrato")
+                 model_info = {
+                     "Data Addestramento": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                     "Basato su Dati": f"{len(df)} righe",
+                     "Target Previsti": selected_targets_train,
+                     "Input Window (ore)": input_window_train,
+                     "Output Window (ore)": output_window_train,
+                     "% Validazione": val_split_train,
+                     "Architettura": {
+                         "Tipo": "LSTM",
+                         "Input Size (Features)": input_size_train,
+                         "Output Size (Targets)": output_size_train,
+                         "Hidden Size": hidden_size_train_cfg,
+                         "Num Layers": num_layers_train_cfg,
+                         "Dropout": dropout_train_cfg,
+                     },
+                     "Training Params": {
+                         "Epoche": epochs_train,
+                         "Batch Size": batch_size_train,
+                         "Learning Rate Iniziale": learning_rate_train,
+                         "Loss Function": "MSELoss",
+                         "Optimizer": "Adam"
+                     },
+                     "Performance Finale": {
+                          "Min Validation Loss": min(val_losses) if val_losses else "N/A"
+                     }
+                 }
+                 st.json(model_info) # Mostra le info come JSON
 
-                        # Convertiamo in tensor
-                        sample_input_tensor = torch.FloatTensor(sample_input).unsqueeze(0).to(device)
+                 # Test rapido su un campione di validazione (opzionale)
+                 if X_val.size > 0:
+                     st.subheader("Test Rapido su Dati di Validazione")
+                     if st.button("Esegui Test su Campione Casuale"):
+                          with st.spinner("Esecuzione test..."):
+                              # Prendiamo un esempio casuale dal set di validazione
+                              sample_idx = np.random.randint(0, len(X_val))
+                              sample_input_scaled = X_val[sample_idx]
+                              sample_target_scaled = y_val[sample_idx]
 
-                        # Previsione
-                        model.eval()
-                        with torch.no_grad():
-                            sample_output = model(sample_input_tensor)
+                              # Previsione sul campione
+                              sample_input_tensor = torch.FloatTensor(sample_input_scaled).unsqueeze(0).to(device)
+                              trained_model.eval()
+                              with torch.no_grad():
+                                   sample_output_scaled_tensor = trained_model(sample_input_tensor)
 
-                        # Conversione in numpy
-                        sample_output_np = sample_output.cpu().numpy().reshape(-1, len(selected_targets))
+                              # Denormalizzazione
+                              sample_output_scaled = sample_output_scaled_tensor.cpu().numpy().reshape(output_window_train, output_size_train)
+                              sample_target_original = scaler_targets_train.inverse_transform(sample_target_scaled)
+                              sample_output_original = scaler_targets_train.inverse_transform(sample_output_scaled)
 
-                        # Denormalizzazione
-                        sample_input_original = scaler_features.inverse_transform(sample_input.reshape(-1, input_size)).reshape(input_window, input_size)
-                        sample_target_original = scaler_targets.inverse_transform(sample_target.reshape(-1, len(selected_targets))).reshape(output_window, len(selected_targets))
-                        sample_output_original = scaler_targets.inverse_transform(sample_output_np)
+                              # Crea dataframe per confronto
+                              test_results_df = pd.DataFrame()
+                              hours = [f"Ora +{h+1}" for h in range(output_window_train)]
+                              test_results_df['Ora Futura'] = hours
+                              for i, target_name in enumerate(selected_targets_train):
+                                   test_results_df[f'Reale: {target_name}'] = sample_target_original[:, i]
+                                   test_results_df[f'Previsto: {target_name}'] = sample_output_original[:, i]
 
-                        # Creazione di un dataframe per visualizzazione
-                        test_results = pd.DataFrame()
+                              st.dataframe(test_results_df.round(3))
 
-                        for i, target in enumerate(selected_targets):
-                            target_name = target.split("[m]")[-1].strip()
-                            test_results[f'Target {target_name}'] = sample_target_original[:, i]
-                            test_results[f'Previsione {target_name}'] = sample_output_original[:, i]
+                              # Grafico confronto Plotly
+                              fig_test = go.Figure()
+                              for i, target_name in enumerate(selected_targets_train):
+                                   fig_test.add_trace(go.Scatter(x=hours, y=sample_target_original[:, i], mode='lines+markers', name=f'Reale: {target_name}'))
+                                   fig_test.add_trace(go.Scatter(x=hours, y=sample_output_original[:, i], mode='lines+markers', name=f'Previsto: {target_name}', line=dict(dash='dash')))
 
-                        # Visualizzazione dei risultati
-                        st.dataframe(test_results.round(3))
+                              fig_test.update_layout(
+                                   title=f'Confronto Reale vs Previsto (Campione Validazione #{sample_idx})',
+                                   xaxis_title='Ore Future',
+                                   yaxis_title='Livello Idrometrico [m]',
+                                   height=500,
+                                   hovermode="x unified"
+                              )
+                              st.plotly_chart(fig_test, use_container_width=True)
 
-                        # Grafico dei risultati
-                        for i, target in enumerate(selected_targets):
-                            target_name = target.split("[m]")[-1].strip()
+             else:
+                  st.error("L'addestramento non ha prodotto un modello valido.")
 
-                            fig, ax = plt.subplots(figsize=(10, 6))
-                            ax.plot(sample_target_original[:, i], 'b-', label=f'Target {target_name}')
-                            ax.plot(sample_output_original[:, i], 'r--', label=f'Previsione {target_name}')
-                            ax.set_title(f'Test previsione - {target_name}')
-                            ax.set_xlabel('Ore future')
-                            ax.set_ylabel('Livello idrometrico [m]')
-                            ax.legend()
-                            ax.grid(True)
-                            plt.tight_layout()
-                            st.pyplot(fig)
 
 # Footer della dashboard
 st.sidebar.markdown('---')
-st.sidebar.info('Dashboard per modello predittivo idrologico © 2023')
+st.sidebar.info('Applicazione Streamlit per Modello Idrologico LSTM © 2024')
+
+# --- FINE LAYOUT STREAMLIT ---
