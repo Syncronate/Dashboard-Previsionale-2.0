@@ -1966,41 +1966,75 @@ elif page == 'Simulazione':
                   if predictions_sim is not None and isinstance(predictions_sim, np.ndarray) and predictions_sim.shape == (output_window, len(target_columns_model)):
                        st.subheader(f'📊 Risultato Simulazione: Previsione per le prossime {output_window} ore')
 
-                       # Determina timestamp inizio previsione
                        start_pred_time = sim_start_time_info if sim_start_time_info else datetime.now(italy_tz)
                        st.caption(f"Previsione calcolata a partire da: {start_pred_time.strftime('%d/%m/%Y %H:%M %Z')}")
 
-                       # Crea DataFrame risultati
                        pred_times_sim = [start_pred_time + timedelta(hours=i+1) for i in range(output_window)]
+                       # 1. Crea DataFrame iniziale dai risultati numerici
                        results_df_sim = pd.DataFrame(predictions_sim, columns=target_columns_model)
-                       # Inserisci colonna tempo formattata
+                       # 2. Inserisci la colonna 'Ora Prevista' come stringa
                        results_df_sim.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_sim])
-                       # Rinomina colonne target con label brevi + unità
+
+                       # 3. Rinomina colonne
                        rename_dict = {'Ora Prevista': 'Ora Prevista'} # Mantiene colonna tempo
+                       original_to_renamed_map = {} # Mappa per identificare le colonne numeriche dopo il rename
                        for col in target_columns_model:
-                           unit = '(m)' if 'Livello' in col else '' # Assume target siano livelli (m)
-                           rename_dict[col] = f"{get_station_label(col, short=True)} {unit}".strip()
+                           unit = '(m)' if 'Livello' in col else ''
+                           new_name = f"{get_station_label(col, short=True)} {unit}".strip()
+                           # Gestisci potenziali nomi duplicati aggiungendo un suffisso se necessario
+                           count = 1
+                           final_name = new_name
+                           while final_name in rename_dict.values():
+                               count += 1
+                               final_name = f"{new_name}_{count}"
+                           rename_dict[col] = final_name
+                           original_to_renamed_map[col] = final_name # Salva il nome finale
+
                        results_df_sim.rename(columns=rename_dict, inplace=True)
 
-                       # Mostra tabella risultati
-                       st.dataframe(results_df_sim.round(3))
+                       # --- MODIFICA QUI ---
+                       # 4. Arrotonda SOLO le colonne numeriche (quelle che derivano dalle previsioni)
+                       #    Identifica i nomi delle colonne numeriche DOPO la rinomina
+                       numeric_cols_renamed = [original_to_renamed_map[col] for col in target_columns_model if col in original_to_renamed_map]
+
+                       # Crea una copia per la visualizzazione (opzionale ma più sicuro)
+                       df_to_display = results_df_sim.copy()
+
+                       # Applica round solo alle colonne numeriche identificate
+                       try:
+                           # Filtra ulteriormente per assicurarsi che le colonne esistano nel df
+                           cols_in_df_to_round = [col for col in numeric_cols_renamed if col in df_to_display.columns]
+                           if cols_in_df_to_round:
+                               df_to_display[cols_in_df_to_round] = df_to_display[cols_in_df_to_round].round(3)
+                           else:
+                               st.warning("Nessuna colonna numerica trovata per l'arrotondamento pre-visualizzazione.")
+
+                           # 5. Mostra il DataFrame (ora con colonne numeriche arrotondate)
+                           st.dataframe(df_to_display)
+
+                       except Exception as e_round_display:
+                            st.error(f"Errore durante l'arrotondamento selettivo o la visualizzazione: {e_round_display}")
+                            st.write("Visualizzazione DataFrame originale (senza arrotondamento specifico):")
+                            st.dataframe(results_df_sim) # Fallback
+
+                       # --- FINE MODIFICA ---
+
+                       # 6. Link per il download (usa il DataFrame originale NON arrotondato specificamente per display)
                        st.markdown(get_table_download_link(results_df_sim, f"simulazione_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
 
+                       # --- Grafici (codice invariato) ---
                        st.subheader('📈 Grafici Previsioni Simulate')
-                       # Usa la funzione plot_predictions (passando start_pred_time)
                        figs_sim = plot_predictions(predictions_sim, active_config, start_pred_time)
-                       sim_cols = st.columns(min(len(figs_sim), 2)) # Max 2 grafici per riga
-
+                       sim_cols = st.columns(min(len(figs_sim), 2))
                        for i, fig_sim in enumerate(figs_sim):
                            with sim_cols[i % len(sim_cols)]:
-                                target_col_name = target_columns_model[i] # Nome originale per nome file
-                                s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False)) # Nome località pulito per file
+                                target_col_name = target_columns_model[i]
+                                s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
                                 st.plotly_chart(fig_sim, use_container_width=True)
                                 st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
                   else:
                        st.error("Predizione simulazione fallita o risultato non valido.")
              else:
-                  # Questo non dovrebbe essere raggiungibile se il bottone è disabilitato
                   st.error("Impossibile eseguire la simulazione: dati input non pronti o non validi.")
 
 
