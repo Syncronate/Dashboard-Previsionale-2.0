@@ -22,6 +22,7 @@ import re # Importa re per espressioni regolari
 import json # Importa json per leggere/scrivere file di configurazione
 import glob # Per cercare i file dei modelli
 import traceback # Per stampare errori dettagliati
+import mimetypes # Per indovinare i tipi MIME per i download
 
 # Configurazione della pagina
 st.set_page_config(page_title="Modello Predittivo Idrologico", page_icon="🌊", layout="wide")
@@ -71,8 +72,6 @@ class HydroLSTM(nn.Module):
 
 # --- Funzioni Utilità Modello/Dati ---
 
-# ... (dopo la definizione di HydroLSTM e prima di load_model_config) ...
-
 # Funzione per preparare i dati per l'addestramento
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, val_split=20):
     """
@@ -98,12 +97,8 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
             if col not in df.columns:
                  raise ValueError(f"Colonna '{col}' richiesta per training non trovata nel DataFrame.")
             # La conversione numerica e gestione NaN è già fatta nel blocco caricamento df
-            # df[col] = pd.to_numeric(df[col], errors='coerce')
-        # df = df.fillna(method='ffill').fillna(method='bfill') # Già fatto
         if df[feature_columns + target_columns].isnull().sum().sum() > 0:
              st.warning("NaN residui rilevati prima della creazione sequenze! Controlla caricamento dati.")
-             # Potresti decidere di fermare qui o procedere con cautela
-             # return None, None, None, None, None, None
 
     except ValueError as e:
         st.error(f"Errore colonne in prepare_training_data: {e}")
@@ -135,19 +130,17 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
     scaler_features = MinMaxScaler()
     scaler_targets = MinMaxScaler()
 
-    # Verifica dimensioni prima del reshape
     if X.size == 0 or y.size == 0:
         st.error("Dati X o y vuoti prima della normalizzazione.")
         return None, None, None, None, None, None
 
-    # Il reshape deve avvenire prima del fit_transform
     num_sequences, seq_len_in, num_features = X.shape
-    num_sequences_y, seq_len_out, num_targets = y.shape # y ha già 3 dimensioni
+    num_sequences_y, seq_len_out, num_targets = y.shape
 
     X_flat = X.reshape(-1, num_features)
-    y_flat = y.reshape(-1, num_targets) # y è (num_seq, output_window, num_targets), quindi reshape a (num_seq*output_window, num_targets)
+    y_flat = y.reshape(-1, num_targets)
 
-    st.write(f"Shape per scaling: X_flat={X_flat.shape}, y_flat={y_flat.shape}") # Log shape
+    st.write(f"Shape per scaling: X_flat={X_flat.shape}, y_flat={y_flat.shape}")
 
     try:
         X_scaled_flat = scaler_features.fit_transform(X_flat)
@@ -157,25 +150,19 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
          st.error(f"NaN in X_flat: {np.isnan(X_flat).sum()}, NaN in y_flat: {np.isnan(y_flat).sum()}")
          return None, None, None, None, None, None
 
-
-    # Riporta alla forma originale 3D
     X_scaled = X_scaled_flat.reshape(num_sequences, seq_len_in, num_features)
     y_scaled = y_scaled_flat.reshape(num_sequences_y, seq_len_out, num_targets)
-    st.write(f"Shape post scaling: X_scaled={X_scaled.shape}, y_scaled={y_scaled.shape}") # Log shape
-
+    st.write(f"Shape post scaling: X_scaled={X_scaled.shape}, y_scaled={y_scaled.shape}")
 
     # Divisione in set di addestramento e validazione
     split_idx = int(len(X_scaled) * (1 - val_split / 100))
     if split_idx == 0 or split_idx == len(X_scaled):
          st.warning(f"Split indice ({split_idx}) non valido per divisione train/val. Controlla val_split e lunghezza dati.")
-         # Potresti usare tutto per training o dare errore
-         if len(X_scaled) < 2: # Non si può splittare
+         if len(X_scaled) < 2:
               st.error("Dataset troppo piccolo per creare set di validazione.")
               return None, None, None, None, None, None
-         # Fallback: usa almeno 1 campione per validazione se possibile
          split_idx = max(1, len(X_scaled) - 1) if split_idx == len(X_scaled) else split_idx
          split_idx = min(len(X_scaled) - 1, split_idx) if split_idx == 0 else split_idx
-
 
     X_train = X_scaled[:split_idx]
     y_train = y_scaled[:split_idx]
@@ -184,21 +171,15 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
 
     st.write(f"Split Dati: Train={len(X_train)}, Validation={len(X_val)}")
 
-    # Controlla che i set non siano vuoti
     if X_train.size == 0 or y_train.size == 0:
          st.error("Set di Training vuoto dopo lo split.")
          return None, None, None, None, None, None
-    # Il set di validazione può essere vuoto se val_split è 0 o quasi
     if X_val.size == 0 or y_val.size == 0:
          st.warning("Set di Validazione vuoto dopo lo split.")
-         # Imposta a array vuoti con shape corretta se necessario per evitare errori dopo
          X_val = np.empty((0, seq_len_in, num_features), dtype=np.float32)
          y_val = np.empty((0, seq_len_out, num_targets), dtype=np.float32)
 
-
     return X_train, y_train, X_val, y_val, scaler_features, scaler_targets
-
-# ... (resto delle funzioni di utilità come load_model_config, load_specific_model, etc.)
 
 @st.cache_data # Cache basata sugli argomenti (percorsi file)
 def load_model_config(_config_path): # Aggiunto underscore per evitare conflitti nome cache
@@ -206,9 +187,7 @@ def load_model_config(_config_path): # Aggiunto underscore per evitare conflitti
     try:
         with open(_config_path, 'r') as f:
             config = json.load(f)
-        # Validazione base della config
         required_keys = ["input_window", "output_window", "hidden_size", "num_layers", "dropout", "target_columns"]
-        # feature_columns è opzionale nella config, verrà preso dal default se non presente
         if not all(key in config for key in required_keys):
             st.error(f"File config '{_config_path}' incompleto. Mancano chiavi.")
             return None
@@ -233,14 +212,9 @@ def load_specific_model(_model_path, config): # Aggiunto underscore per evitare 
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     try:
-        # Assumi feature_columns sia nella config o usa un default vuoto se non c'è
         feature_columns_model = config.get("feature_columns", [])
         if not feature_columns_model:
-             st.warning(f"Chiave 'feature_columns' non trovata nella config del modello '{config.get('name', 'N/A')}'. La dimensione input sarà inferita dallo scaler.")
-             # L'inferenza dallo scaler avverrà in un secondo momento o causerà errore se non matchano
-             # Per creare il modello serve comunque una dimensione input. Se non c'è, usiamo un valore placeholder
-             # MA questo è rischioso. È FONDAMENTALE che feature_columns sia nella config o definita globalmente.
-             # Usiamo le feature globali da session_state come fallback robusto
+             st.warning(f"Chiave 'feature_columns' non trovata nella config del modello '{config.get('name', 'N/A')}'. Uso quelle globali.")
              feature_columns_model = st.session_state.get("feature_columns", [])
              if not feature_columns_model:
                    st.error("Impossibile determinare input_size: 'feature_columns' non in config né in session_state.")
@@ -257,7 +231,6 @@ def load_specific_model(_model_path, config): # Aggiunto underscore per evitare 
             dropout=config["dropout"]
         ).to(device)
 
-        # Caricamento pesi
         if isinstance(_model_path, str):
              if not os.path.exists(_model_path):
                   raise FileNotFoundError(f"File modello '{_model_path}' non trovato.")
@@ -314,8 +287,6 @@ def find_available_models(models_dir=MODELS_DIR):
     """Scansiona la cartella dei modelli e restituisce un dizionario di modelli validi."""
     available = {}
     if not os.path.isdir(models_dir):
-        # Non mostrare warning se la cartella semplicemente non esiste
-        # st.warning(f"Cartella modelli '{models_dir}' non trovata.")
         return available
 
     pth_files = glob.glob(os.path.join(models_dir, "*.pth"))
@@ -326,18 +297,15 @@ def find_available_models(models_dir=MODELS_DIR):
         scaler_t_path = os.path.join(models_dir, f"{base_name}_targets.joblib")
 
         if os.path.exists(config_path) and os.path.exists(scaler_f_path) and os.path.exists(scaler_t_path):
-            # Tenta di leggere la config per avere un nome più descrittivo (opzionale)
             try:
                  with open(config_path, 'r') as f_cfg:
                       cfg_data = json.load(f_cfg)
-                      display_name = cfg_data.get("display_name", base_name) # Usa display_name se presente
-                      # Potresti aggiungere info su finestre nel nome:
-                      # display_name = f"{base_name} (In:{cfg_data['input_window']} Out:{cfg_data['output_window']})"
+                      display_name = cfg_data.get("display_name", base_name)
             except:
-                 display_name = base_name # Fallback al nome base
+                 display_name = base_name
 
-            available[display_name] = { # Usa display_name come chiave
-                "config_name": base_name, # Salva il nome base originale
+            available[display_name] = {
+                "config_name": base_name,
                 "pth_path": pth_path,
                 "config_path": config_path,
                 "scaler_features_path": scaler_f_path,
@@ -358,14 +326,12 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
     target_columns = config["target_columns"]
     feature_columns_cfg = config.get("feature_columns", [])
 
-    # Validazione input_data shape
     if input_data.shape[0] != input_window:
          st.error(f"Predict: Input righe {input_data.shape[0]} != Finestra Modello {input_window}.")
          return None
     if feature_columns_cfg and input_data.shape[1] != len(feature_columns_cfg):
          st.error(f"Predict: Input colonne {input_data.shape[1]} != Features Modello {len(feature_columns_cfg)}.")
          return None
-    # Controllo vs scaler (se feature_columns non erano in config)
     if not feature_columns_cfg and hasattr(scaler_features, 'n_features_in_') and scaler_features.n_features_in_ != input_data.shape[1]:
         st.error(f"Predict: Input colonne {input_data.shape[1]} != Scaler Features {scaler_features.n_features_in_}.")
         return None
@@ -448,7 +414,6 @@ def import_data_from_sheet(sheet_id, expected_cols, input_window, date_col_name=
              return None
 
         df_sheet = pd.DataFrame(rows, columns=headers)
-        # Seleziona solo colonne attese per evitare errori dopo
         columns_to_keep = [col for col in expected_cols if col in df_sheet.columns]
         if date_col_name not in columns_to_keep and date_col_name in df_sheet.columns:
              columns_to_keep.append(date_col_name)
@@ -457,8 +422,6 @@ def import_data_from_sheet(sheet_id, expected_cols, input_window, date_col_name=
              return None
         df_sheet = df_sheet[columns_to_keep]
 
-
-        # Pulizia e Conversione
         df_sheet[date_col_name] = pd.to_datetime(df_sheet[date_col_name], format=date_format, errors='coerce')
         df_sheet = df_sheet.dropna(subset=[date_col_name])
         df_sheet = df_sheet.sort_values(by=date_col_name, ascending=True)
@@ -469,13 +432,12 @@ def import_data_from_sheet(sheet_id, expected_cols, input_window, date_col_name=
             df_sheet[col] = df_sheet[col].astype(str).str.replace(',', '.', regex=False)
             df_sheet[col] = pd.to_numeric(df_sheet[col], errors='coerce')
 
-        # Prendi ultime `input_window` righe
         df_sheet = df_sheet.tail(input_window)
 
         if len(df_sheet) < input_window:
              st.warning(f"GSheet: Trovate solo {len(df_sheet)} righe valide ({input_window} richieste).")
-             if len(df_sheet) == 0: return None # Errore se 0 righe
-        elif len(df_sheet) > input_window: # Non dovrebbe succedere
+             if len(df_sheet) == 0: return None
+        elif len(df_sheet) > input_window:
              df_sheet = df_sheet.tail(input_window)
 
         st.success(f"Importate e pulite {len(df_sheet)} righe da GSheet.")
@@ -501,7 +463,6 @@ def import_data_from_sheet(sheet_id, expected_cols, input_window, date_col_name=
         return None
 
 # --- Funzione Allenamento Modificata (Corretta e con Salvataggio Config) ---
-# Definizione corretta della funzione
 def train_model(
     X_train, y_train, X_val, y_val, input_size, output_size, output_window,
     hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2
@@ -550,17 +511,19 @@ def train_model(
 
         model.eval()
         val_loss = 0
-        with torch.no_grad():
-            for X_batch, y_batch in val_loader:
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                outputs = model(X_batch)
-                loss = criterion(outputs, y_batch)
-                val_loss += loss.item()
-        if len(val_loader) > 0: val_loss /= len(val_loader)
-        else: val_loss = 0
-        val_losses.append(val_loss)
-
-        scheduler.step(val_loss)
+        if len(val_loader) > 0: # Check if validation set exists
+            with torch.no_grad():
+                for X_batch, y_batch in val_loader:
+                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                    outputs = model(X_batch)
+                    loss = criterion(outputs, y_batch)
+                    val_loss += loss.item()
+            val_loss /= len(val_loader)
+            val_losses.append(val_loss)
+            scheduler.step(val_loss) # Step scheduler only if val_loss is calculated
+        else:
+            val_loss = 0 # Or some other indicator that validation wasn't performed
+            val_losses.append(val_loss) # Append 0 or None
 
         progress_percentage = (epoch + 1) / epochs
         progress_bar.progress(progress_percentage)
@@ -568,10 +531,10 @@ def train_model(
         status_text.text(f'Epoca {epoch+1}/{epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f} - LR: {current_lr:.6f}')
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
-        if val_loss < best_val_loss:
+        # Save best model only if validation is performed
+        if len(val_loader) > 0 and val_loss < best_val_loss:
             best_val_loss = val_loss
             best_model_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
-            # st.text(f"Nuovo miglior modello (epoca {epoch+1}), Val Loss: {best_val_loss:.6f}")
 
         time.sleep(0.05)
 
@@ -579,8 +542,10 @@ def train_model(
         best_model_state_dict_on_device = {k: v.to(device) for k, v in best_model_state_dict.items()}
         model.load_state_dict(best_model_state_dict_on_device)
         st.success(f"Caricato modello migliore (Val Loss: {best_val_loss:.6f})")
+    elif len(val_loader) == 0:
+        st.warning("Nessun set di validazione, usato modello ultima epoca.")
     else:
-        st.warning("Nessun miglioramento, usato modello ultima epoca.")
+        st.warning("Nessun miglioramento osservato in validazione, usato modello ultima epoca.")
 
     return model, train_losses, val_losses
 
@@ -610,6 +575,48 @@ def get_plotly_download_link(fig, filename_base, text_html="Scarica HTML", text_
     except Exception: pass # Ignora se kaleido non c'è
     return f"{href_html} {href_png}"
 
+def get_download_link_for_file(filepath, link_text=None):
+    """
+    Genera un link HTML per il download di un file presente sul disco del server.
+    Args:
+        filepath (str): Percorso completo del file da scaricare.
+        link_text (str, optional): Testo da visualizzare per il link. Se None,
+                                   usa "Scarica [nomefile]".
+    Returns:
+        str: Stringa HTML contenente il tag <a> per il download, o un messaggio di errore.
+    """
+    if not os.path.exists(filepath):
+        return f"<i>File non trovato: {os.path.basename(filepath)}</i>"
+    if link_text is None:
+        link_text = f"Scarica {os.path.basename(filepath)}"
+
+    try:
+        # Leggi il contenuto del file in modalità binaria
+        with open(filepath, "rb") as f:
+            file_content = f.read()
+
+        # Codifica in base64
+        b64 = base64.b64encode(file_content).decode("utf-8")
+        filename = os.path.basename(filepath)
+
+        # Indovina il MIME type, con fallback a octet-stream
+        mime_type, _ = mimetypes.guess_type(filepath)
+        if mime_type is None:
+            # Fallback per estensioni comuni non riconosciute di default
+            if filename.endswith('.pth') or filename.endswith('.joblib'):
+                 mime_type = 'application/octet-stream'
+            elif filename.endswith('.json'):
+                 mime_type = 'application/json'
+            else:
+                 mime_type = 'application/octet-stream' # Scelta sicura generica
+
+        # Crea il link HTML
+        href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}">{link_text}</a>'
+        return href
+    except Exception as e:
+        st.error(f"Errore durante la generazione del link per {filename}: {e}")
+        return f"<i>Errore generazione link per {os.path.basename(filepath)}</i>"
+
 # --- Funzione Estrazione ID GSheet ---
 def extract_sheet_id(url):
     patterns = [r'/spreadsheets/d/([a-zA-Z0-9-_]+)', r'/d/([a-zA-Z0-9-_]+)/']
@@ -628,10 +635,7 @@ if 'active_scaler_targets' not in st.session_state: st.session_state.active_scal
 if 'df' not in st.session_state: st.session_state.df = None # Per salvare il df caricato
 
 # Definisci feature_columns globalmente o leggile da una config/modello di default
-# È FONDAMENTALE che siano definite prima del caricamento dati o del caricamento modello
 if 'feature_columns' not in st.session_state:
-     # Definisci qui l'elenco COMPLETO delle feature che i tuoi modelli potrebbero usare
-     # Se diversi modelli usano diverse feature, questo DEVE essere specificato nel .json
      st.session_state.feature_columns = [
          'Cumulata Sensore 1295 (Arcevia)', 'Cumulata Sensore 2637 (Bettolelle)',
          'Cumulata Sensore 2858 (Barbara)', 'Cumulata Sensore 2964 (Corinaldo)',
@@ -698,9 +702,19 @@ if data_path_to_load:
     try:
         if is_uploaded:
             data_path_to_load.seek(0)
-            df = pd.read_csv(data_path_to_load, sep=';', decimal=',', encoding='utf-8', low_memory=False) # Aggiunto low_memory=False
+            # Aggiunto gestione encoding più robusta e low_memory=False
+            try:
+                df = pd.read_csv(data_path_to_load, sep=';', decimal=',', encoding='utf-8', low_memory=False)
+            except UnicodeDecodeError:
+                st.sidebar.warning("Encoding UTF-8 fallito, provo con 'latin1'...")
+                data_path_to_load.seek(0) # Riavvolgi il buffer
+                df = pd.read_csv(data_path_to_load, sep=';', decimal=',', encoding='latin1', low_memory=False)
         else:
-            df = pd.read_csv(data_path_to_load, sep=';', decimal=',', encoding='utf-8', low_memory=False)
+            try:
+                df = pd.read_csv(data_path_to_load, sep=';', decimal=',', encoding='utf-8', low_memory=False)
+            except UnicodeDecodeError:
+                st.sidebar.warning("Encoding UTF-8 fallito, provo con 'latin1'...")
+                df = pd.read_csv(data_path_to_load, sep=';', decimal=',', encoding='latin1', low_memory=False)
 
         st.sidebar.write(f"-> CSV letto, {len(df)} righe iniziali.")
 
@@ -712,14 +726,13 @@ if data_path_to_load:
         try:
              df[date_col_name_csv] = pd.to_datetime(df[date_col_name_csv], format='%d/%m/%Y %H:%M', errors='raise')
         except ValueError:
-             st.sidebar.warning("Formato data standard fallito, provo inferenza...")
+             st.sidebar.warning("Formato data standard '%d/%m/%Y %H:%M' fallito, provo inferenza...")
              df[date_col_name_csv] = pd.to_datetime(df[date_col_name_csv], errors='coerce')
 
         df = df.dropna(subset=[date_col_name_csv])
         st.sidebar.write(f"-> Dopo dropna date: {len(df)} righe.")
         df = df.sort_values(by=date_col_name_csv).reset_index(drop=True)
 
-        # Verifica feature_columns
         if 'feature_columns' not in st.session_state or not st.session_state.feature_columns:
              raise ValueError("Definizione 'feature_columns' mancante in session_state.")
         current_feature_columns = st.session_state.feature_columns
@@ -734,14 +747,10 @@ if data_path_to_load:
         for col in current_feature_columns:
               if col != date_col_name_csv:
                     if df[col].dtype == 'object':
-                         # Tentativo più robusto di pulizia stringhe prima della conversione
-                         df[col] = df[col].astype(str).str.replace('.', '', regex=False) # Rimuove punti migliaia
-                         df[col] = df[col].astype(str).str.replace(',', '.', regex=False) # Virgola -> Punto decimali
-                         # Rimuovi spazi bianchi extra
+                         df[col] = df[col].astype(str).str.replace('.', '', regex=False)
+                         df[col] = df[col].astype(str).str.replace(',', '.', regex=False)
                          df[col] = df[col].astype(str).str.strip()
-                         # Gestisci specificamente N/A e stringhe vuote
-                         df[col] = df[col].replace(['N/A', '', '-'], np.nan, regex=False)
-                    # Ora converti, forzando errori a NaN
+                         df[col] = df[col].replace(['N/A', '', '-', 'None', 'null'], np.nan, regex=False) # Aggiunte gestioni
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
         n_nan_before = df[current_feature_columns].isnull().sum().sum()
@@ -771,7 +780,7 @@ df = st.session_state.get('df', None)
 # Mostra errore finale se necessario
 if df is None and df_load_error:
     st.sidebar.error(f"Caricamento dati fallito: {df_load_error}")
-elif df is None and not data_path_to_load: # Caso in cui né upload né default trovato
+elif df is None and not data_path_to_load:
      pass
 
 # --- Selezione Modello ---
@@ -779,18 +788,17 @@ st.sidebar.divider()
 st.sidebar.header("Selezione Modello Predittivo")
 
 available_models_dict = find_available_models(MODELS_DIR)
-model_display_names = list(available_models_dict.keys()) # Nomi visualizzati
+model_display_names = list(available_models_dict.keys())
 
 MODEL_CHOICE_UPLOAD = "Carica File Manualmente..."
 MODEL_CHOICE_NONE = "-- Nessun Modello Selezionato --"
 
 selection_options = [MODEL_CHOICE_NONE] + model_display_names + [MODEL_CHOICE_UPLOAD]
 current_selection_name = st.session_state.get('active_model_name', MODEL_CHOICE_NONE)
-# Trova l'indice corretto basato sul nome visualizzato
 try:
     current_index = selection_options.index(current_selection_name)
 except ValueError:
-    current_index = 0 # Default a Nessuno se il nome salvato non è più valido
+    current_index = 0
 
 selected_model_display_name = st.sidebar.selectbox(
     "Modello per Previsione/Simulazione:",
@@ -806,7 +814,7 @@ device_to_load = None
 scaler_f_to_load = None
 scaler_t_to_load = None
 load_error_sidebar = False
-model_base_name_loaded = None # Nome file senza estensione
+model_base_name_loaded = None
 
 # Reset stato attivo prima del caricamento
 st.session_state.active_model_name = None
@@ -821,7 +829,7 @@ if selected_model_display_name == MODEL_CHOICE_NONE:
     st.session_state.active_model_name = MODEL_CHOICE_NONE
 
 elif selected_model_display_name == MODEL_CHOICE_UPLOAD:
-    st.session_state.active_model_name = MODEL_CHOICE_UPLOAD # Segna la scelta
+    st.session_state.active_model_name = MODEL_CHOICE_UPLOAD
     with st.sidebar.expander("Carica File Modello", expanded=True):
         model_file_up = st.file_uploader('File Modello (.pth)', type=['pth'], key="up_pth")
         scaler_features_file_up = st.file_uploader('File Scaler Features (.joblib)', type=['joblib'], key="up_scf")
@@ -848,7 +856,7 @@ elif selected_model_display_name == MODEL_CHOICE_UPLOAD:
                 "input_window": input_window_up, "output_window": output_window_up,
                 "hidden_size": hidden_size_up, "num_layers": num_layers_up, "dropout": dropout_up,
                 "target_columns": target_columns_up,
-                "feature_columns": st.session_state.feature_columns, # Usa feature globali
+                "feature_columns": st.session_state.feature_columns,
                 "name": "uploaded_model"
             }
             model_to_load, device_to_load = load_specific_model(model_file_up, temp_config)
@@ -856,34 +864,30 @@ elif selected_model_display_name == MODEL_CHOICE_UPLOAD:
 
             if model_to_load and scaler_f_to_load and scaler_t_to_load:
                  config_to_load = temp_config
-                 model_base_name_loaded = "uploaded_model" # Nome generico
+                 model_base_name_loaded = "uploaded_model"
             else: load_error_sidebar = True
         else:
              st.warning("Carica .pth, 2 .joblib e seleziona i target.")
-             # Non è un errore fatale, l'utente sta ancora configurando
 
 else: # Modello pre-addestrato selezionato
     model_info = available_models_dict[selected_model_display_name]
-    model_base_name_loaded = model_info["config_name"] # Nome base file
-    st.session_state.active_model_name = selected_model_display_name # Salva nome visualizzato
+    model_base_name_loaded = model_info["config_name"]
+    st.session_state.active_model_name = selected_model_display_name
     st.sidebar.write(f"Caricamento modello: **{selected_model_display_name}**")
 
     config_to_load = load_model_config(model_info["config_path"])
     if config_to_load:
-        # Aggiungi info percorso/nome alla config
         config_to_load["pth_path"] = model_info["pth_path"]
         config_to_load["scaler_features_path"] = model_info["scaler_features_path"]
         config_to_load["scaler_targets_path"] = model_info["scaler_targets_path"]
         config_to_load["name"] = model_base_name_loaded
-         # Assicura che feature columns siano in config, altrimenti usa globali
         if "feature_columns" not in config_to_load:
              st.warning(f"'feature_columns' non trovate in {model_info['config_path']}, uso quelle globali.")
              config_to_load["feature_columns"] = st.session_state.feature_columns
         elif set(config_to_load["feature_columns"]) != set(st.session_state.feature_columns):
              st.warning(f"Le 'feature_columns' in {model_info['config_path']} differiscono da quelle globali!")
-             # Potresti voler aggiornare st.session_state.feature_columns qui o gestire la discrepanza
+             # Considera di allineare st.session_state.feature_columns o segnalare l'utente
 
-        # Carica modello e scaler
         model_to_load, device_to_load = load_specific_model(model_info["pth_path"], config_to_load)
         scaler_f_to_load, scaler_t_to_load = load_specific_scalers(model_info["scaler_features_path"], model_info["scaler_targets_path"])
 
@@ -900,7 +904,6 @@ if config_to_load and model_to_load and device_to_load and scaler_f_to_load and 
     st.session_state.active_device = device_to_load
     st.session_state.active_scaler_features = scaler_f_to_load
     st.session_state.active_scaler_targets = scaler_t_to_load
-    # Aggiorna nome attivo solo se non era upload
     if selected_model_display_name != MODEL_CHOICE_UPLOAD:
          st.session_state.active_model_name = selected_model_display_name
 
@@ -917,7 +920,6 @@ elif selected_model_display_name == MODEL_CHOICE_UPLOAD and not st.session_state
 # --- Menu Navigazione ---
 st.sidebar.divider()
 st.sidebar.header('Menu Navigazione')
-# Leggi lo stato attivo per abilitare/disabilitare opzioni
 model_ready = st.session_state.active_model is not None and st.session_state.active_config is not None
 data_ready = df is not None
 
@@ -928,20 +930,46 @@ radio_captions = [
     "Richiede Dati" if not data_ready else "Esplora dati caricati",
     "Richiede Dati" if not data_ready else "Allena un nuovo modello"
 ]
-# Disabilita opzioni se i requisiti non sono soddisfatti (Streamlit > 1.18)
-# disabled_options = [
-#     not (data_ready and model_ready), # Dashboard
-#     not model_ready,                  # Simulazione
-#     not data_ready,                   # Analisi
-#     not data_ready                    # Allenamento
-# ]
+
+# Costruisci lista booleana per disabilitare
+disabled_options = [
+    not (data_ready and model_ready), # Dashboard
+    not model_ready,                  # Simulazione
+    not data_ready,                   # Analisi
+    not data_ready                    # Allenamento
+]
+
+# Determina la pagina attiva, forzando il Dashboard se la scelta corrente non è valida
+current_page_index = 0 # Default to Dashboard
+try:
+     if 'current_page' in st.session_state:
+          current_page_index = radio_options.index(st.session_state.current_page)
+          # Se la pagina selezionata è disabilitata, torna al Dashboard
+          if disabled_options[current_page_index]:
+               st.warning(f"La pagina '{st.session_state.current_page}' richiede dati/modello non disponibili. Reindirizzato al Dashboard.")
+               current_page_index = 0
+     else:
+          # Se non c'è pagina salvata, usa il primo non disabilitato (o il Dashboard)
+          current_page_index = next((i for i, disabled in enumerate(disabled_options) if not disabled), 0)
+
+except ValueError:
+     current_page_index = 0 # Default se il nome salvato è invalido
 
 page = st.sidebar.radio(
     'Scegli una funzionalità',
     options=radio_options,
-    captions=radio_captions
-    # disabled=disabled_options # Attiva se usi Streamlit >= 1.18
+    captions=radio_captions,
+    index=current_page_index,
+    #disabled=disabled_options # Nota: Streamlit <1.28 potrebbe avere problemi con disabled+captions
+    key='page_selector' # Usa una chiave diversa se 'current_page' la usi altrove
 )
+# Salva la scelta corrente per mantenerla tra i refresh (se valida)
+if not disabled_options[radio_options.index(page)]:
+     st.session_state.current_page = page
+else:
+     # Se la pagina selezionata diventa disabilitata (es. si rimuove il modello), resetta
+     st.session_state.current_page = radio_options[0] # Torna al Dashboard
+
 
 # ==============================================================================
 # --- Logica Pagine Principali ---
@@ -953,9 +981,7 @@ active_model = st.session_state.active_model
 active_device = st.session_state.active_device
 active_scaler_features = st.session_state.active_scaler_features
 active_scaler_targets = st.session_state.active_scaler_targets
-# Usa df da session_state per consistenza
 df_current = st.session_state.get('df', None)
-# Feature columns globali o specifiche del modello se presenti
 feature_columns_current = active_config.get("feature_columns", st.session_state.feature_columns) if active_config else st.session_state.feature_columns
 date_col_name_csv = st.session_state.date_col_name_csv
 
@@ -964,6 +990,8 @@ if page == 'Dashboard':
     st.header('Dashboard Idrologica')
     if not (model_ready and data_ready):
         st.warning("⚠️ Seleziona un Modello attivo e carica i Dati Storici (CSV) per usare il Dashboard.")
+        if not data_ready: st.info("Mancano i dati storici (CSV).")
+        if not model_ready: st.info("Manca un modello attivo.")
     else:
         input_window = active_config["input_window"]
         output_window = active_config["output_window"]
@@ -974,6 +1002,9 @@ if page == 'Dashboard':
 
         st.subheader('Ultimi dati disponibili')
         try:
+            if len(df_current) < input_window:
+                 st.warning(f"Attenzione: Dati storici ({len(df_current)} righe) insufficienti per la finestra di input del modello ({input_window} ore). La previsione potrebbe non essere accurata o fallire.")
+
             last_data = df_current.iloc[-1]
             last_date = last_data[date_col_name_csv]
             col1, col2, col3 = st.columns(3)
@@ -991,12 +1022,12 @@ if page == 'Dashboard':
                      st.metric(label=humidity_feature_dash[0].split('(')[0].strip(), value=f"{last_data[humidity_feature_dash[0]]:.1f}%")
 
             st.header('Previsione basata sugli ultimi dati')
-            if st.button('Genera previsione', type="primary", key="dash_predict"):
-                with st.spinner('Generazione previsione...'):
-                    latest_data = df_current.iloc[-input_window:][feature_columns_current].values
-                    if latest_data.shape[0] < input_window:
-                        st.error(f"Dati insufficienti ({latest_data.shape[0]}) per finestra input ({input_window}).")
-                    else:
+            if st.button('Genera previsione', type="primary", key="dash_predict", disabled=(len(df_current) < input_window)):
+                if len(df_current) < input_window:
+                     st.error(f"Impossibile generare previsione: servono almeno {input_window} ore di dati, disponibili {len(df_current)}.")
+                else:
+                    with st.spinner('Generazione previsione...'):
+                        latest_data = df_current.iloc[-input_window:][feature_columns_current].values
                         predictions = predict(active_model, latest_data, active_scaler_features, active_scaler_targets, active_config, active_device)
                         if predictions is not None:
                             st.subheader(f'Previsione per le prossime {output_window} ore')
@@ -1012,10 +1043,13 @@ if page == 'Dashboard':
                                 s_name = target_columns[i].split('(')[-1].replace(')','').replace('/','_').strip()
                                 st.plotly_chart(fig, use_container_width=True)
                                 st.markdown(get_plotly_download_link(fig, f"grafico_{s_name}_{last_date.strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
+            elif len(df_current) < input_window:
+                 st.info(f"Il bottone 'Genera previsione' è disabilitato perché servono {input_window} ore di dati.")
+
         except IndexError:
-             st.error("Errore nel leggere l'ultimo dato dal DataFrame.")
+             st.error("Errore nel leggere l'ultimo dato dal DataFrame. Potrebbe essere vuoto.")
         except KeyError as ke:
-             st.error(f"Errore: Colonna '{ke}' non trovata nei dati caricati o nella configurazione.")
+             st.error(f"Errore: Colonna '{ke}' non trovata nei dati caricati o nella configurazione del modello attivo.")
         except Exception as e:
              st.error(f"Errore imprevisto nel Dashboard: {e}")
              st.error(traceback.format_exc())
@@ -1045,23 +1079,28 @@ elif page == 'Simulazione':
             st.subheader(f'Inserisci valori costanti per {input_window} ore')
             temp_sim_values = {}
             cols_manual = st.columns(3)
-            with cols_manual[0]:
+            col_idx = 0
+            # Pioggia
+            with cols_manual[col_idx % 3]:
                  st.write("**Pioggia (mm)**")
                  for feature in [f for f in feature_columns_current if 'Cumulata' in f]:
                       default_val = df_current[feature].median() if df_current is not None and feature in df_current else 0.0
-                      temp_sim_values[feature] = st.number_input(f'{feature.split("(")[0]}', min_value=0.0, value=round(default_val,1), step=0.5, format="%.1f")
-            with cols_manual[1]:
+                      temp_sim_values[feature] = st.number_input(f'{feature.split("(")[0]}', min_value=0.0, value=round(default_val,1), step=0.5, format="%.1f", key=f"man_{feature}")
+            col_idx += 1
+            # Umidità
+            with cols_manual[col_idx % 3]:
                  st.write("**Umidità (%)**")
                  for feature in [f for f in feature_columns_current if 'Umidita' in f]:
                       default_val = df_current[feature].median() if df_current is not None and feature in df_current else 70.0
-                      temp_sim_values[feature] = st.number_input(f'{feature.split("(")[0]}', min_value=0.0, max_value=100.0, value=round(default_val,1), step=1.0, format="%.1f")
-            with cols_manual[2]:
+                      temp_sim_values[feature] = st.number_input(f'{feature.split("(")[0]}', min_value=0.0, max_value=100.0, value=round(default_val,1), step=1.0, format="%.1f", key=f"man_{feature}")
+            col_idx += 1
+             # Livelli
+            with cols_manual[col_idx % 3]:
                  st.write("**Livelli (m)**")
                  for feature in [f for f in feature_columns_current if 'Livello' in f]:
                       default_val = df_current[feature].median() if df_current is not None and feature in df_current else 0.5
-                      temp_sim_values[feature] = st.number_input(f'{feature.split("[")[0]}', min_value=-2.0, max_value=15.0, value=round(default_val,2), step=0.05, format="%.2f")
+                      temp_sim_values[feature] = st.number_input(f'{feature.split("[")[0]}', min_value=-2.0, max_value=15.0, value=round(default_val,2), step=0.05, format="%.2f", key=f"man_{feature}")
 
-            # Crea array numpy
             sim_data_list = []
             try:
                 for feature in feature_columns_current: # Mantieni ordine corretto
@@ -1079,7 +1118,7 @@ elif page == 'Simulazione':
 
             # Mappatura colonne GSheet -> Modello (DA PERSONALIZZARE!)
             column_mapping_gsheet_to_model = {
-                'Data_Ora': date_col_name_csv, # Mappa sempre la data
+                'Data_Ora': date_col_name_csv,
                 'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
                 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
                 'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
@@ -1089,13 +1128,11 @@ elif page == 'Simulazione':
                 'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
                 'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
                 'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-                # Aggiungi la tua colonna umidità GSheet -> Modello qui se esiste
-                # 'NomeColonnaUmiditaGSheet': 'Umidita\' Sensore 3452 (Montemurello)'
+                # 'NomeColonnaUmiditaGSheet': 'Umidita\' Sensore 3452 (Montemurello)' # Esempio Umidità
             }
             expected_google_sheet_cols = list(column_mapping_gsheet_to_model.keys())
-            date_col_name_gsheet = 'Data_Ora' # Nome colonna data nel GSheet
+            date_col_name_gsheet = 'Data_Ora'
 
-            # Gestione Umidità manuale se non mappata
             humidity_col_in_model = next((f for f in feature_columns_current if 'Umidita' in f), None)
             humidity_mapped = False
             if humidity_col_in_model:
@@ -1103,17 +1140,17 @@ elif page == 'Simulazione':
 
             selected_humidity_gsheet = None
             if humidity_col_in_model and not humidity_mapped:
-                 st.warning(f"Colonna Umidità '{humidity_col_in_model}' non mappata da GSheet.")
+                 st.warning(f"Colonna Umidità '{humidity_col_in_model}' non mappata da GSheet. Verrà richiesto un valore costante.")
                  selected_humidity_gsheet = st.number_input(
-                     f"Inserisci umidità (%) costante per '{humidity_col_in_model}'",
-                     min_value=0.0, max_value=100.0, value=75.0, step=1.0, format="%.1f"
+                     f"Inserisci umidità (%) costante per '{humidity_col_in_model.split('(')[0]}'",
+                     min_value=0.0, max_value=100.0, value=75.0, step=1.0, format="%.1f", key="gsheet_hum"
                  )
             elif humidity_col_in_model and humidity_mapped:
                  st.info(f"Umidità '{humidity_col_in_model}' verrà letta da GSheet.")
 
-            if st.button("Importa e Prepara da Google Sheet"):
+            if st.button("Importa e Prepara da Google Sheet", key="gsheet_import"):
                 sheet_id = extract_sheet_id(sheet_url)
-                if not sheet_id: st.error("URL GSheet non valido.")
+                if not sheet_id: st.error("URL GSheet non valido o ID non estratto.")
                 else:
                     st.info(f"Tentativo connessione GSheet ID: {sheet_id}")
                     with st.spinner("Importazione e pulizia dati GSheet..."):
@@ -1124,47 +1161,69 @@ elif page == 'Simulazione':
                         if sheet_data_cleaned is not None:
                             mapped_data = pd.DataFrame()
                             successful_mapping = True
+                            # Mappa colonne esistenti
                             for gsheet_col, model_col in column_mapping_gsheet_to_model.items():
                                 if gsheet_col in sheet_data_cleaned.columns:
                                     mapped_data[model_col] = sheet_data_cleaned[gsheet_col]
-                                # Non serve else, import_data_from_sheet verifica le colonne
+                                elif model_col != date_col_name_csv: # Ignora data mancante (già gestita), ma errore per altre
+                                     st.error(f"Colonna '{gsheet_col}' (mappata a '{model_col}') non trovata nei dati GSheet importati.")
+                                     successful_mapping = False
 
-                            # Aggiungi umidità manuale se necessario
-                            if humidity_col_in_model and not humidity_mapped and selected_humidity_gsheet is not None:
-                                 mapped_data[humidity_col_in_model] = selected_humidity_gsheet
-                            elif humidity_col_in_model and not humidity_mapped and selected_humidity_gsheet is None:
-                                 st.error(f"Umidità '{humidity_col_in_model}' non mappata né inserita manualmente.")
+                            # Gestione Umidità manuale o mancante
+                            if humidity_col_in_model and not humidity_mapped:
+                                 if selected_humidity_gsheet is not None:
+                                      mapped_data[humidity_col_in_model] = selected_humidity_gsheet
+                                      st.write(f"Applicata umidità costante: {selected_humidity_gsheet}%")
+                                 else: # Non dovrebbe succedere se il widget è mostrato
+                                      st.error(f"Errore: Umidità '{humidity_col_in_model}' richiesta ma non mappata né fornita.")
+                                      successful_mapping = False
+                            elif humidity_col_in_model and humidity_mapped and humidity_col_in_model not in mapped_data.columns:
+                                 st.error(f"Errore: Colonna umidità '{humidity_col_in_model}' mappata ma non presente nei dati GSheet importati.")
                                  successful_mapping = False
 
                             if successful_mapping:
                                 missing_model_features = [col for col in feature_columns_current if col not in mapped_data.columns]
                                 if missing_model_features:
-                                     st.error(f"Errore mappatura GSheet: mancano colonne modello: {', '.join(missing_model_features)}")
+                                     st.error(f"Errore mappatura GSheet: mancano colonne modello finali: {', '.join(missing_model_features)}")
                                 else:
                                      try:
-                                          sim_data_input = mapped_data[feature_columns_current].values
-                                          # Salva per evitare ricaricamenti
-                                          st.session_state.imported_sim_data = sim_data_input
-                                          st.session_state.imported_sim_df_preview = mapped_data
-                                          st.success(f"Dati GSheet importati e mappati ({sim_data_input.shape[0]} righe).")
+                                          # Ordina colonne e prendi valori
+                                          sim_data_input_gs = mapped_data[feature_columns_current].values
+                                          # Controlla forma finale
+                                          if sim_data_input_gs.shape == (input_window, len(feature_columns_current)):
+                                                st.session_state.imported_sim_data = sim_data_input_gs
+                                                st.session_state.imported_sim_df_preview = mapped_data.copy() # Salva copia per preview
+                                                st.success(f"Dati GSheet importati e mappati ({sim_data_input_gs.shape[0]} righe x {sim_data_input_gs.shape[1]} colonne).")
+                                          else:
+                                               st.error(f"Errore shape dati GSheet finali. Atteso: ({input_window}, {len(feature_columns_current)}), Ottenuto: {sim_data_input_gs.shape}")
+
+                                     except KeyError as ke_final:
+                                          st.error(f"Errore durante l'ordinamento finale delle colonne da GSheet: Colonna '{ke_final}' non trovata.")
                                      except Exception as e_map:
                                           st.error(f"Errore finale creazione dati da GSheet: {e_map}")
+                        else:
+                             st.error("Importazione da GSheet fallita o nessun dato valido trovato.")
 
-            # Mostra anteprima se importato
-            if 'imported_sim_data' in st.session_state:
-                 st.subheader("Anteprima Dati da GSheet (ultime righe)")
-                 preview_cols = [date_col_name_csv] + feature_columns_current
-                 preview_cols = [col for col in preview_cols if col in st.session_state.imported_sim_df_preview.columns]
-                 st.dataframe(st.session_state.imported_sim_df_preview[preview_cols].tail().round(3))
-                 sim_data_input = st.session_state.imported_sim_data
+
+            # Mostra anteprima se importato con successo
+            if 'imported_sim_data' in st.session_state and st.session_state.imported_sim_data is not None:
+                 st.subheader("Anteprima Dati da GSheet (ultime righe importate)")
+                 preview_cols_gs = [col for col in feature_columns_current if col in st.session_state.imported_sim_df_preview.columns]
+                 if date_col_name_csv in st.session_state.imported_sim_df_preview.columns:
+                       preview_cols_gs = [date_col_name_csv] + preview_cols_gs
+                 st.dataframe(st.session_state.imported_sim_df_preview[preview_cols_gs].tail().round(3))
+                 sim_data_input = st.session_state.imported_sim_data # Usa i dati importati
+            else:
+                 # Resetta stato se importazione fallita o non eseguita
+                 if 'imported_sim_data' in st.session_state: del st.session_state.imported_sim_data
+                 if 'imported_sim_df_preview' in st.session_state: del st.session_state.imported_sim_df_preview
 
         # --- Simulazione: Orario Dettagliato ---
         elif sim_method == 'Orario Dettagliato (Avanzato)':
             st.subheader(f'Inserisci dati per {input_window} ore precedenti')
-            # Usa st.data_editor (come prima, ma assicurati gestisca input_window)
-            # Inizializza/Recupera da session_state, gestendo cambio input_window
             session_key_hourly = f"sim_hourly_data_{input_window}" # Chiave dinamica
-            if session_key_hourly not in st.session_state:
+            if session_key_hourly not in st.session_state or st.session_state[session_key_hourly].shape[0] != input_window or list(st.session_state[session_key_hourly].columns) != feature_columns_current:
+                 st.info("Inizializzazione tabella dati orari...")
                  init_values = {}
                  for col in feature_columns_current:
                       init_values[col] = df_current[col].median() if df_current is not None and col in df_current else 0.0
@@ -1174,24 +1233,58 @@ elif page == 'Simulazione':
                      index=[f"T-{input_window-i}" for i in range(input_window)]
                  )
 
+            # Configurazione colonne per data_editor
+            column_config_editor = {}
+            for col in feature_columns_current:
+                 format_str = "%.1f" # Default
+                 step_val = 0.1
+                 min_val = None
+                 max_val = None
+                 if 'Cumulata' in col: format_str = "%.1f"; step_val = 0.5; min_val = 0.0
+                 elif 'Umidita' in col: format_str = "%.1f"; step_val = 1.0; min_val = 0.0; max_val = 100.0
+                 elif 'Livello' in col: format_str = "%.3f"; step_val = 0.01; min_val = -2.0; max_val = 15.0
+                 column_config_editor[col] = st.column_config.NumberColumn(
+                     label=col.split('(')[0].split('[')[0].strip(), # Nome più corto
+                     help=col, # Tooltip con nome completo
+                     format=format_str,
+                     step=step_val,
+                     min_value=min_val,
+                     max_value=max_val
+                 )
+
             edited_df = st.data_editor(
                 st.session_state[session_key_hourly],
-                # num_rows="dynamic", # Attenzione: rende difficile mantenere input_window esatto
-                height=(input_window + 1) * 35 + 3, # Altezza dinamica approx
+                height=(input_window + 1) * 35 + 3,
                 use_container_width=True,
-                column_config={col: st.column_config.NumberColumn(format="%.3f") for col in feature_columns_current}
+                column_config=column_config_editor,
+                key=f"editor_{session_key_hourly}" # Chiave univoca per l'editor
             )
 
-            if len(edited_df) != input_window:
-                 st.error(f"Tabella deve avere esattamente {input_window} righe (attuali: {len(edited_df)}). Modifica o resetta.")
+            # Validazione post-modifica (essenziale con data_editor)
+            if edited_df.shape[0] != input_window:
+                 st.error(f"Tabella deve avere esattamente {input_window} righe (attuali: {len(edited_df)}). Reset tabella o correggi.")
+                 # Potresti aggiungere un bottone per resettare st.session_state[session_key_hourly]
                  sim_data_input = None
+            elif list(edited_df.columns) != feature_columns_current:
+                 st.error("Le colonne della tabella non corrispondono alle feature attese. Reset tabella.")
+                 sim_data_input = None
+            elif edited_df.isnull().sum().sum() > 0:
+                 st.warning("Rilevati valori mancanti (NaN) nella tabella. Assicurati siano tutti compilati.")
+                 # Considera se riempire i NaN o bloccare l'esecuzione
+                 sim_data_input = None # Blocco per sicurezza
             else:
                  try:
-                      sim_data_input = edited_df[feature_columns_current].values
-                      st.session_state[session_key_hourly] = edited_df # Salva modifiche
-                      st.success("Dati orari pronti.")
-                 except KeyError as ke:
-                      st.error(f"Errore colonne tabella: {ke}")
+                      # Assicura tipo numerico prima di convertire in numpy
+                      sim_data_input_edit = edited_df[feature_columns_current].astype(float).values
+                      if sim_data_input_edit.shape == (input_window, len(feature_columns_current)):
+                           sim_data_input = sim_data_input_edit
+                           st.session_state[session_key_hourly] = edited_df # Salva modifiche valide
+                           st.success("Dati orari pronti.")
+                      else: # Controllo extra shape
+                           st.error("Errore shape dati finali dalla tabella.")
+                           sim_data_input = None
+                 except Exception as e_edit:
+                      st.error(f"Errore conversione dati tabella: {e_edit}")
                       sim_data_input = None
 
         # --- ESECUZIONE SIMULAZIONE ---
@@ -1199,8 +1292,11 @@ elif page == 'Simulazione':
         run_simulation = st.button('Esegui simulazione', type="primary", disabled=(sim_data_input is None), key="sim_run")
 
         if run_simulation and sim_data_input is not None:
+             # Validazione finale shape e NaN prima di predict
              if sim_data_input.shape[0] != input_window or sim_data_input.shape[1] != len(feature_columns_current):
                   st.error(f"Errore shape input simulazione. Atteso:({input_window}, {len(feature_columns_current)}), Ottenuto:{sim_data_input.shape}")
+             elif np.isnan(sim_data_input).any():
+                  st.error(f"Errore: Rilevati valori NaN nell'input della simulazione ({np.isnan(sim_data_input).sum()} valori). Controlla i dati inseriti.")
              else:
                   with st.spinner('Simulazione in corso...'):
                        predictions_sim = predict(active_model, sim_data_input, active_scaler_features, active_scaler_targets, active_config, active_device)
@@ -1219,8 +1315,11 @@ elif page == 'Simulazione':
                                s_name = target_columns[i].split('(')[-1].replace(')','').replace('/','_').strip()
                                st.plotly_chart(fig_sim, use_container_width=True)
                                st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_{s_name}_{current_time_sim.strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
+                       else:
+                            st.error("La funzione di predizione ha restituito un errore.")
+
         elif run_simulation and sim_data_input is None:
-             st.error("Dati input simulazione non pronti o non validi.")
+             st.error("Dati input simulazione non pronti o non validi. Controlla i messaggi di errore sopra.")
 
 
 # --- PAGINA ANALISI DATI STORICI ---
@@ -1229,32 +1328,122 @@ elif page == 'Analisi Dati Storici':
     if not data_ready:
         st.warning("⚠️ Carica i Dati Storici (CSV) per usare l'Analisi.")
     else:
-        st.info(f"Dataset caricato: {len(df_current)} righe, dal {df_current[date_col_name_csv].min().strftime('%d/%m/%Y')} al {df_current[date_col_name_csv].max().strftime('%d/%m/%Y')}")
-        # ... (Logica selezione date e filtraggio come prima, usando df_current e date_col_name_csv) ...
+        st.info(f"Dataset caricato: {len(df_current)} righe, dal {df_current[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')} al {df_current[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')}")
+
         min_date = df_current[date_col_name_csv].min().date()
         max_date = df_current[date_col_name_csv].max().date()
         col1, col2 = st.columns(2)
-        with col1: start_date = st.date_input('Data inizio', min_date, min_value=min_date, max_value=max_date)
-        with col2: end_date = st.date_input('Data fine', max_date, min_value=min_date, max_value=max_date)
+        with col1: start_date = st.date_input('Data inizio', min_date, min_value=min_date, max_value=max_date, key="analisi_start")
+        with col2: end_date = st.date_input('Data fine', max_date, min_value=min_date, max_value=max_date, key="analisi_end")
 
-        if start_date > end_date: st.error("Data inizio > Data fine.")
+        if start_date > end_date: st.error("Data inizio non può essere successiva alla data fine.")
         else:
-            mask = (df_current[date_col_name_csv].dt.date >= start_date) & (df_current[date_col_name_csv].dt.date <= end_date)
+            # Converti date a datetime per confronto corretto
+            start_datetime = datetime.combine(start_date, datetime.min.time())
+            end_datetime = datetime.combine(end_date, datetime.max.time())
+
+            mask = (df_current[date_col_name_csv] >= start_datetime) & (df_current[date_col_name_csv] <= end_datetime)
             filtered_df = df_current.loc[mask]
-            if len(filtered_df) == 0: st.warning("Nessun dato nel periodo selezionato.")
+
+            if len(filtered_df) == 0: st.warning("Nessun dato trovato nel periodo selezionato.")
             else:
                  st.success(f"Trovati {len(filtered_df)} record ({start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}).")
-                 # ... (Logica Tabs con Plotly per Andamento, Statistiche, Correlazione come prima, usando filtered_df e feature_columns_current) ...
+
                  tab1, tab2, tab3 = st.tabs(["Andamento Temporale", "Statistiche/Distribuzione", "Correlazione"])
+
                  with tab1:
-                      # ... (codice multiselect e plot plotly andamento) ...
-                      pass # Mantieni codice precedente qui
+                      st.subheader("Andamento Temporale Features")
+                      features_to_plot = st.multiselect(
+                          "Seleziona feature da visualizzare",
+                          options=feature_columns_current,
+                          default=[f for f in feature_columns_current if 'Livello' in f][:2], # Default ai primi 2 livelli
+                          key="analisi_multi_ts"
+                      )
+                      if features_to_plot:
+                           fig_ts = go.Figure()
+                           for feature in features_to_plot:
+                                fig_ts.add_trace(go.Scatter(x=filtered_df[date_col_name_csv], y=filtered_df[feature], mode='lines', name=feature))
+                           fig_ts.update_layout(
+                               title='Andamento Temporale Selezionato',
+                               xaxis_title='Data e Ora', yaxis_title='Valore', height=500, hovermode="x unified"
+                           )
+                           st.plotly_chart(fig_ts, use_container_width=True)
+                           st.markdown(get_plotly_download_link(fig_ts, f"andamento_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"), unsafe_allow_html=True)
+                      else: st.info("Seleziona almeno una feature da visualizzare.")
+
                  with tab2:
-                      # ... (codice selectbox, describe e plot plotly istogramma) ...
-                      pass # Mantieni codice precedente qui
+                      st.subheader("Statistiche Descrittive e Distribuzione")
+                      feature_stat = st.selectbox(
+                          "Seleziona feature per statistiche",
+                          options=feature_columns_current,
+                          index=feature_columns_current.index([f for f in feature_columns_current if 'Livello' in f][0]) if any('Livello' in f for f in feature_columns_current) else 0, # Default al primo livello
+                          key="analisi_select_stat"
+                      )
+                      if feature_stat:
+                           st.write(f"**Statistiche per: {feature_stat}**")
+                           st.dataframe(filtered_df[[feature_stat]].describe().round(3))
+
+                           st.write(f"**Distribuzione per: {feature_stat}**")
+                           fig_hist = go.Figure()
+                           fig_hist.add_trace(go.Histogram(x=filtered_df[feature_stat], name=feature_stat))
+                           fig_hist.update_layout(
+                               title=f'Distribuzione di {feature_stat}',
+                               xaxis_title='Valore', yaxis_title='Frequenza', height=400
+                           )
+                           st.plotly_chart(fig_hist, use_container_width=True)
+                           st.markdown(get_plotly_download_link(fig_hist, f"distrib_{feature_stat.replace(' ','_').replace('/','_')}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"), unsafe_allow_html=True)
+
                  with tab3:
-                      # ... (codice multiselect, heatmap e scatter plot plotly correlazione) ...
-                      pass # Mantieni codice precedente qui
+                      st.subheader("Matrice di Correlazione")
+                      features_corr = st.multiselect(
+                          "Seleziona feature per la matrice di correlazione",
+                          options=feature_columns_current,
+                          default=feature_columns_current, # Default a tutte
+                          key="analisi_multi_corr"
+                      )
+                      if len(features_corr) > 1:
+                           corr_matrix = filtered_df[features_corr].corr()
+                           fig_heatmap = go.Figure(data=go.Heatmap(
+                               z=corr_matrix.values,
+                               x=corr_matrix.columns,
+                               y=corr_matrix.columns,
+                               colorscale='RdBu', # Scala Rosso-Blu divergente
+                               zmin=-1, zmax=1,   # Forza range da -1 a 1
+                               colorbar=dict(title='Correlazione')
+                           ))
+                           fig_heatmap.update_layout(
+                               title='Matrice di Correlazione',
+                               height=600,
+                               xaxis_tickangle=-45
+                           )
+                           st.plotly_chart(fig_heatmap, use_container_width=True)
+                           st.markdown(get_plotly_download_link(fig_heatmap, f"correlazione_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"), unsafe_allow_html=True)
+
+                           st.subheader("Scatter Plot Correlazione (Seleziona 2 Feature)")
+                           col_sc1, col_sc2 = st.columns(2)
+                           with col_sc1: feature_scatter_x = st.selectbox("Feature Asse X", features_corr, key="analisi_scatter_x")
+                           with col_sc2: feature_scatter_y = st.selectbox("Feature Asse Y", features_corr, key="analisi_scatter_y")
+
+                           if feature_scatter_x and feature_scatter_y:
+                                fig_scatter = go.Figure()
+                                fig_scatter.add_trace(go.Scatter(
+                                     x=filtered_df[feature_scatter_x],
+                                     y=filtered_df[feature_scatter_y],
+                                     mode='markers',
+                                     marker=dict(size=5, opacity=0.7),
+                                     name=f'{feature_scatter_x} vs {feature_scatter_y}'
+                                ))
+                                fig_scatter.update_layout(
+                                     title=f'Correlazione: {feature_scatter_x} vs {feature_scatter_y}',
+                                     xaxis_title=feature_scatter_x,
+                                     yaxis_title=feature_scatter_y,
+                                     height=500
+                                )
+                                st.plotly_chart(fig_scatter, use_container_width=True)
+                                st.markdown(get_plotly_download_link(fig_scatter, f"scatter_{feature_scatter_x.replace(' ','_')}_vs_{feature_scatter_y.replace(' ','_')}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"), unsafe_allow_html=True)
+
+                      else: st.info("Seleziona almeno due feature per calcolare la correlazione.")
+
                  st.divider()
                  st.subheader('Download Dati Filtrati')
                  st.markdown(get_table_download_link(filtered_df, f"dati_filtrati_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"), unsafe_allow_html=True)
@@ -1263,29 +1452,35 @@ elif page == 'Analisi Dati Storici':
 elif page == 'Allenamento Modello':
     st.header('Allenamento Nuovo Modello LSTM')
 
-    # DEBUG e Condizione iniziale
     df_training_page = st.session_state.get('df', None)
-    st.write(f"<small>DEBUG (Training Page Entry): `df` is None: {df_training_page is None}</small>", unsafe_allow_html=True)
-    if df_training_page is not None:
-        st.write(f"<small>DEBUG (Training Page Entry): `df` shape: {df_training_page.shape}</small>", unsafe_allow_html=True)
 
     if df_training_page is None:
-        st.warning("⚠️ Dati storici non caricati o caricamento fallito. Carica un file CSV valido.")
+        st.warning("⚠️ Dati storici non caricati o caricamento fallito. Carica un file CSV valido nella Sidebar.")
     else:
         st.success(f"Dati disponibili per l'addestramento: {len(df_training_page)} righe.")
         st.subheader('Configurazione Addestramento')
 
-        save_model_name = st.text_input("Nome base per salvare il modello (es. 'modello_24_12_v1')", value=f"modello_{datetime.now().strftime('%Y%m%d_%H%M')}")
+        default_model_name = f"modello_{datetime.now().strftime('%Y%m%d_%H%M')}"
+        save_model_name = st.text_input("Nome base per salvare il modello (es. 'modello_24_12_v1')", value=default_model_name)
 
-        st.write("**1. Seleziona Target:**")
+        st.write("**1. Seleziona Target (Livelli Idrometrici):**")
         selected_targets_train = []
+        # Usa feature_columns_current che sono quelle globali o specifiche del modello caricato
         hydro_features_train = [col for col in feature_columns_current if 'Livello' in col]
-        cols_targets = st.columns(min(len(hydro_features_train), 5)) # Max 5 colonne
-        for i, feature in enumerate(hydro_features_train):
-            with cols_targets[i % len(cols_targets)]:
-                 label = feature.split('(')[-1].replace(')','').strip()
-                 if st.checkbox(label, value=(feature in active_config["target_columns"] if active_config else False), key=f"target_train_{i}"):
-                     selected_targets_train.append(feature)
+        # Se non ci sono livelli nelle feature correnti, mostra un errore
+        if not hydro_features_train:
+             st.error("Nessuna colonna 'Livello Idrometrico' trovata nelle feature definite. Impossibile selezionare target.")
+        else:
+            # Cerca i target del modello attivo (se esiste) per pre-selezionare
+            default_targets = active_config["target_columns"] if active_config and all(t in hydro_features_train for t in active_config["target_columns"]) else hydro_features_train[:1] # Default al primo se no
+
+            cols_targets = st.columns(min(len(hydro_features_train), 5))
+            for i, feature in enumerate(hydro_features_train):
+                with cols_targets[i % len(cols_targets)]:
+                     label = feature.split('(')[-1].replace(')','').strip() # Nome breve per checkbox
+                     is_checked = feature in default_targets
+                     if st.checkbox(label, value=is_checked, key=f"target_train_{feature}", help=feature):
+                         selected_targets_train.append(feature)
 
         st.write("**2. Imposta Parametri:**")
         with st.expander("Parametri Modello e Training", expanded=True):
@@ -1293,7 +1488,7 @@ elif page == 'Allenamento Modello':
              with col1_train:
                  input_window_train = st.number_input("Input Window (ore)", 6, 168, (active_config["input_window"] if active_config else 24), 6, key="t_in")
                  output_window_train = st.number_input("Output Window (ore)", 1, 72, (active_config["output_window"] if active_config else 12), 1, key="t_out")
-                 val_split_train = st.slider("% Validazione", 5, 40, 20, 1, key="t_val")
+                 val_split_train = st.slider("% Validazione", 0, 50, 20, 1, key="t_val", help="Percentuale dati finali usata per validazione (0 per nessuna validazione)") # Permetti 0
              with col2_train:
                  hidden_size_train_cfg = st.number_input("Hidden Size", 16, 1024, (active_config["hidden_size"] if active_config else 128), 16, key="t_hidden")
                  num_layers_train_cfg = st.number_input("Num Layers", 1, 8, (active_config["num_layers"] if active_config else 2), 1, key="t_layers")
@@ -1304,13 +1499,13 @@ elif page == 'Allenamento Modello':
                  epochs_train = st.number_input("Epoche", 5, 500, 50, 5, key="t_epochs")
 
         st.write("**3. Avvia Addestramento:**")
-        # Validazione nome e targets prima di mostrare il bottone
         valid_name = bool(save_model_name and re.match(r'^[a-zA-Z0-9_-]+$', save_model_name))
         valid_targets = bool(selected_targets_train)
-        ready_to_train = valid_name and valid_targets
+        ready_to_train = valid_name and valid_targets and bool(hydro_features_train) # Assicurati che ci fossero target selezionabili
 
         if not valid_targets: st.warning("Seleziona almeno un idrometro target.")
-        if not valid_name: st.warning("Inserisci un nome valido per il modello (lettere, numeri, -, _).")
+        if not valid_name: st.warning("Inserisci un nome valido per il modello (solo lettere, numeri, trattino -, underscore _).")
+        if not hydro_features_train: st.error("Impossibile procedere senza colonne 'Livello Idrometrico' nelle feature.")
 
         train_button = st.button("Addestra Nuovo Modello", type="primary", disabled=not ready_to_train, key="train_run")
 
@@ -1318,19 +1513,22 @@ elif page == 'Allenamento Modello':
              st.info(f"Avvio addestramento per '{save_model_name}'...")
              # Preparazione Dati
              with st.spinner('Preparazione dati...'):
+                  # Usa sempre le feature globali per l'addestramento
+                  training_features = st.session_state.feature_columns
                   X_train, y_train, X_val, y_val, scaler_features_train, scaler_targets_train = prepare_training_data(
-                      df_training_page.copy(), feature_columns_current, selected_targets_train,
+                      df_training_page.copy(), training_features, selected_targets_train,
                       input_window_train, output_window_train, val_split_train
                   )
-                  if X_train is None:
-                       st.error("Preparazione dati fallita.")
+                  if X_train is None: # prepare_training_data gestisce errori e ritorna None
+                       st.error("Preparazione dati fallita. Controlla i log sopra.")
                        st.stop()
                   st.success(f"Dati pronti: {len(X_train)} train, {len(X_val)} val.")
 
              # Addestramento
              st.subheader("Addestramento in corso...")
-             input_size_train = len(feature_columns_current)
+             input_size_train = len(training_features)
              output_size_train = len(selected_targets_train)
+             trained_model = None # Inizializza
              try:
                  trained_model, train_losses, val_losses = train_model(
                      X_train, y_train, X_val, y_val,
@@ -1341,13 +1539,13 @@ elif page == 'Allenamento Modello':
              except Exception as e_train:
                   st.error(f"Errore durante addestramento: {e_train}")
                   st.error(traceback.format_exc())
-                  st.stop()
+                  # trained_model rimane None
 
-             # Salvataggio Risultati
+             # Salvataggio Risultati (solo se addestramento riuscito)
              if trained_model:
                  st.success("Addestramento completato!")
-                 # Grafico Loss Finale (statico)
-                 # ... (codice matplotlib per grafico loss finale) ...
+                 # Potresti mostrare un grafico loss finale statico qui se vuoi
+                 # fig_loss_final = go.Figure()...
 
                  st.subheader("Salvataggio Modello, Configurazione e Scaler")
                  os.makedirs(MODELS_DIR, exist_ok=True)
@@ -1362,26 +1560,49 @@ elif page == 'Allenamento Modello':
                      "hidden_size": hidden_size_train_cfg, "num_layers": num_layers_train_cfg,
                      "dropout": dropout_train_cfg,
                      "target_columns": selected_targets_train,
-                     "feature_columns": feature_columns_current, # Salva feature usate
+                     "feature_columns": training_features, # Salva le feature *effettivamente usate*
                      "training_date": datetime.now().isoformat(),
-                     "final_val_loss": min(val_losses) if val_losses else None,
-                     # Aggiungi nome display se diverso dal nome file
-                     "display_name": save_model_name # Default a nome file
+                     "final_val_loss": min(val_losses) if val_losses and val_split_train > 0 else None,
+                     "display_name": save_model_name # Usa nome file come display name di default
                  }
 
                  try:
+                     # --- Blocco Salvataggio File ---
                      torch.save(trained_model.state_dict(), model_save_path)
                      with open(config_save_path, 'w') as f: json.dump(config_to_save, f, indent=4)
                      joblib.dump(scaler_features_train, scaler_f_save_path)
                      joblib.dump(scaler_targets_train, scaler_t_save_path)
-                     st.success(f"Modello '{save_model_name}' salvato in '{MODELS_DIR}/'")
-                     st.caption(f"Salvati: {model_save_path}, {config_save_path}, {scaler_f_save_path}, {scaler_t_save_path}")
-                     # Opzionale: fornire link download se non in repo
-                 except Exception as e_save:
-                      st.error(f"Errore salvataggio file: {e_save}")
+                     # -----------------------------
 
-                 # Test rapido (opzionale, come prima)
-                 # ...
+                     st.success(f"Modello '{save_model_name}' salvato in '{MODELS_DIR}/'")
+                     st.caption(f"Salvati: {os.path.basename(model_save_path)}, {os.path.basename(config_save_path)}, {os.path.basename(scaler_f_save_path)}, {os.path.basename(scaler_t_save_path)}")
+
+                     # --- NUOVA PARTE: GENERAZIONE LINK DOWNLOAD ---
+                     st.subheader("Download File del Modello Appena Allenato")
+
+                     # Genera i link usando la nuova funzione helper
+                     link_model = get_download_link_for_file(model_save_path, f"Scarica Modello ({os.path.basename(model_save_path)})")
+                     link_config = get_download_link_for_file(config_save_path, f"Scarica Configurazione ({os.path.basename(config_save_path)})")
+                     link_scaler_f = get_download_link_for_file(scaler_f_save_path, f"Scarica Scaler Features ({os.path.basename(scaler_f_save_path)})")
+                     link_scaler_t = get_download_link_for_file(scaler_t_save_path, f"Scarica Scaler Targets ({os.path.basename(scaler_t_save_path)})")
+
+                     # Mostra i link nell'app
+                     st.markdown(link_model, unsafe_allow_html=True)
+                     st.markdown(link_config, unsafe_allow_html=True)
+                     st.markdown(link_scaler_f, unsafe_allow_html=True)
+                     st.markdown(link_scaler_t, unsafe_allow_html=True)
+                     # ----------------------------------------------
+
+                 except Exception as e_save:
+                      st.error(f"Errore durante il salvataggio dei file: {e_save}")
+                      st.error(traceback.format_exc()) # Aggiungi per debug
+                      # Se il salvataggio fallisce, non mostrare i link
+
+             elif not train_button: # Se il bottone non è stato premuto (stato iniziale)
+                  pass # Non mostrare errori
+             else: # Se il bottone è stato premuto ma trained_model è None (errore training)
+                  st.error("Addestramento non completato a causa di errori precedenti. Impossibile salvare o fornire link.")
+
 
 # --- Footer ---
 st.sidebar.divider()
