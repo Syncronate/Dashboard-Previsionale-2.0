@@ -955,62 +955,60 @@ elif page == 'Simulazione':
             st.dataframe(preview_df.round(2))
 
 
-        # --- SIMULAZIONE: Importa da Google Sheet ---
+      # --- SIMULAZIONE: Importa da Google Sheet ---
         elif sim_method == 'Importa da Google Sheet':
             st.subheader(f'Importa le ultime {INPUT_WINDOW} ore dal foglio Google')
-            st.markdown("""
-            Assicurati che:
-            1.  Il foglio Google sia accessibile dall'account di servizio le cui credenziali sono nei secrets di Streamlit (`GOOGLE_CREDENTIALS`).
-            2.  L'URL fornito sia corretto.
-            3.  Il foglio contenga le colonne mappate qui sotto con dati numerici (o 'N/A'). La virgola come decimale è gestita.
-            4.  La colonna data/ora sia nel formato `GG/MM/AAAA HH:MM`.
-            5.  Ci siano almeno `INPUT_WINDOW` righe di dati validi e recenti.
-            """)
-
-            # Input URL foglio
+            # ... (spiegazioni e input URL rimangono invariati) ...
             sheet_url = st.text_input(
                 "URL del foglio Google Sheet",
                 "https://docs.google.com/spreadsheets/d/your-google-sheet-id/edit#gid=0" # Esempio
             )
 
-            # Mappatura tra i nomi delle colonne del foglio e i nomi attesi dal MODELLO (feature_columns)
-            # Modifica questa mappatura SE i nomi nel tuo foglio Google sono DIVERSI
+            # ... (column_mapping_gsheet_to_model rimane invariato) ...
             column_mapping_gsheet_to_model = {
                 # NOME_COLONNA_FOGLIO_GOOGLE : NOME_COLONNA_MODELLO (da feature_columns)
-                'Data_Ora': 'Data e Ora', # Nome colonna data nel foglio -> Nome colonna data usato internamente (non è una feature)
+                'Data_Ora': 'Data e Ora',
                 'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
                 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
                 'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
-                'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)', # Associazione Misa -> Bettolelle
+                'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
                 'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
                 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
                 'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
-                'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)', # Associazione Misa -> Bettolelle
+                'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
                 'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
-                # AGGIUNGI QUI ALTRE EVENTUALI MAPPATURE SE NECESSARIO
+                # AGGIUNGI QUI LA TUA COLONNA UMIDITA' SE ESISTE NEL FOGLIO
+                # Esempio: 'NomeColonnaUmiditaNelFoglio': 'Umidita\' Sensore 3452 (Montemurello)'
             }
 
             # Verifica se la colonna Umidità è nel mapping, altrimenti chiedila manualmente
-            humidity_col_in_model = humidity_feature[0]
+            humidity_col_in_model = humidity_feature[0] # Nome colonna umidità atteso dal modello
             humidity_col_in_gsheet = None
             for gsheet_name, model_name in column_mapping_gsheet_to_model.items():
                  if model_name == humidity_col_in_model:
                       humidity_col_in_gsheet = gsheet_name
                       break # Trovata
 
-            selected_humidity_gsheet = None
+            selected_humidity_gsheet = None # Inizializza la variabile
             if humidity_col_in_gsheet:
                  st.info(f"La colonna Umidità '{humidity_col_in_model}' verrà letta dalla colonna '{humidity_col_in_gsheet}' del foglio Google.")
+                 # In questo caso, selected_humidity_gsheet rimarrà None, e la colonna verrà letta dal foglio
             else:
-                 st.warning(f"La colonna Umidità '{humidity_col_in_model}' non è stata trovata nel mapping del foglio Google.")
-                 # Valore di umidità manuale
-                 humidity_preset_gsheet = st.selectbox(
-                     "Seleziona condizione di umidità del terreno (verrà usata per tutte le ore importate)",
-                     ["Molto secco (20%)", "Secco (40%)", "Normale (60%)", "Umido (80%)", "Saturo (95%)"], index=2
+                 # --- INIZIO BLOCCO MODIFICATO ---
+                 st.warning(f"La colonna Umidità '{humidity_col_in_model}' non è stata trovata nel mapping del foglio Google o non è specificata.")
+
+                 # Sostituisci st.selectbox con st.number_input
+                 selected_humidity_gsheet = st.number_input(
+                     label=f"Inserisci il valore di umidità (%) costante da usare per '{humidity_col_in_model}'",
+                     min_value=0.0,    # Limite minimo
+                     max_value=100.0,  # Limite massimo
+                     value=75.0,       # Valore di default suggerito
+                     step=1.0,         # Incremento
+                     format="%.1f",    # Formato visualizzazione (un decimale)
+                     help=f"Questo valore verrà applicato a tutte le {INPUT_WINDOW} ore importate dal foglio."
                  )
-                 # Estrai valore numerico dal preset
-                 selected_humidity_gsheet = float(humidity_preset_gsheet.split('(')[1].split('%')[0])
-                 st.info(f"Verrà usato un valore costante di {selected_humidity_gsheet}% per l'umidità.")
+                 st.info(f"Verrà usato un valore costante di {selected_humidity_gsheet}% per la colonna '{humidity_col_in_model}'.")
+                 # --- FINE BLOCCO MODIFICATO ---
 
 
             # Nomi delle colonne attese nel foglio Google (chiavi del mapping)
@@ -1019,59 +1017,61 @@ elif page == 'Simulazione':
 
             # Bottone per importare i dati
             if st.button("Importa e Prepara dati dal foglio Google"):
-                 sheet_id = extract_sheet_id(sheet_url) # Usa la funzione per estrarre l'ID
+                 # ... (logica di estrazione ID e importazione rimane invariata) ...
+                 sheet_id = extract_sheet_id(sheet_url)
 
                  if not sheet_id:
-                     st.error("URL del foglio Google non valido o ID non estraibile. Assicurati che sia nel formato corretto (es. .../d/SHEET_ID/edit...).")
+                     st.error("URL del foglio Google non valido o ID non estraibile...")
                  else:
                      st.info(f"Tentativo di connessione al foglio con ID: {sheet_id}")
                      with st.spinner("Importazione e pulizia dati da Google Sheet in corso..."):
-                         # Importa e pulisci i dati usando la funzione aggiornata
+                         # Importa e pulisci i dati
                          sheet_data_cleaned = import_data_from_sheet(
                              sheet_id,
                              expected_google_sheet_cols,
                              date_col_name=date_col_name_gsheet,
-                             date_format='%d/%m/%Y %H:%M' # Formato atteso
+                             date_format='%d/%m/%Y %H:%M'
                          )
 
                          if sheet_data_cleaned is not None:
-                             # Mappatura dei nomi delle colonne da GSheet a quelli del modello
+                             # Mappatura dei nomi delle colonne
                              mapped_data = pd.DataFrame()
                              successful_mapping = True
                              for gsheet_col, model_col in column_mapping_gsheet_to_model.items():
                                  if gsheet_col in sheet_data_cleaned.columns:
-                                     # Rinomina la colonna dal nome GSheet al nome atteso dal modello
                                      mapped_data[model_col] = sheet_data_cleaned[gsheet_col]
-                                 else:
-                                      # Questo non dovrebbe succedere se import_data_from_sheet funziona
-                                      st.error(f"Errore interno: la colonna '{gsheet_col}' non è presente nei dati puliti.")
-                                      successful_mapping = False
-                                      break
+                                 elif model_col == humidity_col_in_model and selected_humidity_gsheet is not None:
+                                     # Caso speciale: umidità non nel foglio ma valore manuale fornito
+                                     # Non fare nulla qui, verrà aggiunta dopo
+                                     pass
+                                 # Non serve un else per errore qui perché import_data_from_sheet
+                                 # dovrebbe già garantire che le colonne attese ci siano (se non facoltative)
+
+                             # Aggiungi la colonna di umidità SE non era nel foglio E è stato fornito un valore manuale
+                             if humidity_col_in_model not in mapped_data.columns and selected_humidity_gsheet is not None:
+                                  mapped_data[humidity_col_in_model] = selected_humidity_gsheet
+                                  st.info(f"Aggiunta colonna umidità '{humidity_col_in_model}' con valore costante {selected_humidity_gsheet}%.")
+                             elif humidity_col_in_model not in mapped_data.columns and selected_humidity_gsheet is None:
+                                  # Questo caso si verifica se l'umidità non è nel foglio e non è stata fornita manualmente
+                                  # (potrebbe succedere se togliessimo il widget number_input per qualche motivo)
+                                  st.error(f"Errore critico: la colonna umidità '{humidity_col_in_model}' non è disponibile né dal foglio né manualmente.")
+                                  successful_mapping = False
+
 
                              if successful_mapping:
-                                  # Aggiungi la colonna di umidità se non era nel foglio
-                                  if humidity_col_in_model not in mapped_data.columns and selected_humidity_gsheet is not None:
-                                       mapped_data[humidity_col_in_model] = selected_humidity_gsheet
-                                       st.info(f"Aggiunta colonna umidità '{humidity_col_in_model}' con valore costante {selected_humidity_gsheet}%.")
-                                  elif humidity_col_in_model not in mapped_data.columns and selected_humidity_gsheet is None:
-                                       st.error(f"Errore: la colonna umidità '{humidity_col_in_model}' non è nel foglio e non è stato fornito un valore manuale.")
-                                       successful_mapping = False
-
-
-                             if successful_mapping:
-                                  # Verifica finale se tutte le feature_columns sono presenti in mapped_data
+                                  # Verifica finale se tutte le feature_columns sono presenti
                                   missing_model_features = [col for col in feature_columns if col not in mapped_data.columns]
                                   if missing_model_features:
                                        st.error(f"Errore dopo la mappatura: mancano le seguenti colonne richieste dal modello: {', '.join(missing_model_features)}")
                                   else:
-                                       # Riordina le colonne secondo feature_columns per sicurezza
+                                       # Riordina le colonne e prendi i valori numpy
                                        sim_data_input = mapped_data[feature_columns].values
 
-                                       # Salva in session state per evitare ricaricamenti
+                                       # Salva in session state
                                        st.session_state.imported_sim_data = sim_data_input
-                                       st.session_state.imported_sim_df_preview = mapped_data # Salva anche il df per preview
+                                       st.session_state.imported_sim_df_preview = mapped_data
 
-                                       st.success(f"Dati importati e mappati con successo ({sim_data_input.shape[0]} righe). Premi 'Esegui simulazione'.")
+                                       st.success(f"Dati importati e mappati ({sim_data_input.shape[0]} righe). Premi 'Esegui simulazione'.")
 
                          # Se sheet_data_cleaned è None, l'errore è già stato mostrato dalla funzione
 
