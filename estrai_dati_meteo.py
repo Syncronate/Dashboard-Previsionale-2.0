@@ -37,7 +37,7 @@ CODICE_ARCEVIA_CORRETTO = 732
 def estrai_dati_meteo():
     """
     Estrae i dati meteo dall'API, filtra per stazione e codice specifico (per Arcevia),
-    calcola la pioggia oraria basandosi sull'ultimo dato nel Google Sheet e
+    calcola la pioggia negli ultimi 30 minuti basandosi sull'ultimo dato nel Google Sheet e
     aggiunge la nuova riga di dati al foglio senza cancellare lo storico.
     """
     print(f"--- Inizio Script Dati Meteo ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---")
@@ -94,8 +94,8 @@ def estrai_dati_meteo():
                 # Identifica le colonne di pioggia totale usando le keyword definite
                 is_pioggia_tot_col = any(keyword.lower() in col_name.lower() for keyword in DESCRIZIONE_PIOGGIA_TOT_GIORNALIERA_KEYWORDS)
 
-                # Assicurati che non sia la colonna calcolata "Pioggia Ora"
-                if is_pioggia_tot_col and "Pioggia Ora" not in col_name:
+                # Assicurati che non sia la colonna calcolata "Pioggia 30 Min"
+                if is_pioggia_tot_col and "Pioggia 30 Min" not in col_name and "Pioggia Ora" not in col_name: # Aggiunto controllo anche per vecchio nome
                     try:
                         station_name = col_name.split(" - ")[0].strip()
                     except IndexError:
@@ -123,12 +123,12 @@ def estrai_dati_meteo():
                         print(f"  -> Errore conversione valore precedente per '{station_name}' ('{prev_value_str}'): {e_parse}. Impostato a None.")
                         valori_precedenti_pioggia[station_name] = None
         else:
-             print("Nessuna riga di dati trovata nel foglio (solo intestazione o vuoto). Calcolo pioggia oraria partirà da zero/N/A.")
+             print("Nessuna riga di dati trovata nel foglio (solo intestazione o vuoto). Calcolo pioggia 30 min partirà dal valore attuale.")
 
     except gspread.exceptions.APIError as api_err:
          print(f"Errore API Google Sheets durante lettura dati: {api_err}")
     except Exception as e_read:
-        print(f"Attenzione: Errore imprevisto durante lettura dal foglio. Calcolo pioggia oraria potrebbe non funzionare. Errore: {e_read}")
+        print(f"Attenzione: Errore imprevisto durante lettura dal foglio. Calcolo pioggia 30 min potrebbe non funzionare. Errore: {e_read}")
         intestazione_attuale_foglio = [] # Resetta se la lettura fallisce gravemente
 
     # --- Estrazione Dati API ---
@@ -217,46 +217,48 @@ def estrai_dati_meteo():
                                 pioggia_tot_oggi_attuale = None
                                 print(f"    -> Identificato come Pioggia Totale Giornaliera, ma valore non è float ({valore_convertito}).")
 
-                # --- Calcolo Pioggia Oraria per la stazione corrente (solo se process_this_station è True) ---
-                pioggia_ora_key = f"{nome_stazione} - Pioggia 30 Min (mm)"
-                intestazioni_da_api[pioggia_ora_key] = True # Assicura che la colonna calcolata sia considerata
+                # --- Calcolo Pioggia 30 Minuti per la stazione corrente ---
+                # *** MODIFICA: Nome colonna aggiornato a "Pioggia 30 Min" ***
+                pioggia_30min_key = f"{nome_stazione} - Pioggia 30 Min (mm)"
+                intestazioni_da_api[pioggia_30min_key] = True # Assicura che la colonna calcolata sia considerata
 
-                pioggia_ora_calcolata = 'N/A'
+                # La variabile pioggia_calcolata ora rappresenta la pioggia negli ultimi 30 min
+                pioggia_calcolata = 'N/A'
                 valore_precedente_float = valori_precedenti_pioggia.get(nome_stazione) # Preso dal foglio
 
-                print(f"  Calcolo Pioggia Oraria per {nome_stazione}:")
+                # *** MODIFICA: Logica di calcolo e print aggiornati per 30 minuti ***
+                print(f"  Calcolo Pioggia 30 Min per {nome_stazione}:")
                 print(f"    - Pioggia Tot Oggi Attuale: {pioggia_tot_oggi_attuale}")
                 print(f"    - Valore Precedente (da foglio): {valore_precedente_float}")
 
-                if pioggia_tot_oggi_attuale is not None:
-                    current_hour = current_time.hour
-
+                if pioggia_tot_oggi_attuale is not None: # Check current value first
                     if valore_precedente_float is None:
-                        if current_hour == 0:
-                             pioggia_ora_calcolata = pioggia_tot_oggi_attuale
-                             print(f"    -> Nessun prec., ora 00: Pioggia Ora = Attuale ({pioggia_ora_calcolata})")
-                        else:
-                             pioggia_ora_calcolata = 0.0 # Mettiamo 0 se non è la prima ora del giorno
-                             print(f"    -> Nessun prec., ora {current_hour}: Pioggia Ora = 0.0")
-                    elif current_hour == 0:
-                         pioggia_ora_calcolata = pioggia_tot_oggi_attuale
-                         print(f"    -> Mezzanotte con prec.: Pioggia Ora = Attuale ({pioggia_ora_calcolata})")
+                        # Primo run per questa stazione, o errore lettura precedente
+                        # La pioggia "nei 30 min" è considerata pari al totale attuale (migliore stima)
+                        pioggia_calcolata = pioggia_tot_oggi_attuale
+                        print(f"    -> Nessun valore precedente valido trovato. Pioggia 30 Min = Valore Attuale ({pioggia_calcolata})")
                     elif pioggia_tot_oggi_attuale < valore_precedente_float:
-                         pioggia_ora_calcolata = 0.0 # Reset contatore?
-                         print(f"    WARN: Rilevato calo pioggia per {nome_stazione} (Prec: {valore_precedente_float}, Attuale: {pioggia_tot_oggi_attuale}). Pioggia Ora = 0.0")
+                        # Reset rilevato (es. mezzanotte, reset sensore)
+                        # La pioggia "nei 30 min" è la pioggia accumulata da dopo il reset
+                        pioggia_calcolata = pioggia_tot_oggi_attuale
+                        print(f"    WARN: Rilevato calo/reset pioggia (Prec: {valore_precedente_float}, Attuale: {pioggia_tot_oggi_attuale}). Pioggia 30 Min = Valore Attuale ({pioggia_calcolata})")
                     else:
-                         pioggia_ora_calcolata = round(pioggia_tot_oggi_attuale - valore_precedente_float, 2)
-                         print(f"    -> Calcolo standard: {pioggia_tot_oggi_attuale} - {valore_precedente_float} = {pioggia_ora_calcolata}")
+                        # Calcolo standard: differenza negli ultimi 30 minuti
+                        pioggia_calcolata = round(pioggia_tot_oggi_attuale - valore_precedente_float, 2)
+                        print(f"    -> Calcolo standard: {pioggia_tot_oggi_attuale} - {valore_precedente_float} = {pioggia_calcolata}")
 
-                    if isinstance(pioggia_ora_calcolata, (int, float)):
-                         dati_api_per_riga[pioggia_ora_key] = float(pioggia_ora_calcolata)
-                    else:
-                         dati_api_per_riga[pioggia_ora_key] = 'N/A'
-                else:
-                    dati_api_per_riga[pioggia_ora_key] = 'N/A'
-                    print(f"    -> Pioggia Tot Oggi non valida, Pioggia Ora = N/A")
+                    # Assicura che il valore finale sia float o 'N/A'
+                    if isinstance(pioggia_calcolata, (int, float)):
+                         dati_api_per_riga[pioggia_30min_key] = float(pioggia_calcolata)
+                    else: # Fallback difensivo
+                         dati_api_per_riga[pioggia_30min_key] = 'N/A'
+                         print(f"    -> Risultato calcolo non numerico. Impostato a N/A")
 
-                print(f"  -> Risultato Pioggia Ora Calcolata: {dati_api_per_riga[pioggia_ora_key]} mm")
+                else: # pioggia_tot_oggi_attuale is None
+                    dati_api_per_riga[pioggia_30min_key] = 'N/A'
+                    print(f"    -> Pioggia Tot Oggi Attuale non valida ('{pioggia_tot_oggi_attuale}'). Pioggia 30 Min = N/A")
+
+                print(f"  -> Risultato Pioggia 30 Min Calcolata: {dati_api_per_riga.get(pioggia_30min_key, 'Errore Interno')} mm")
             # Fine del blocco 'if process_this_station:'
 
         # --- Preparazione e Scrittura Riga nel Foglio ---
@@ -290,10 +292,19 @@ def estrai_dati_meteo():
              colonne_mancanti_nel_foglio = sorted(list(colonne_api_set - colonne_foglio_set))
              colonne_extra_nel_foglio = sorted(list(colonne_foglio_set - colonne_api_set))
 
+             # *** MODIFICA: Aggiunto controllo specifico se la vecchia colonna "Pioggia Ora" è ancora presente ***
+             vecchia_colonna_pioggia_ora_presente = any("Pioggia Ora (mm)" in col for col in colonne_extra_nel_foglio)
+
              if colonne_mancanti_nel_foglio:
                  print(f"WARN: Colonne nei dati API ma non nel foglio: {colonne_mancanti_nel_foglio} (NON verranno scritte)")
+                 # Suggerimento se la nuova colonna manca
+                 if any("Pioggia 30 Min" in col for col in colonne_mancanti_nel_foglio):
+                     print("      -> NOTA: La nuova colonna 'Pioggia 30 Min' non è presente nell'intestazione del foglio. Potresti doverla aggiungere manualmente o cancellare l'intestazione esistente per ricrearla.")
              if colonne_extra_nel_foglio:
                  print(f"WARN: Colonne nel foglio ma non nei dati API attuali: {colonne_extra_nel_foglio} (Verrà scritto 'N/A')")
+                 if vecchia_colonna_pioggia_ora_presente:
+                      print("      -> NOTA: La vecchia colonna 'Pioggia Ora (mm)' è ancora nel foglio ma non viene più calcolata. Riceverà 'N/A'. Potresti volerla rimuovere.")
+
 
         # Costruisci la riga di dati FINALE nell'ordine definito da `intestazione_da_usare`
         riga_dati_finale = []
@@ -301,9 +312,13 @@ def estrai_dati_meteo():
             if header_col == 'Data_Ora':
                 riga_dati_finale.append(formatted_time)
             else:
+                # Prendi il valore dai dati API processati. Se la colonna non esiste nei dati attuali
+                # (es. vecchia colonna 'Pioggia Ora' o sensore non presente), usa 'N/A'.
                 valore = dati_api_per_riga.get(header_col, 'N/A')
                 if isinstance(valore, float):
-                     riga_dati_finale.append(valore) # Google Sheets gestisce float
+                     # Formatta come stringa con punto decimale per coerenza con USER_ENTERED
+                     # riga_dati_finale.append(str(valore).replace('.',',')) # Se vuoi la virgola
+                     riga_dati_finale.append(valore) # Lascia che Google Sheets gestisca il float
                 else:
                      riga_dati_finale.append(str(valore)) # Stringhe per 'N/A' o altri non-float
 
@@ -313,10 +328,12 @@ def estrai_dati_meteo():
 
         # Aggiungi la riga di dati al foglio
         try:
+            # value_input_option='USER_ENTERED' interpreta i dati come se li inserissi manualmente (es. riconosce numeri e date)
             sheet.append_row(riga_dati_finale, value_input_option='USER_ENTERED')
             print(f"\nDati aggiunti con successo al foglio Google '{NOME_FOGLIO}'")
         except Exception as e_append:
             print(f"ERRORE durante l'aggiunta della riga di dati al foglio: {e_append}")
+            traceback.print_exc() # Stampa più dettagli per l'errore di scrittura
             sys.exit(f"Impossibile scrivere i dati nel foglio: {NOME_FOGLIO}. Uscita.")
 
     except requests.exceptions.RequestException as e_api:
