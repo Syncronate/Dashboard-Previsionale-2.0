@@ -2,8 +2,9 @@ name: Update Google Sheet
 
 on:
   schedule:
-    - cron: '30 * * * *'  # Run at 30 minutes past every hour
-  workflow_dispatch:     # Allow manual triggering
+    # - cron: '30 * * * *'  # Eseguito ai 30 minuti di ogni ora (Vecchio valore)
+    - cron: '*/30 * * * *' # Eseguito ogni 30 minuti (es. 00:00, 00:30, 01:00, 01:30, ecc.)
+  workflow_dispatch:     # Permette l'avvio manuale
 
 jobs:
   update-sheet:
