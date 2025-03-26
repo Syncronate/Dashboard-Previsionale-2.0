@@ -8,4 +8,5 @@ scikit-learn
 joblib
 plotly
 gspread
+streamlit-js-eval
 oauth2client
