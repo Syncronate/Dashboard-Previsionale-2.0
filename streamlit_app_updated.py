@@ -311,19 +311,119 @@ def import_data_from_sheet(sheet_id, expected_cols, input_window, date_col_name=
         return None
 
 # --- Funzione Allenamento Modificata (Salvataggio Config) ---
-def train_model(...): # Argomenti come prima
-    # ... (logica allenamento come prima) ...
-    # Dopo aver trovato il modello migliore (best_model_state_dict)
+# Sostituisci la riga errata con questa definizione completa:
+def train_model(
+    X_train, y_train, X_val, y_val, input_size, output_size, output_window,
+    hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2
+): # Argomenti come prima
+    # Impostazione del device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Carica lo stato migliore nel modello finale
+    # Creazione del modello
+    # Assicurati che qui i parametri siano passati correttamente
+    model = HydroLSTM(input_size, hidden_size, output_size, output_window, num_layers, dropout).to(device)
+
+    # Preparazione dei dataset
+    train_dataset = TimeSeriesDataset(X_train, y_train)
+    val_dataset = TimeSeriesDataset(X_val, y_val)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+
+    # Definizione della funzione di perdita e dell'ottimizzatore
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True) # Mantieni verbose=True per debug
+
+    # Addestramento
+    train_losses = []
+    val_losses = []
+    best_val_loss = float('inf')
+    best_model_state_dict = None # Modifica: salva lo state_dict invece del modello intero
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    loss_chart_placeholder = st.empty() # Placeholder per il grafico Plotly
+
+    # Funzione per aggiornare il grafico di perdita (uguale a prima)
+    def update_loss_chart(train_losses, val_losses, placeholder):
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=train_losses, mode='lines+markers', name='Train Loss'))
+        fig.add_trace(go.Scatter(y=val_losses, mode='lines+markers', name='Validation Loss'))
+        fig.update_layout(
+            title='Andamento della perdita (Train vs Validation)',
+            xaxis_title='Epoca', yaxis_title='Loss (MSE)', height=400, legend_title_text='Legenda'
+        )
+        placeholder.plotly_chart(fig, use_container_width=True)
+
+
+    st.write(f"Inizio training per {epochs} epoche...") # Log inizio
+    # Ciclo di addestramento (uguale a prima)
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0
+        for i, (X_batch, y_batch) in enumerate(train_loader): # Aggiunto enumerate per debug batch
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+            # if (i + 1) % 10 == 0: # Log ogni 10 batch (opzionale)
+            #     print(f'Epoch [{epoch+1}/{epochs}], Batch [{i+1}/{len(train_loader)}], Loss: {loss.item():.4f}')
+
+        train_loss /= len(train_loader)
+        train_losses.append(train_loss)
+
+        # Validazione
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                outputs = model(X_batch)
+                loss = criterion(outputs, y_batch)
+                val_loss += loss.item()
+
+        if len(val_loader) > 0:
+             val_loss /= len(val_loader)
+        else:
+             val_loss = 0 # O gestisci diversamente se val_loader è vuoto
+
+        val_losses.append(val_loss)
+
+        # Aggiornamento scheduler
+        scheduler.step(val_loss)
+
+        # Aggiornamento UI
+        progress_percentage = (epoch + 1) / epochs
+        progress_bar.progress(progress_percentage)
+        # Mostra anche il learning rate corrente
+        current_lr = optimizer.param_groups[0]['lr']
+        status_text.text(f'Epoca {epoch+1}/{epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f} - LR: {current_lr:.6f}')
+        update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
+
+        # Salvataggio del modello migliore (state_dict su CPU per sicurezza)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+            # st.text(f"Nuovo miglior modello (epoca {epoch+1}), Val Loss: {best_val_loss:.6f}") # Log opzionale
+
+
+        time.sleep(0.05) # Piccola pausa per UI refresh
+
+    # Carica lo stato migliore nel modello finale prima di ritornarlo
     if best_model_state_dict:
-        model.load_state_dict(best_model_state_dict)
-        st.success(f"Caricato modello migliore...")
+        # Ricarica lo state dict nel modello esistente (che è già sul device corretto)
+        # Prima riporta lo state_dict sul device corretto
+        best_model_state_dict_on_device = {k: v.to(device) for k, v in best_model_state_dict.items()}
+        model.load_state_dict(best_model_state_dict_on_device)
+        st.success(f"Caricato modello migliore dall'epoca con Val Loss: {best_val_loss:.6f}")
     else:
-        st.warning("Nessun modello migliore salvato.")
-        # Potresti voler ritornare None o il modello dell'ultima epoca
+        st.warning("Nessun modello migliore salvato durante l'addestramento (usato modello ultima epoca).")
 
-    return model, train_losses, val_losses # Ritorna il modello addestrato
+    return model, train_losses, val_losses # Ritorna il modello addestrato (migliore o ultimo)
 
 # --- Inizializzazione Session State ---
 if 'active_model_name' not in st.session_state:
