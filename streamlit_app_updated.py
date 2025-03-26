@@ -1218,75 +1218,133 @@ elif page == 'Simulazione':
                  if 'imported_sim_data' in st.session_state: del st.session_state.imported_sim_data
                  if 'imported_sim_df_preview' in st.session_state: del st.session_state.imported_sim_df_preview
 
-        # --- Simulazione: Orario Dettagliato ---
+                # --- Simulazione: Orario Dettagliato (Avanzato) ---
         elif sim_method == 'Orario Dettagliato (Avanzato)':
             st.subheader(f'Inserisci dati per {input_window} ore precedenti')
             session_key_hourly = f"sim_hourly_data_{input_window}" # Chiave dinamica
-            if session_key_hourly not in st.session_state or st.session_state[session_key_hourly].shape[0] != input_window or list(st.session_state[session_key_hourly].columns) != feature_columns_current:
-                 st.info("Inizializzazione tabella dati orari...")
+
+            # --- MODIFICA QUI: Logica di Inizializzazione/Controllo Stato ---
+            # Controlla se lo stato esiste, ha la forma corretta E le colonne corrette
+            needs_reinitialization = (
+                session_key_hourly not in st.session_state or
+                not isinstance(st.session_state[session_key_hourly], pd.DataFrame) or # Aggiunto controllo tipo
+                st.session_state[session_key_hourly].shape[0] != input_window or
+                list(st.session_state[session_key_hourly].columns) != feature_columns_current
+            )
+
+            if needs_reinitialization:
+                 st.info("Inizializzazione/Reset tabella dati orari...")
                  init_values = {}
                  for col in feature_columns_current:
-                      init_values[col] = df_current[col].median() if df_current is not None and col in df_current else 0.0
-                 st.session_state[session_key_hourly] = pd.DataFrame(
-                     np.repeat([list(init_values.values())], input_window, axis=0),
-                     columns=feature_columns_current,
-                     index=[f"T-{input_window-i}" for i in range(input_window)]
-                 )
+                      # Gestione più robusta della mediana (se NaN o non esiste df)
+                      median_val = 0.0 # Default sicuro
+                      if df_current is not None and col in df_current and pd.notna(df_current[col].median()):
+                            median_val = df_current[col].median()
+                      init_values[col] = float(median_val) # Assicura tipo float
 
-            # Configurazione colonne per data_editor
+                 # Crea DataFrame SENZA indice personalizzato
+                 initial_df = pd.DataFrame(
+                     np.repeat([list(init_values.values())], input_window, axis=0),
+                     columns=feature_columns_current
+                     # RIMOSSO: index=[f"T-{input_window-i}" for i in range(input_window)]
+                 )
+                 # Assicura assenza di NaN iniziali (extra sicurezza)
+                 st.session_state[session_key_hourly] = initial_df.fillna(0.0)
+            # --------------------------------------------------------------
+
+            # Configurazione colonne per data_editor (invariata)
             column_config_editor = {}
             for col in feature_columns_current:
-                 format_str = "%.1f" # Default
-                 step_val = 0.1
-                 min_val = None
-                 max_val = None
+                 format_str = "%.3f"; step_val = 0.01; min_val = None; max_val = None # Default più generico
                  if 'Cumulata' in col: format_str = "%.1f"; step_val = 0.5; min_val = 0.0
                  elif 'Umidita' in col: format_str = "%.1f"; step_val = 1.0; min_val = 0.0; max_val = 100.0
-                 elif 'Livello' in col: format_str = "%.3f"; step_val = 0.01; min_val = -2.0; max_val = 15.0
+                 elif 'Livello' in col: format_str = "%.3f"; step_val = 0.01; min_val = -5.0; max_val = 20.0 # Range più ampio?
                  column_config_editor[col] = st.column_config.NumberColumn(
-                     label=col.split('(')[0].split('[')[0].strip(), # Nome più corto
-                     help=col, # Tooltip con nome completo
+                     label=col.split('(')[0].split('[')[0].strip(),
+                     help=col,
                      format=format_str,
                      step=step_val,
                      min_value=min_val,
                      max_value=max_val
                  )
 
+            # --- MODIFICA QUI: Passaggio Dati all'Editor ---
+            # Lavora su una copia per evitare modifiche dirette allo stato prima della validazione
+            df_for_editor = st.session_state[session_key_hourly].copy()
+
+            # Controllo e pulizia extra PRIMA di passare all'editor
+            if df_for_editor.isnull().sum().sum() > 0:
+                st.warning("NaN rilevati nello stato prima dell'editor. Riempiti con 0.0.")
+                df_for_editor = df_for_editor.fillna(0.0)
+            # Assicurati che tutti i tipi siano numerici (float)
+            try:
+                df_for_editor = df_for_editor.astype(float)
+            except Exception as e_cast:
+                 st.error(f"Errore nel convertire i dati della tabella in float prima dell'editor: {e_cast}. Reset della tabella.")
+                 # Forza reinizializzazione al prossimo run cancellando la chiave
+                 if session_key_hourly in st.session_state:
+                      del st.session_state[session_key_hourly]
+                 st.rerun() # Riesegui lo script per reinizializzare
+
+            # Aggiungi un piccolo dataframe di debug (commentalo dopo)
+            # st.caption("Dati passati a st.data_editor:")
+            # st.dataframe(df_for_editor.head())
+
             edited_df = st.data_editor(
-                st.session_state[session_key_hourly],
+                df_for_editor, # Passa la copia pulita
                 height=(input_window + 1) * 35 + 3,
                 use_container_width=True,
                 column_config=column_config_editor,
                 key=f"editor_{session_key_hourly}" # Chiave univoca per l'editor
             )
+            # ------------------------------------------------
 
-            # Validazione post-modifica (essenziale con data_editor)
+            # Validazione post-modifica (leggermente modificata)
+            validation_passed = False
             if edited_df.shape[0] != input_window:
                  st.error(f"Tabella deve avere esattamente {input_window} righe (attuali: {len(edited_df)}). Reset tabella o correggi.")
-                 # Potresti aggiungere un bottone per resettare st.session_state[session_key_hourly]
                  sim_data_input = None
+                 # Aggiungi un bottone per resettare lo stato se l'utente blocca l'editor
+                 if st.button("Resetta Tabella Dati Orari"):
+                      if session_key_hourly in st.session_state:
+                           del st.session_state[session_key_hourly]
+                      st.rerun()
+
             elif list(edited_df.columns) != feature_columns_current:
-                 st.error("Le colonne della tabella non corrispondono alle feature attese. Reset tabella.")
+                 st.error("Le colonne della tabella non corrispondono alle feature attese. Potrebbe essere necessario un reset.")
                  sim_data_input = None
             elif edited_df.isnull().sum().sum() > 0:
-                 st.warning("Rilevati valori mancanti (NaN) nella tabella. Assicurati siano tutti compilati.")
-                 # Considera se riempire i NaN o bloccare l'esecuzione
-                 sim_data_input = None # Blocco per sicurezza
+                 st.warning("Rilevati valori mancanti (NaN) nella tabella. Assicurati siano tutti compilati. La simulazione verrà bloccata.")
+                 sim_data_input = None
             else:
                  try:
-                      # Assicura tipo numerico prima di convertire in numpy
                       sim_data_input_edit = edited_df[feature_columns_current].astype(float).values
                       if sim_data_input_edit.shape == (input_window, len(feature_columns_current)):
                            sim_data_input = sim_data_input_edit
-                           st.session_state[session_key_hourly] = edited_df # Salva modifiche valide
-                           st.success("Dati orari pronti.")
-                      else: # Controllo extra shape
+                           validation_passed = True # Segna che la validazione è OK
+                      else:
                            st.error("Errore shape dati finali dalla tabella.")
                            sim_data_input = None
                  except Exception as e_edit:
-                      st.error(f"Errore conversione dati tabella: {e_edit}")
+                      st.error(f"Errore conversione dati tabella post-modifica: {e_edit}")
                       sim_data_input = None
 
+            # Aggiorna lo stato SOLO se la validazione è passata
+            if validation_passed:
+                 # Confronta con lo stato precedente per vedere se ci sono state modifiche
+                 # Questo evita scritture inutili nello stato se l'utente non ha cambiato nulla
+                 if not st.session_state[session_key_hourly].equals(edited_df):
+                      st.session_state[session_key_hourly] = edited_df
+                      # st.caption("Stato aggiornato.") # Debug opzionale
+                 st.success("Dati orari pronti.")
+            else:
+                 # Se la validazione fallisce DOPO l'editing, sim_data_input è None
+                 pass # L'errore specifico è già mostrato sopra
+
+            # --- ESECUZIONE SIMULAZIONE --- (invariato)
+            st.divider()
+            run_simulation = st.button('Esegui simulazione', type="primary", disabled=(sim_data_input is None), key="sim_run")
+            # ... (resto della logica di simulazione) ...
         # --- ESECUZIONE SIMULAZIONE ---
         st.divider()
         run_simulation = st.button('Esegui simulazione', type="primary", disabled=(sim_data_input is None), key="sim_run")
