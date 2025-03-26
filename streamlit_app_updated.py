@@ -1368,42 +1368,7 @@ elif page == 'Allenamento Modello':
 
 # ... (resto del codice) ...
 
-             # Salvataggio Risultati
-             if trained_model:
-                 st.success("Addestramento completato!")
-                 # Grafico Loss Finale (statico)
-                 # ... (codice matplotlib per grafico loss finale) ...
 
-                 st.subheader("Salvataggio Modello, Configurazione e Scaler")
-                 os.makedirs(MODELS_DIR, exist_ok=True)
-                 base_path = os.path.join(MODELS_DIR, save_model_name)
-                 model_save_path = f"{base_path}.pth"
-                 config_save_path = f"{base_path}.json"
-                 scaler_f_save_path = f"{base_path}_features.joblib"
-                 scaler_t_save_path = f"{base_path}_targets.joblib"
-
-                 config_to_save = {
-                     "input_window": input_window_train, "output_window": output_window_train,
-                     "hidden_size": hidden_size_train_cfg, "num_layers": num_layers_train_cfg,
-                     "dropout": dropout_train_cfg,
-                     "target_columns": selected_targets_train,
-                     "feature_columns": feature_columns_current, # Salva feature usate
-                     "training_date": datetime.now().isoformat(),
-                     "final_val_loss": min(val_losses) if val_losses else None,
-                     # Aggiungi nome display se diverso dal nome file
-                     "display_name": save_model_name # Default a nome file
-                 }
-
-                 try:
-                     torch.save(trained_model.state_dict(), model_save_path)
-                     with open(config_save_path, 'w') as f: json.dump(config_to_save, f, indent=4)
-                     joblib.dump(scaler_features_train, scaler_f_save_path)
-                     joblib.dump(scaler_targets_train, scaler_t_save_path)
-                     st.success(f"Modello '{save_model_name}' salvato in '{MODELS_DIR}/'")
-                     st.caption(f"Salvati: {model_save_path}, {config_save_path}, {scaler_f_save_path}, {scaler_t_save_path}")
-                     # Opzionale: fornire link download se non in repo
-                 except Exception as e_save:
-                      st.error(f"Errore salvataggio file: {e_save}")
 
                  # Test rapido (opzionale, come prima)
                  # ...
