@@ -1264,85 +1264,109 @@ elif page == 'Analisi Dati Storici':
 elif page == 'Allenamento Modello':
     st.header('Allenamento Nuovo Modello LSTM')
 
-    # DEBUG e Condizione iniziale
-    df_training_page = st.session_state.get('df', None)
-    st.write(f"<small>DEBUG (Training Page Entry): `df` is None: {df_training_page is None}</small>", unsafe_allow_html=True)
-    if df_training_page is not None:
-        st.write(f"<small>DEBUG (Training Page Entry): `df` shape: {df_training_page.shape}</small>", unsafe_allow_html=True)
+    # ... (Codice per controllo df, configurazione allenamento, bottone Addestra) ...
 
-    if df_training_page is None:
-        st.warning("⚠️ Dati storici non caricati o caricamento fallito. Carica un file CSV valido.")
-    else:
-        st.success(f"Dati disponibili per l'addestramento: {len(df_training_page)} righe.")
-        st.subheader('Configurazione Addestramento')
+    if train_button and ready_to_train:
+         st.info(f"Avvio addestramento per '{save_model_name}'...")
+         # ... (Codice preparazione dati) ...
 
-        save_model_name = st.text_input("Nome base per salvare il modello (es. 'modello_24_12_v1')", value=f"modello_{datetime.now().strftime('%Y%m%d_%H%M')}")
+         # Addestramento
+         st.subheader("Addestramento in corso...")
+         # ... (Codice chiamata train_model) ...
+         try:
+             trained_model, train_losses, val_losses = train_model(...)
+         except Exception as e_train:
+              st.error(f"Errore durante addestramento: {e_train}")
+              st.error(traceback.format_exc())
+              trained_model = None # Assicura che sia None in caso di errore
 
-        st.write("**1. Seleziona Target:**")
-        selected_targets_train = []
-        hydro_features_train = [col for col in feature_columns_current if 'Livello' in col]
-        cols_targets = st.columns(min(len(hydro_features_train), 5)) # Max 5 colonne
-        for i, feature in enumerate(hydro_features_train):
-            with cols_targets[i % len(cols_targets)]:
-                 label = feature.split('(')[-1].replace(')','').strip()
-                 if st.checkbox(label, value=(feature in active_config["target_columns"] if active_config else False), key=f"target_train_{i}"):
-                     selected_targets_train.append(feature)
+         # Salvataggio Risultati e LINK DOWNLOAD
+         if trained_model:
+             st.success("Addestramento completato!")
+             # ... (Mostra grafico loss finale) ...
 
-        st.write("**2. Imposta Parametri:**")
-        with st.expander("Parametri Modello e Training", expanded=True):
-             col1_train, col2_train, col3_train = st.columns(3)
-             with col1_train:
-                 input_window_train = st.number_input("Input Window (ore)", 6, 168, (active_config["input_window"] if active_config else 24), 6, key="t_in")
-                 output_window_train = st.number_input("Output Window (ore)", 1, 72, (active_config["output_window"] if active_config else 12), 1, key="t_out")
-                 val_split_train = st.slider("% Validazione", 5, 40, 20, 1, key="t_val")
-             with col2_train:
-                 hidden_size_train_cfg = st.number_input("Hidden Size", 16, 1024, (active_config["hidden_size"] if active_config else 128), 16, key="t_hidden")
-                 num_layers_train_cfg = st.number_input("Num Layers", 1, 8, (active_config["num_layers"] if active_config else 2), 1, key="t_layers")
-                 dropout_train_cfg = st.slider("Dropout", 0.0, 0.7, (active_config["dropout"] if active_config else 0.2), 0.05, key="t_dropout")
-             with col3_train:
-                 learning_rate_train = st.number_input("Learning Rate", 1e-5, 1e-2, 0.001, format="%.5f", step=1e-4, key="t_lr")
-                 batch_size_train = st.select_slider("Batch Size", [8, 16, 32, 64, 128, 256], 32, key="t_batch")
-                 epochs_train = st.number_input("Epoche", 5, 500, 50, 5, key="t_epochs")
+             st.subheader("Salvataggio Modello, Configurazione e Scaler")
+             os.makedirs(MODELS_DIR, exist_ok=True)
+             base_path = os.path.join(MODELS_DIR, save_model_name)
+             model_save_path = f"{base_path}.pth"
+             config_save_path = f"{base_path}.json"
+             scaler_f_save_path = f"{base_path}_features.joblib"
+             scaler_t_save_path = f"{base_path}_targets.joblib"
 
-        st.write("**3. Avvia Addestramento:**")
-        # Validazione nome e targets prima di mostrare il bottone
-        valid_name = bool(save_model_name and re.match(r'^[a-zA-Z0-9_-]+$', save_model_name))
-        valid_targets = bool(selected_targets_train)
-        ready_to_train = valid_name and valid_targets
+             config_to_save = {
+                 "input_window": input_window_train, "output_window": output_window_train,
+                 "hidden_size": hidden_size_train_cfg, "num_layers": num_layers_train_cfg,
+                 "dropout": dropout_train_cfg,
+                 "target_columns": selected_targets_train,
+                 "feature_columns": feature_columns_current,
+                 "training_date": datetime.now().isoformat(),
+                 "final_val_loss": min(val_losses) if val_losses else None,
+                 "display_name": save_model_name
+             }
 
-        if not valid_targets: st.warning("Seleziona almeno un idrometro target.")
-        if not valid_name: st.warning("Inserisci un nome valido per il modello (lettere, numeri, -, _).")
+             # --- INIZIO BLOCCO MODIFICATO ---
 
-        train_button = st.button("Addestra Nuovo Modello", type="primary", disabled=not ready_to_train, key="train_run")
+             # Buffer per il download (indipendenti dal salvataggio su disco)
+             model_buffer_dl = io.BytesIO()
+             config_buffer_dl = io.StringIO() # Usiamo StringIO per testo JSON
+             scaler_f_buffer_dl = io.BytesIO()
+             scaler_t_buffer_dl = io.BytesIO()
 
-        if train_button and ready_to_train:
-             st.info(f"Avvio addestramento per '{save_model_name}'...")
-             # Preparazione Dati
-             with st.spinner('Preparazione dati...'):
-                  X_train, y_train, X_val, y_val, scaler_features_train, scaler_targets_train = prepare_training_data(
-                      df_training_page.copy(), feature_columns_current, selected_targets_train,
-                      input_window_train, output_window_train, val_split_train
-                  )
-                  if X_train is None:
-                       st.error("Preparazione dati fallita.")
-                       st.stop()
-                  st.success(f"Dati pronti: {len(X_train)} train, {len(X_val)} val.")
-
-             # Addestramento
-             st.subheader("Addestramento in corso...")
-             input_size_train = len(feature_columns_current)
-             output_size_train = len(selected_targets_train)
              try:
-                 trained_model, train_losses, val_losses = train_model(
-                     X_train, y_train, X_val, y_val,
-                     input_size_train, output_size_train, output_window_train,
-                     hidden_size_train_cfg, num_layers_train_cfg, epochs_train,
-                     batch_size_train, learning_rate_train, dropout_train_cfg
-                 )
-             except Exception as e_train:
-                  st.error(f"Errore durante addestramento: {e_train}")
+                 # 1. Salva nei buffer di memoria
+                 torch.save(trained_model.state_dict(), model_buffer_dl)
+                 json.dump(config_to_save, config_buffer_dl, indent=4)
+                 joblib.dump(scaler_features_train, scaler_f_buffer_dl)
+                 joblib.dump(scaler_targets_train, scaler_t_buffer_dl)
+
+                 # 2. Crea i link di download dai buffer
+                 st.subheader("Download File Modello Addestrato")
+                 st.info("Clicca sui link sottostanti per scaricare i file necessari e caricarli nella cartella 'models' su GitHub.")
+
+                 col_dl1, col_dl2, col_dl3, col_dl4 = st.columns(4)
+
+                 with col_dl1:
+                     st.markdown(
+                         get_binary_file_download_link(
+                             model_buffer_dl, f"{save_model_name}.pth", "⬇️ Scarica Modello (.pth)"
+                         ), unsafe_allow_html=True)
+                 with col_dl2:
+                      # Per il JSON (testo), adattiamo leggermente la logica di encoding
+                      config_str = config_buffer_dl.getvalue()
+                      b64_json = base64.b64encode(config_str.encode('utf-8')).decode()
+                      href_json = f'<a href="data:application/json;base64,{b64_json}" download="{save_model_name}.json">⬇️ Scarica Config (.json)</a>'
+                      st.markdown(href_json, unsafe_allow_html=True)
+                 with col_dl3:
+                      st.markdown(
+                         get_binary_file_download_link(
+                             scaler_f_buffer_dl, f"{save_model_name}_features.joblib", "⬇️ Scarica Scaler Feat. (.joblib)"
+                         ), unsafe_allow_html=True)
+                 with col_dl4:
+                      st.markdown(
+                         get_binary_file_download_link(
+                             scaler_t_buffer_dl, f"{save_model_name}_targets.joblib", "⬇️ Scarica Scaler Targ. (.joblib)"
+                         ), unsafe_allow_html=True)
+
+                 # 3. (Opzionale) Salva anche su disco nel server (se utile per debug o persistenza temporanea)
+                 try:
+                     with open(model_save_path, 'wb') as f_pth: f_pth.write(model_buffer_dl.getvalue())
+                     with open(config_save_path, 'w') as f_cfg: f_cfg.write(config_str)
+                     with open(scaler_f_save_path, 'wb') as f_scf: f_scf.write(scaler_f_buffer_dl.getvalue())
+                     with open(scaler_t_save_path, 'wb') as f_sct: f_sct.write(scaler_t_buffer_dl.getvalue())
+                     st.caption(f"File salvati anche localmente nel server in '{MODELS_DIR}/' (potrebbero essere temporanei).")
+                 except Exception as e_save_disk:
+                      st.warning(f"Attenzione: Errore nel salvare i file su disco del server: {e_save_disk}")
+
+
+             except Exception as e_buffer_dl:
+                  st.error(f"Errore durante la preparazione dei file per il download: {e_buffer_dl}")
                   st.error(traceback.format_exc())
-                  st.stop()
+
+             # --- FINE BLOCCO MODIFICATO ---
+
+             # ... (eventuale test rapido come prima) ...
+
+# ... (resto del codice) ...
 
              # Salvataggio Risultati
              if trained_model:
