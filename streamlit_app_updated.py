@@ -53,19 +53,7 @@ GSHEET_RELEVANT_COLS = [
 DASHBOARD_REFRESH_INTERVAL_SECONDS = 300 # Aggiorna dashboard ogni 5 minuti (300 sec)
 DASHBOARD_HISTORY_ROWS = 48 # Numero di righe storiche da recuperare (48 righe = 24 ore @ 30 min/riga)
 
-# --- MODIFICATO: DEFAULT_THRESHOLDS ora contiene soglie alert e attention ---
-DEFAULT_THRESHOLDS = { # Soglie predefinite (l'utente può modificarle)
-    # Nome Sensore: {'alert': value, 'attention': value}
-    'Arcevia - Pioggia Ora (mm)':          {'alert': 10.0, 'attention': 7.0},
-    'Barbara - Pioggia Ora (mm)':          {'alert': 10.0, 'attention': 7.0},
-    'Corinaldo - Pioggia Ora (mm)':        {'alert': 10.0, 'attention': 7.0},
-    'Misa - Pioggia Ora (mm)':             {'alert': 10.0, 'attention': 7.0}, # Bettolelle Pioggia?
-    'Serra dei Conti - Livello Misa (mt)': {'alert': 2.5,  'attention': 2.0},
-    'Pianello di Ostra - Livello Misa (m)':{'alert': 3.0,  'attention': 2.5},
-    'Nevola - Livello Nevola (mt)':        {'alert': 2.0,  'attention': 1.5}, # Corinaldo Nevola?
-    'Misa - Livello Misa (mt)':            {'alert': 2.8,  'attention': 2.3}, # Bettolelle Livello?
-    'Ponte Garibaldi - Livello Misa 2 (mt)':{'alert': 4.0, 'attention': 3.0}
-}
+
 # Define Italy timezone
 italy_tz = pytz.timezone('Europe/Rome')
 
