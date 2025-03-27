@@ -744,48 +744,48 @@ def extract_sheet_id(url):
         if match: return match.group(1)
     return None
 
-# --- Funzione Estrazione Etichetta Stazione (CORRETTA INDENTAZIONE) ---
+# --- Funzione Estrazione Etichetta Stazione (VERIFICA INDENTAZIONE) ---
 def get_station_label(col_name, short=False):
-    # Cerca prima nelle coordinate/info definite
+# Inizio funzione (livello 0 indentazione)
     if col_name in STATION_COORDS:
+    # Primo Blocco IF (livello 1 indentazione)
         location_id = STATION_COORDS[col_name].get('location_id')
         if location_id:
+        # Secondo Blocco IF (livello 2 indentazione)
             if short:
+            # Terzo Blocco IF (livello 3 indentazione)
                 sensor_type = STATION_COORDS[col_name].get('type', '')
-                # Controlla se ci sono più sensori nella stessa località
                 sensors_at_loc = [sc['type'] for sc_name, sc in STATION_COORDS.items() if sc.get('location_id') == location_id]
                 if len(sensors_at_loc) > 1:
-                    # Abbrevia il tipo se ci sono più sensori
+                # Quarto Blocco IF (livello 4 indentazione)
                     type_abbr = 'P' if sensor_type == 'Pioggia' else ('L' if sensor_type == 'Livello' else '')
                     label = f"{location_id} ({type_abbr})"
-                    # Troncamento robusto
                     return label[:25] + ('...' if len(label) > 25 else '')
                 else:
-                    # Un solo tipo di sensore, usa solo l'ID località
-                    # Troncamento robusto
+                # Blocco ELSE per Quarto IF (livello 4 indentazione)
                     return location_id[:25] + ('...' if len(location_id) > 25 else '')
             else:
-                # Versione non breve, restituisci solo l'ID località
+            # Blocco ELSE per Terzo IF (livello 3 indentazione)
                 return location_id
     # --- Fallback se col_name NON è in STATION_COORDS ---
-    # <<< QUESTA PARTE DEVE ESSERE ALLINEATA CON l' "if col_name in STATION_COORDS:" sopra >>>
-    parts = col_name.split(' - ')
+    # <<< QUESTA PARTE DEVE ESSERE A LIVELLO 0 INDENTAZIONE, come la primissima "if" >>>
+    parts = col_name.split(' - ') # Livello 0 indentazione
     if len(parts) > 1:
-        # Se il formato è "Località - Misura (Unità)"
+    # IF del fallback (livello 1 indentazione)
         location = parts[0].strip()
         measurement = parts[1].split(' (')[0].strip()
         if short:
+        # IF dentro fallback (livello 2 indentazione)
              label = f"{location} - {measurement}"
-             # Troncamento robusto
              return label[:25] + ('...' if len(label) > 25 else '')
         else:
-             # Versione non breve, restituisci solo la parte località
+        # ELSE dentro fallback (livello 2 indentazione)
              return location
     else:
-        # Fallback ulteriore se il formato non è riconosciuto
+    # ELSE del fallback (livello 1 indentazione)
         label = col_name.split(' (')[0].strip()
-        # Troncamento robusto
         return label[:25] + ('...' if len(label) > 25 else '')
+# Fine funzione (livello 0 indentazione)
 # --- NUOVO: Mappatura Nomi Target Modello (JSON) -> Nomi Soglie (GSheet) ---
 MODEL_TARGET_TO_GSHEET_MAP = {
     # "Nome nel JSON Target": "Nome nel Dizionario Soglie (GSheet)"
