@@ -53,16 +53,19 @@ GSHEET_RELEVANT_COLS = [
 DASHBOARD_REFRESH_INTERVAL_SECONDS = 300 # Aggiorna dashboard ogni 5 minuti (300 sec)
 # --- MODIFICATO: Aumentato numero di righe per coprire 24h con intervalli di 30min ---
 DASHBOARD_HISTORY_ROWS = 48 # MODIFICATO: Numero di righe storiche da recuperare (48 righe = 24 ore @ 30 min/riga)
+
+# --- MODIFICATO: DEFAULT_THRESHOLDS ora contiene soglie alert e attention ---
 DEFAULT_THRESHOLDS = { # Soglie predefinite (l'utente può modificarle)
-    'Arcevia - Pioggia Ora (mm)': 10.0,
-    'Barbara - Pioggia Ora (mm)': 10.0,
-    'Corinaldo - Pioggia Ora (mm)': 10.0,
-    'Misa - Pioggia Ora (mm)': 10.0, # Bettolelle Pioggia?
-    'Serra dei Conti - Livello Misa (mt)': 2.5,
-    'Pianello di Ostra - Livello Misa (m)': 3.0,
-    'Nevola - Livello Nevola (mt)': 2.0, # Corinaldo Nevola?
-    'Misa - Livello Misa (mt)': 2.8, # Bettolelle Livello?
-    'Ponte Garibaldi - Livello Misa 2 (mt)': 4.0
+    # Nome Sensore: {'alert': value, 'attention': value}
+    'Arcevia - Pioggia Ora (mm)':          {'alert': 10.0, 'attention': 7.0},
+    'Barbara - Pioggia Ora (mm)':          {'alert': 10.0, 'attention': 7.0},
+    'Corinaldo - Pioggia Ora (mm)':        {'alert': 10.0, 'attention': 7.0},
+    'Misa - Pioggia Ora (mm)':             {'alert': 10.0, 'attention': 7.0}, # Bettolelle Pioggia?
+    'Serra dei Conti - Livello Misa (mt)': {'alert': 2.5,  'attention': 2.0},
+    'Pianello di Ostra - Livello Misa (m)':{'alert': 3.0,  'attention': 2.5},
+    'Nevola - Livello Nevola (mt)':        {'alert': 2.0,  'attention': 1.5}, # Corinaldo Nevola?
+    'Misa - Livello Misa (mt)':            {'alert': 2.8,  'attention': 2.3}, # Bettolelle Livello?
+    'Ponte Garibaldi - Livello Misa 2 (mt)':{'alert': 4.0, 'attention': 3.0}
 }
 # Define Italy timezone
 italy_tz = pytz.timezone('Europe/Rome')
@@ -316,19 +319,20 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
         st.error(f"Errore imprevisto durante predict: {e}");
         st.error(traceback.format_exc()); return None
 
-# --- MODIFICATA: plot_predictions usa intervalli di 30 min ---
-def plot_predictions(predictions, config, start_time=None):
+# --- MODIFICATA: plot_predictions aggiunge soglie e migliora titolo ---
+def plot_predictions(predictions, config, thresholds, start_time=None):
     """
-    Genera grafici Plotly per le previsioni del modello.
+    Genera grafici Plotly per le previsioni del modello, includendo le soglie.
     Utilizza intervalli di 30 minuti per l'asse temporale.
+    Il titolo mostra il nome della stazione più chiaramente.
     """
-    if config is None or predictions is None: return []
+    if config is None or predictions is None or thresholds is None: return []
     output_w = config["output_window"]; target_cols = config["target_columns"]
     figs = []
     for i, sensor in enumerate(target_cols):
         fig = go.Figure()
         if start_time:
-            # MODIFICATO: Calcola step temporali ogni 30 minuti
+            # Calcola step temporali ogni 30 minuti
             steps = [start_time + timedelta(minutes=30*(h+1)) for h in range(output_w)]
             x_axis, x_title = steps, "Data e Ora Previste (intervalli 30 min)"
         else:
@@ -336,13 +340,36 @@ def plot_predictions(predictions, config, start_time=None):
             steps_idx = np.arange(1, output_w + 1)
             x_axis, x_title = steps_idx, f"Passi Futuri ({output_w} x 30 min)"
 
-        # Estrai nome stazione per titolo grafico
-        station_name_graph = get_station_label(sensor, short=False) # Usa la funzione helper
+        # --- MODIFICATO: Estrai nome stazione per titolo grafico ---
+        station_name_graph = get_station_label(sensor, short=False) # Usa la funzione helper (nome completo località)
 
+        # Aggiungi linea previsione
         fig.add_trace(go.Scatter(x=x_axis, y=predictions[:, i], mode='lines+markers', name=f'Previsto'))
+
+        # --- NUOVO: Aggiungi linee soglia dal dizionario ---
+        sensor_thresholds = thresholds.get(sensor, {}) # Prendi dizionario soglie per questo sensore
+        threshold_alert = sensor_thresholds.get('alert')
+        threshold_attention = sensor_thresholds.get('attention')
+
+        # Aggiungi linea soglia ALLERTA (Rossa)
+        if threshold_alert is not None and isinstance(threshold_alert, (int, float)):
+            fig.add_hline(
+                y=threshold_alert, line_dash="dash", line_color="red",
+                annotation_text=f"Allerta ({threshold_alert:.1f})",
+                annotation_position="bottom right"
+            )
+        # Aggiungi linea soglia ATTENZIONE (Gialla/Arancione)
+        if threshold_attention is not None and isinstance(threshold_attention, (int, float)):
+             fig.add_hline(
+                y=threshold_attention, line_dash="dash", line_color="orange", # Orange più visibile di yellow
+                annotation_text=f"Attenzione ({threshold_attention:.1f})",
+                annotation_position="top right" # Posizione diversa per evitare sovrapposizioni
+            )
+
         fig.update_layout(
-            title=f'Previsione Simulazione - {station_name_graph}', # Titolo aggiornato
-            xaxis_title=x_title, # Titolo asse X aggiornato
+            # --- MODIFICATO: Titolo più chiaro ---
+            title=f'Previsione Simulazione: {station_name_graph}',
+            xaxis_title=x_title,
             yaxis_title=f'{sensor.split("(")[-1].split(")")[0].strip()}', # Estrae unità
             height=400,
             hovermode="x unified"
@@ -372,24 +399,6 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
         gc = gspread.authorize(credentials)
         sh = gc.open_by_key(sheet_id)
         worksheet = sh.sheet1
-
-        # --- Potenziale Micro-Ottimizzazione (alternativa a get_all_values): ---
-        # try:
-        #     total_rows = worksheet.row_count
-        #     total_cols = worksheet.col_count # Serve per definire il range
-        #     start_row = max(1, total_rows - num_rows_to_fetch + 1) # +1 perché header è incluso se start_row=1
-        #     end_row = total_rows
-        #     # Gspread usa A1 notation
-        #     range_str = f"A{start_row}:{chr(ord('A') + total_cols - 1)}{end_row}"
-        #     # Se start_row > 1, dobbiamo recuperare anche l'header separatamente?
-        #     # header = worksheet.row_values(1) # Chiamata API aggiuntiva
-        #     # data_rows_only = worksheet.get(range_str)
-        #     # Questa logica complica la gestione header/dati.
-        #     # Stick with get_all_values for simplicity unless proven necessary.
-        # except Exception as e_range:
-        #      st.warning(f"Errore nel calcolare range GSheet, fallback a get_all_values: {e_range}")
-        #      all_values = worksheet.get_all_values() # Fallback
-        # --- Fine Micro-Ottimizzazione ---
 
         all_values = worksheet.get_all_values() # Fetch dei dati grezzi
 
@@ -713,7 +722,12 @@ if 'feature_columns' not in st.session_state:
          'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
      ]
 if 'date_col_name_csv' not in st.session_state: st.session_state.date_col_name_csv = 'Data e Ora'
-if 'dashboard_thresholds' not in st.session_state: st.session_state.dashboard_thresholds = DEFAULT_THRESHOLDS.copy()
+
+# --- MODIFICATO: Inizializza st.session_state.dashboard_thresholds con la nuova struttura ---
+if 'dashboard_thresholds' not in st.session_state:
+    # Deep copy per evitare modifiche accidentali al default
+    st.session_state.dashboard_thresholds = json.loads(json.dumps(DEFAULT_THRESHOLDS))
+
 if 'last_dashboard_data' not in st.session_state: st.session_state.last_dashboard_data = None # DataFrame dashboard
 if 'last_dashboard_error' not in st.session_state: st.session_state.last_dashboard_error = None
 if 'last_dashboard_fetch_time' not in st.session_state: st.session_state.last_dashboard_fetch_time = None
@@ -999,36 +1013,80 @@ elif selected_model_display_name == MODEL_CHOICE_NONE:
      st.sidebar.info("Nessun modello selezionato per la simulazione.")
 
 
-# --- Configurazione Soglie Dashboard (invariata) ---
+# --- MODIFICATA: Configurazione Soglie Dashboard (Alert + Attenzione) ---
 st.sidebar.divider()
 st.sidebar.subheader("Configurazione Soglie Dashboard")
-with st.sidebar.expander("Modifica Soglie di Allerta", expanded=False):
-    temp_thresholds = st.session_state.dashboard_thresholds.copy()
-    monitorable_cols = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
-    cols_thresh = st.columns(2) # Due colonne per ridurre spazio verticale
-    col_idx_thresh = 0
-    for col in monitorable_cols:
-        with cols_thresh[col_idx_thresh % 2]:
-            label_short = get_station_label(col, short=True)
-            is_level = 'Livello' in col or '(m)' in col or '(mt)' in col
-            step = 0.1 if is_level else 1.0
-            fmt = "%.1f" if is_level else "%.0f"
-            min_v = 0.0
-            # Usa get per fornire un default se la colonna non fosse presente per qualche motivo
-            current_threshold = st.session_state.dashboard_thresholds.get(col, DEFAULT_THRESHOLDS.get(col, 0.0))
-            # Usa un formato più compatto per il number_input
-            new_threshold = st.number_input(
-                label=f"{label_short}", value=current_threshold, min_value=min_v, step=step, format=fmt,
-                key=f"thresh_{col}", help=f"Soglia di allerta per: {col}"
-            )
-            if new_threshold != current_threshold: temp_thresholds[col] = new_threshold
-        col_idx_thresh += 1
+with st.sidebar.expander("Modifica Soglie di Allerta (Rosso) e Attenzione (Giallo)", expanded=False):
+    temp_thresholds_update = json.loads(json.dumps(st.session_state.dashboard_thresholds)) # Deep copy per modifica sicura
 
-    if st.button("Salva Soglie", key="save_thresholds", type="primary"): # Bottone primario
-        st.session_state.dashboard_thresholds = temp_thresholds.copy()
-        st.success("Soglie aggiornate!")
-        time.sleep(0.5) # Breve pausa per mostrare messaggio
-        st.rerun()
+    monitorable_cols = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
+    # cols_thresh = st.columns(2) # Due colonne per ridurre spazio verticale
+    # col_idx_thresh = 0
+
+    for col in monitorable_cols:
+        label_short = get_station_label(col, short=True)
+        st.markdown(f"**{label_short}** (`{col}`)") # Nome colonna come sottotitolo
+
+        # Recupera soglie correnti o default (con gestione chiave mancante)
+        current_sensor_thresholds = st.session_state.dashboard_thresholds.get(col, {})
+        current_alert = current_sensor_thresholds.get('alert', DEFAULT_THRESHOLDS.get(col, {}).get('alert', 0.0))
+        current_attention = current_sensor_thresholds.get('attention', DEFAULT_THRESHOLDS.get(col, {}).get('attention', 0.0))
+
+        is_level = 'Livello' in col or '(m)' in col or '(mt)' in col
+        step = 0.1 if is_level else 1.0
+        fmt = "%.1f" if is_level else "%.0f"
+        min_v = 0.0
+
+        c1_th, c2_th = st.columns(2) # Colonne per le due soglie
+
+        # Input Soglia Allerta (Rossa)
+        with c1_th:
+            new_alert = st.number_input(
+                label=f"🔴 Allerta", value=current_alert, min_value=min_v, step=step, format=fmt,
+                key=f"thresh_alert_{col}", help=f"Soglia di ALLERTA (Rossa) per: {col}"
+            )
+            if new_alert != current_alert:
+                if col not in temp_thresholds_update: temp_thresholds_update[col] = {}
+                temp_thresholds_update[col]['alert'] = new_alert
+
+        # Input Soglia Attenzione (Gialla/Arancione)
+        with c2_th:
+            # Valore massimo per attenzione non può superare l'allerta
+            max_attention_value = new_alert if new_alert is not None else current_attention
+            new_attention = st.number_input(
+                label=f"🟠 Attenzione", value=current_attention, min_value=min_v, max_value=max_attention_value, step=step, format=fmt,
+                key=f"thresh_attention_{col}", help=f"Soglia di ATTENZIONE (Gialla/Arancione) per: {col}. Non può superare la soglia di Allerta."
+            )
+            # Assicura che attenzione <= allerta
+            if new_attention > new_alert:
+                 new_attention = new_alert
+                 st.warning(f"Soglia Attenzione per '{label_short}' limitata al valore di Allerta ({new_alert}).")
+
+            if new_attention != current_attention:
+                if col not in temp_thresholds_update: temp_thresholds_update[col] = {}
+                temp_thresholds_update[col]['attention'] = new_attention
+
+        # col_idx_thresh += 1
+        st.divider() # Separatore tra sensori
+
+    if st.button("Salva Soglie", key="save_thresholds", type="primary"):
+        # Validazione finale: assicura attention <= alert per ogni sensore prima di salvare
+        validation_ok = True
+        for col, thresholds_dict in temp_thresholds_update.items():
+            alert_val = thresholds_dict.get('alert')
+            attention_val = thresholds_dict.get('attention')
+            if alert_val is not None and attention_val is not None and attention_val > alert_val:
+                 st.error(f"Errore validazione per '{get_station_label(col, short=True)}': Soglia Attenzione ({attention_val}) non può essere maggiore della Soglia Allerta ({alert_val}).")
+                 validation_ok = False
+                 break # Ferma alla prima violazione
+
+        if validation_ok:
+            st.session_state.dashboard_thresholds = json.loads(json.dumps(temp_thresholds_update)) # Salva deep copy
+            st.success("Soglie aggiornate!")
+            time.sleep(0.5)
+            st.rerun()
+        else:
+             st.warning("Modifiche soglie NON salvate a causa di errori di validazione.")
 
 
 # --- Menu Navigazione (logica disabilitazione invariata) ---
@@ -1115,7 +1173,7 @@ df_current_csv = st.session_state.get('df', None) # Dati CSV (possono essere Non
 feature_columns_current_model = active_config.get("feature_columns", st.session_state.feature_columns) if active_config else st.session_state.feature_columns
 date_col_name_csv = st.session_state.date_col_name_csv # Nome colonna data per CSV
 
-# --- PAGINA DASHBOARD (Rivista leggermente, usa DASHBOARD_HISTORY_ROWS aggiornato) ---
+# --- PAGINA DASHBOARD (MODIFICATA per soglia attenzione) ---
 if page == 'Dashboard':
     # MODIFICATO: Titolo per chiarezza sulla frequenza
     st.header(f'📊 Dashboard Monitoraggio Idrologico (Aggiornamento @ 30 min)')
@@ -1220,16 +1278,22 @@ if page == 'Dashboard':
 
         st.divider()
 
-        # --- Tabella Valori Attuali e Soglie (logica invariata) ---
+        # --- Tabella Valori Attuali e Soglie (MODIFICATA per stato attenzione) ---
         st.subheader("Tabella Valori Attuali")
         cols_to_monitor = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
         table_rows = []
         current_alerts = [] # Ricalcola alert ad ogni rerun basato sui dati correnti
+        current_attentions = [] # Lista separata per stato attenzione
 
         for col_name in cols_to_monitor:
             current_value = latest_row_data.get(col_name)
-            threshold = st.session_state.dashboard_thresholds.get(col_name) # Da session state
+            # Recupera entrambe le soglie
+            sensor_thresholds = st.session_state.dashboard_thresholds.get(col_name, {})
+            threshold_alert = sensor_thresholds.get('alert')
+            threshold_attention = sensor_thresholds.get('attention')
+
             alert_active = False
+            attention_active = False
             value_numeric = np.nan # Usato per confronto e styling
             value_display = "N/D"  # Stringa mostrata nella tabella
             unit = ""
@@ -1245,63 +1309,81 @@ if page == 'Dashboard':
                  elif unit == '(m)': value_display = f"{current_value:.2f} {unit}"
                  else: value_display = f"{current_value:.2f}" # Fallback senza unità
 
-                 # Controllo soglia
-                 if threshold is not None and isinstance(threshold, (int, float)) and current_value >= threshold:
+                 # Controllo soglie (Alert ha priorità su Attention)
+                 if threshold_alert is not None and isinstance(threshold_alert, (int, float)) and current_value >= threshold_alert:
                       alert_active = True
-                      current_alerts.append((col_name, current_value, threshold))
+                      current_alerts.append((col_name, current_value, threshold_alert))
+                 elif threshold_attention is not None and isinstance(threshold_attention, (int, float)) and current_value >= threshold_attention:
+                      attention_active = True
+                      current_attentions.append((col_name, current_value, threshold_attention)) # Aggiungi a lista attention
+
             elif pd.notna(current_value):
                  # Se il valore non è numerico ma non è NaN (es. stringa residua)
                  value_display = f"{current_value} (?)" # Segnala potenziale problema
 
-            # Stato per la tabella
-            if alert_active: status = "🔴 ALLERTA" # Più evidente
+            # Stato per la tabella (con priorità Alert > Attention > OK)
+            if alert_active: status = "🔴 ALLERTA"
+            elif attention_active: status = "🟠 ATTENZIONE" # NUOVO STATO
             elif pd.notna(value_numeric): status = "✅ OK"
             else: status = "⚪ N/D" # Non disponibile
 
-            # Soglia per display
-            threshold_display = f"{threshold:.1f}" if threshold is not None else "-"
+            # Soglie per display (mostra entrambe se disponibili)
+            alert_display = f"{threshold_alert:.1f}" if threshold_alert is not None else "-"
+            attention_display = f"{threshold_attention:.1f}" if threshold_attention is not None else "-"
+            threshold_display_combined = f"Att: {attention_display} / All: {alert_display}"
 
             table_rows.append({
                 "Sensore": get_station_label(col_name, short=True),
                 "Nome Completo": col_name,
                 "Valore Numerico": value_numeric,
                 "Valore Attuale": value_display,
-                "Soglia": threshold_display,
-                "Soglia Numerica": threshold,
+                "Soglie (Att/All)": threshold_display_combined, # Mostra entrambe
+                "Soglia Alert": threshold_alert, # Per stile
+                "Soglia Attention": threshold_attention, # Per stile
                 "Stato": status
             })
 
         df_display = pd.DataFrame(table_rows)
 
-        # Funzione di stile per evidenziare righe in allerta (invariata)
-        def highlight_threshold(row):
-            # ... (codice funzione stile invariato) ...
-            color = 'red'; background = 'rgba(255, 0, 0, 0.15)'; text_color = 'black'
+        # --- MODIFICATA: Funzione di stile per evidenziare righe (Alert e Attention) ---
+        def highlight_thresholds(row):
             style = [''] * len(row)
-            threshold_val = row['Soglia Numerica']
+            alert_thresh = row['Soglia Alert']
+            attention_thresh = row['Soglia Attention']
             current_val = row['Valore Numerico']
-            # Applica stile solo se entrambi i valori sono numerici validi
-            if pd.notna(threshold_val) and pd.notna(current_val) and current_val >= threshold_val:
-                style = [f'background-color: {background}; color: {text_color}; font-weight: bold;'] * len(row)
+            text_color = 'black'
+
+            # Applica stile solo se i valori sono numerici validi
+            if pd.notna(current_val):
+                if pd.notna(alert_thresh) and current_val >= alert_thresh:
+                    # Allerta (Rosso)
+                    background = 'rgba(255, 0, 0, 0.25)' # Rosso più intenso
+                    style = [f'background-color: {background}; color: {text_color}; font-weight: bold;'] * len(row)
+                elif pd.notna(attention_thresh) and current_val >= attention_thresh:
+                    # Attenzione (Giallo/Arancione)
+                    background = 'rgba(255, 165, 0, 0.20)' # Arancione più visibile
+                    style = [f'background-color: {background}; color: {text_color};'] * len(row)
             return style
 
-        # Mostra tabella con stile (invariata)
-        cols_to_show_in_table = ["Sensore", "Valore Attuale", "Soglia", "Stato"]
+        # Mostra tabella con stile aggiornato
+        cols_to_show_in_table = ["Sensore", "Valore Attuale", "Soglie (Att/All)", "Stato"]
         st.dataframe(
-            df_display.style.apply(highlight_threshold, axis=1, subset=pd.IndexSlice[:, ["Valore Numerico", "Soglia Numerica"]]), # Applica stile basato su colonne numeriche
+            df_display.style.apply(highlight_thresholds, axis=1, subset=pd.IndexSlice[:, ["Valore Numerico", "Soglia Alert", "Soglia Attention"]]), # Applica stile basato su colonne numeriche
             column_order=cols_to_show_in_table,
             hide_index=True,
             use_container_width=True,
             column_config={ # Configurazione colonne per tooltip e tipo
                 "Sensore": st.column_config.TextColumn("Sensore", help="Nome breve del sensore/località"),
                 "Valore Attuale": st.column_config.TextColumn("Valore Attuale", help="Ultimo valore misurato con unità"),
-                "Soglia": st.column_config.TextColumn("Soglia", help="Soglia di allerta configurata"),
-                "Stato": st.column_config.TextColumn("Stato", help="Stato rispetto alla soglia (OK, ALLERTA, N/D)"),
+                "Soglie (Att/All)": st.column_config.TextColumn("Soglie (Att/All)", help="Soglie di Attenzione e Allerta configurate"),
+                "Stato": st.column_config.TextColumn("Stato", help="Stato rispetto alle soglie (OK, ATTENZIONE, ALLERTA, N/D)"),
             }
         )
 
-        # Aggiorna alert globali in session state
+        # Aggiorna alert globali in session state (solo allerta rossa per riepilogo)
         st.session_state.active_alerts = current_alerts
+        # Salva anche stato attenzione per possibile uso futuro (non mostrato nel riepilogo attuale)
+        st.session_state.active_attentions = current_attentions
 
         st.divider()
 
@@ -1358,7 +1440,7 @@ if page == 'Dashboard':
 
         st.divider()
 
-        # --- Grafici Individuali (usa dati ridotti DASHBOARD_HISTORY_ROWS) ---
+        # --- Grafici Individuali (MODIFICATI per soglia attenzione) ---
         st.subheader("Grafici Individuali Storici")
         num_cols_individual = 3 # Quanti grafici per riga
         graph_cols = st.columns(num_cols_individual)
@@ -1368,7 +1450,11 @@ if page == 'Dashboard':
 
         for col_name in cols_to_monitor:
             with graph_cols[col_idx_graph % num_cols_individual]:
-                threshold_individual = st.session_state.dashboard_thresholds.get(col_name)
+                # Recupera entrambe le soglie
+                sensor_thresholds_indiv = st.session_state.dashboard_thresholds.get(col_name, {})
+                threshold_alert_indiv = sensor_thresholds_indiv.get('alert')
+                threshold_attention_indiv = sensor_thresholds_indiv.get('attention')
+
                 label_individual = get_station_label(col_name, short=True)
                 unit_individual = ''
                 if 'Pioggia' in col_name and '(mm)' in col_name: unit_individual = '(mm)'
@@ -1383,13 +1469,23 @@ if page == 'Dashboard':
                     line=dict(color='royalblue'),
                     hovertemplate=f'<b>{label_individual}</b><br>%{{x|%d/%m %H:%M}}<br>Val: %{{y:.2f}}<extra></extra>'
                 ))
-                # Aggiungi linea soglia se definita e valida
-                if threshold_individual is not None and isinstance(threshold_individual, (int, float)):
+
+                # --- NUOVO: Aggiungi entrambe le linee soglia ---
+                # Aggiungi linea soglia ALLERTA (Rossa)
+                if threshold_alert_indiv is not None and isinstance(threshold_alert_indiv, (int, float)):
                     fig_individual.add_hline(
-                        y=threshold_individual, line_dash="dash", line_color="red",
-                        annotation_text=f"Soglia ({threshold_individual:.1f})",
+                        y=threshold_alert_indiv, line_dash="dash", line_color="red",
+                        annotation_text=f"Allerta ({threshold_alert_indiv:.1f})",
                         annotation_position="bottom right"
                     )
+                # Aggiungi linea soglia ATTENZIONE (Gialla/Arancione)
+                if threshold_attention_indiv is not None and isinstance(threshold_attention_indiv, (int, float)):
+                     fig_individual.add_hline(
+                        y=threshold_attention_indiv, line_dash="dash", line_color="orange",
+                        annotation_text=f"Attenzione ({threshold_attention_indiv:.1f})",
+                        annotation_position="top right" # Posizione diversa
+                    )
+
                 fig_individual.update_layout(
                     title=f"{label_individual}", # Titolo grafico
                     xaxis_title=None, # Nasconde titolo asse x per compattezza
@@ -1410,12 +1506,11 @@ if page == 'Dashboard':
             col_idx_graph += 1
 
 
-        # Riepilogo Alert Attivi (invariato)
+        # Riepilogo Alert Attivi (mostra solo Allerta rossa)
         st.divider()
-        # Usa gli alert salvati in session state (calcolati sopra)
-        active_alerts_sess = st.session_state.get('active_alerts', [])
+        active_alerts_sess = st.session_state.get('active_alerts', []) # Prende solo allerta rossa
         if active_alerts_sess:
-            st.warning("**🚨 ALLERTE ATTIVE (Valori Attuali >= Soglia) 🚨**")
+            st.warning("**🚨 ALLERTE ATTIVE (Valori Attuali >= Soglia Rossa) 🚨**")
             alert_md = ""
             # Ordina alert per nome località per consistenza
             sorted_alerts = sorted(active_alerts_sess, key=lambda x: get_station_label(x[0], short=False))
@@ -1432,21 +1527,17 @@ if page == 'Dashboard':
                 unit = '(mm)' if 'Pioggia' in col else ('(m)' if 'Livello' in col else '') # Determina unità
 
                 # Crea riga markdown
-                alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit}** >= Soglia **{thr_fmt}{unit}**\n"
+                alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit}** >= Soglia Allerta **{thr_fmt}{unit}**\n"
             st.markdown(alert_md)
         else:
-            st.success("✅ Nessuna soglia superata nell'ultimo rilevamento.")
+            st.success("✅ Nessuna soglia di Allerta (Rossa) superata nell'ultimo rilevamento.")
 
-        # Toast notifiche (opzionale, può essere fastidioso se frequente)
-        # if active_alerts_sess:
-        #     active_alert_labels = [get_station_label(a[0], short=True) for a in active_alerts_sess]
-        #     alert_summary = f"{len(active_alerts_sess)} allerte: {', '.join(active_alert_labels)}"
-        #     if len(alert_summary) > 100: alert_summary = alert_summary[:97] + "..." # Tronca se troppo lungo
-        #     # Mostra toast solo se gli alert sono cambiati rispetto all'ultimo run? Richiede più stato.
-        #     # st.toast(alert_summary, icon="🚨")
+        # Nota sullo stato di Attenzione (Giallo)
+        active_attentions_sess = st.session_state.get('active_attentions', [])
+        if active_attentions_sess:
+            st.info(f"ℹ️ Rilevati {len(active_attentions_sess)} sensori in stato di Attenzione (Giallo). Controlla la tabella e i grafici per i dettagli.")
 
-
-    elif df_dashboard is not None and df_dashboard.empty: # Fetch OK ma nessun dato (es. foglio vuoto, filtro errato?)
+    elif df_dashboard is not None and df_dashboard.empty: # Fetch OK ma nessun dato
         st.warning("Il recupero dati da Google Sheet ha restituito un set di dati vuoto.")
         if not error_msg: st.info("Controlla che ci siano dati recenti nel foglio Google e che le colonne richieste esistano.")
 
@@ -1455,19 +1546,15 @@ if page == 'Dashboard':
         if not error_msg: st.info("Controlla la connessione internet, le credenziali Google e l'ID del foglio.")
 
     # --- Meccanismo di refresh automatico (INVARIATO) ---
-    # Usa streamlit_js_eval per forzare un rerun periodicamente
-    # NOTA: Questo riesegue l'intero script Python. L'efficienza dipende dal caching.
+    # ... (codice refresh js invariato) ...
     component_key = f"dashboard_auto_refresh_{DASHBOARD_REFRESH_INTERVAL_SECONDS}"
     js_code = f"""
     (function() {{
-        // Evita di creare intervalli multipli se il componente viene rigenerato
         const intervalIdKey = 'streamlit_auto_refresh_interval_id_{component_key}';
         if (window[intervalIdKey]) {{
             clearInterval(window[intervalIdKey]);
         }}
-        // Crea il nuovo intervallo
         window[intervalIdKey] = setInterval(function() {{
-            // Controlla se streamlitHook è disponibile (potrebbe non esserlo subito)
             if (window.streamlitHook && typeof window.streamlitHook.rerunScript === 'function') {{
                 console.log('Auto-refreshing dashboard...');
                 window.streamlitHook.rerunScript(null);
@@ -1475,7 +1562,6 @@ if page == 'Dashboard':
                 console.log('streamlitHook not ready for auto-refresh yet.');
             }}
         }}, {DASHBOARD_REFRESH_INTERVAL_SECONDS * 1000});
-        // Restituisce l'ID per debugging (opzionale)
         return window[intervalIdKey];
     }})();
     """
@@ -1485,7 +1571,7 @@ if page == 'Dashboard':
          st.warning(f"Impossibile impostare auto-refresh: {e_js}")
 
 
-# --- PAGINA SIMULAZIONE (MODIFICATA per chiarezza su intervalli 30 min) ---
+# --- PAGINA SIMULAZIONE (MODIFICATA per grafici, titolo, tabella) ---
 elif page == 'Simulazione':
     st.header('🧪 Simulazione Idrologica')
     if not model_ready:
@@ -1520,7 +1606,7 @@ elif page == 'Simulazione':
 
         # --- Simulazione: Manuale Costante ---
         if sim_method == 'Manuale (Valori Costanti)':
-            # MODIFICATO: Subheader
+            # ... (codice invariato, usa feature_columns_current_model) ...
             st.subheader(f'Inserisci valori costanti per le {input_window} rilevazioni di input (~{input_hours:.1f} ore)')
             st.caption("Il modello userà questi valori ripetuti per tutta la finestra di input.")
             temp_sim_values = {}
@@ -1542,9 +1628,8 @@ elif page == 'Simulazione':
             # Popola colonne con i gruppi
             if feature_groups['Pioggia']:
                  with cols_manual[col_idx_man % 3]:
-                      st.markdown("**Pioggia (mm/30min)**") # MODIFICATO: Unità di tempo
+                      st.markdown("**Pioggia (mm/30min)**")
                       for feature, label_feat in feature_groups['Pioggia']:
-                           # Cerca valore mediano da CSV se disponibile
                            default_val = df_current_csv[feature].median() if data_ready_csv and feature in df_current_csv and pd.notna(df_current_csv[feature].median()) else 0.0
                            temp_sim_values[feature] = create_num_input(feature, label_feat, round(max(0.0, default_val),1), 0.5, "%.1f", feature, feature)
                  col_idx_man += 1
@@ -1571,10 +1656,9 @@ elif page == 'Simulazione':
 
             # Crea l'array numpy di input ripetendo i valori costanti
             try:
-                # Assicura l'ordine corretto delle feature
                 ordered_values = [temp_sim_values[feature] for feature in feature_columns_current_model]
                 sim_data_input = np.tile(ordered_values, (input_window, 1)).astype(float)
-                sim_start_time_info = datetime.now(italy_tz) # Usa ora corrente come riferimento
+                sim_start_time_info = datetime.now(italy_tz)
             except KeyError as ke:
                 st.error(f"Errore: Feature modello '{ke}' mancante nell'input manuale fornito. Verifica la configurazione.")
                 sim_data_input = None
@@ -1583,34 +1667,25 @@ elif page == 'Simulazione':
                 sim_data_input = None
 
         # --- Simulazione: Google Sheet ---
-        # MODIFICATO: Subheader
         elif sim_method == 'Importa da Google Sheet (Ultime Rilevazioni)':
+             # ... (codice invariato, usa feature_columns_current_model) ...
              st.subheader(f'Importa le ultime {input_window} rilevazioni (~{input_hours:.1f} ore) da Google Sheet')
              st.warning("⚠️ Funzionalità sperimentale: Assicurati che le colonne GSheet e la mappatura siano corrette!")
              # Usa ID GSheet di default (quello della dashboard) come suggerimento
              sheet_url_sim = st.text_input("URL Foglio Google da cui importare", f"https://docs.google.com/spreadsheets/d/{GSHEET_ID}/edit", key="sim_gsheet_url_input")
              sheet_id_sim = extract_sheet_id(sheet_url_sim)
 
-             # Mappatura da GSheet a nomi feature del modello (NECESSARIA VERIFICA MANUALE!)
-             # Presumo che i nomi GSheet siano quelli in GSHEET_RELEVANT_COLS
-             # e i nomi modello siano quelli in feature_columns_current_model
-             # !! IMPORTANTE !!: Questa mappatura deve essere VERIFICATA e AGGIORNATA
-             # in base ai nomi ESATTI delle colonne nel TUO foglio Google e nel TUO modello.
              column_mapping_gsheet_to_model_sim = {
-                # NOME_COLONNA_GSHEET : NOME_FEATURE_MODELLO
-                # Esempio (da adattare):
-                'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)', # Nome modello può variare
+                'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
                 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
                 'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
-                'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)', # Assunzione Bettolelle
-                # Manca Umidità Montemurello nella lista GSheet di default - AGGIUNGERE SE NECESSARIO
-                # 'NomeColonnaUmidita_nel_GSheet': 'Umidita\' Sensore 3452 (Montemurello)',
+                'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
+                # 'NomeColonnaUmidita_nel_GSheet': 'Umidita\' Sensore 3452 (Montemurello)', # Assumiamo non presente in GSHEET_RELEVANT_COLS
                 'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
-                'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)', # Assunzione Bettolelle
-                'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)', # Assunzione Corinaldo
+                'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
+                'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
                 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
                 'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-                # AGGIUNGERE/MODIFICARE ALTRE COLONNE NECESSARIE QUI
              }
              # Rimuovi dal mapping le colonne GSheet non richieste dal modello corrente
              column_mapping_gsheet_to_model_sim = {
@@ -1648,18 +1723,15 @@ elif page == 'Simulazione':
                        with cols_impute[col_idx_imp % 3]:
                             label_missing = get_station_label(missing_f, short=True)
                             default_val = 0.0; fmt = "%.2f"; step = 0.1
-                            # Usa mediana CSV se disponibile
                             if data_ready_csv and missing_f in df_current_csv and pd.notna(df_current_csv[missing_f].median()): default_val = df_current_csv[missing_f].median()
-                            # Adatta formato/step
                             if 'Umidita' in missing_f: fmt = "%.1f"; step = 1.0
-                            elif 'Cumulata' in missing_f: fmt = "%.1f"; step = 0.5; default_val = max(0.0, default_val) # Pioggia >= 0
+                            elif 'Cumulata' in missing_f: fmt = "%.1f"; step = 0.5; default_val = max(0.0, default_val)
                             elif 'Livello' in missing_f: fmt = "%.2f"; step = 0.05
 
                             imputed_values_sim[missing_f] = st.number_input(f"Valore per '{label_missing}'", value=round(default_val, 2), step=step, format=fmt, key=f"sim_gsheet_impute_val_{missing_f}", help=f"Valore costante per {missing_f}")
                        col_idx_imp += 1
 
              # Definizione funzione fetch specifica per simulazione (cachata)
-             # Usa ttl più breve? O uguale a dashboard? Usiamo 120s
              @st.cache_data(ttl=120, show_spinner="Importazione dati storici da Google Sheet...")
              def fetch_sim_gsheet_data(sheet_id_fetch, n_rows, date_col_gs, date_format_gs, col_mapping, required_model_cols_fetch, impute_dict):
                  """ Recupera, mappa, pulisce e ordina dati da GSheet per simulazione. """
@@ -1672,79 +1744,67 @@ elif page == 'Simulazione':
                      worksheet = sh.sheet1
                      all_data_gs = worksheet.get_all_values()
 
-                     if not all_data_gs or len(all_data_gs) < (n_rows + 1): # +1 per header
+                     if not all_data_gs or len(all_data_gs) < (n_rows + 1):
                          return None, f"Errore: Dati GSheet insufficienti (trovate {len(all_data_gs)-1} righe dati, richieste {n_rows}).", None
 
                      headers_gs = all_data_gs[0]
-                     # Prendi le ultime n_rows di DATI (escludendo header)
                      start_index_gs = max(1, len(all_data_gs) - n_rows)
                      data_rows_gs = all_data_gs[start_index_gs:]
 
                      df_gsheet_raw = pd.DataFrame(data_rows_gs, columns=headers_gs)
 
-                     # Verifica colonne GSheet richieste dal MAPPING
                      required_gsheet_cols_from_mapping = list(col_mapping.keys())
                      missing_gsheet_cols_in_sheet = [c for c in required_gsheet_cols_from_mapping if c not in df_gsheet_raw.columns]
                      if missing_gsheet_cols_in_sheet:
                          return None, f"Errore: Colonne GSheet specificate nella mappatura ma mancanti nel foglio: {', '.join(missing_gsheet_cols_in_sheet)}", None
 
-                     # Seleziona solo colonne GSheet necessarie e rinomina a nomi modello
                      df_mapped = df_gsheet_raw[required_gsheet_cols_from_mapping].rename(columns=col_mapping)
 
-                     # Aggiungi colonne mancanti con valori costanti (imputazione)
                      for model_col, impute_val in impute_dict.items():
                           if model_col not in df_mapped.columns:
-                              df_mapped[model_col] = impute_val # Applica valore costante
+                              df_mapped[model_col] = impute_val
 
-                     # Verifica che TUTTE le colonne modello richieste siano presenti ORA
                      final_missing_model_cols = [c for c in required_model_cols_fetch if c not in df_mapped.columns]
                      if final_missing_model_cols:
                          return None, f"Errore: Colonne modello mancanti dopo mappatura e imputazione: {', '.join(final_missing_model_cols)}", None
 
-                     # --- Pulizia Dati Numerici ---
-                     last_valid_timestamp = None # Per riferimento
-                     date_col_model_name = None # Nome colonna data dopo mappatura (se presente)
+                     last_valid_timestamp = None
+                     date_col_model_name = None
                      for gsheet_c, model_c in col_mapping.items():
                           if gsheet_c == date_col_gs:
                                date_col_model_name = model_c; break
 
-                     for col in required_model_cols_fetch: # Itera su tutte le feature modello
-                         if col == date_col_model_name: # Gestione colonna data
+                     for col in required_model_cols_fetch:
+                         if col == date_col_model_name:
                              try:
                                  df_mapped[col] = pd.to_datetime(df_mapped[col], format=date_format_gs, errors='coerce')
                                  if df_mapped[col].isnull().any():
                                      st.warning(f"Date non valide trovate in GSheet ('{col}').")
-                                 # Localizza/Converti timezone
                                  if df_mapped[col].dt.tz is None: df_mapped[col] = df_mapped[col].dt.tz_localize(italy_tz)
                                  else: df_mapped[col] = df_mapped[col].dt.tz_convert(italy_tz)
                              except Exception as e_date_clean:
                                  return None, f"Errore conversione/pulizia data GSheet '{col}': {e_date_clean}", None
-                         else: # Pulizia colonne numeriche
+                         else:
                               try:
                                   if pd.api.types.is_object_dtype(df_mapped[col]):
                                       col_str = df_mapped[col].astype(str)
                                       col_str = col_str.str.replace(',', '.', regex=False).str.strip()
                                       df_mapped[col] = col_str.replace(['N/A', '', '-', ' ', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
-                                  # Converti in numerico
                                   df_mapped[col] = pd.to_numeric(df_mapped[col], errors='coerce')
                               except Exception as e_clean_num:
                                   st.warning(f"Problema pulizia GSheet colonna '{col}': {e_clean_num}. Verrà trattata come NaN.")
-                                  df_mapped[col] = np.nan # Forza NaN in caso di errore pulizia
+                                  df_mapped[col] = np.nan
 
-                     # Ordina per data se la colonna data è presente e valida
                      if date_col_model_name and date_col_model_name in df_mapped.columns and pd.api.types.is_datetime64_any_dtype(df_mapped[date_col_model_name]):
                           df_mapped = df_mapped.sort_values(by=date_col_model_name, na_position='first')
-                          # Prendi l'ultimo timestamp valido PRIMA del fillna
                           if not df_mapped[date_col_model_name].dropna().empty:
                              last_valid_timestamp = df_mapped[date_col_model_name].dropna().iloc[-1]
 
-                     # Seleziona e Riordina colonne come richiesto dal modello
                      try:
                          df_final = df_mapped[required_model_cols_fetch]
                      except KeyError as e_key:
                          return None, f"Errore selezione/ordine colonne finali: '{e_key}' non trovata dopo mappatura/imputazione.", None
 
-                     # Gestione NaN residui (applica ffill/bfill)
                      numeric_cols_to_fill = df_final.select_dtypes(include=np.number).columns
                      nan_count_before = df_final[numeric_cols_to_fill].isnull().sum().sum()
                      if nan_count_before > 0:
@@ -1753,17 +1813,14 @@ elif page == 'Simulazione':
                           if df_final[numeric_cols_to_fill].isnull().sum().sum() > 0:
                               return None, "Errore: NaN residui dopo fillna. Controlla dati GSheet (colonne vuote?).", None
 
-                     # Controllo finale numero righe
                      if len(df_final) != n_rows:
                          return None, f"Errore: Numero righe finali ({len(df_final)}) diverso da richiesto ({n_rows}).", None
 
-                     # Restituisci DataFrame numerico nell'ordine corretto e ultimo timestamp
                      return df_final[required_model_cols_fetch], None, last_valid_timestamp # Successo
 
                  except gspread.exceptions.APIError as api_e_sim:
-                     # Gestione errori API specifici
                      error_message_sim = str(api_e_sim)
-                     try: # Prova a ottenere dettagli errore
+                     try:
                          error_details = api_e_sim.response.json().get('error', {})
                          error_message_sim = error_details.get('message', str(api_e_sim))
                          status_code = error_details.get('code', 'N/A')
@@ -1774,74 +1831,62 @@ elif page == 'Simulazione':
                  except gspread.exceptions.SpreadsheetNotFound:
                      return None, f"Errore: Foglio Google non trovato (ID: '{sheet_id_fetch}').", None
                  except Exception as e_sim_fetch:
-                     st.error(traceback.format_exc()) # Log errore completo per debug
+                     st.error(traceback.format_exc())
                      return None, f"Errore imprevisto importazione GSheet per simulazione: {type(e_sim_fetch).__name__} - {e_sim_fetch}", None
 
-
-             # Bottone per avviare l'importazione
              if st.button("Importa e Prepara da Google Sheet", key="sim_run_gsheet_import", disabled=(not sheet_id_sim)):
                  if not sheet_id_sim: st.error("URL o ID del Foglio Google non valido.")
                  else:
-                     # Chiama la funzione di fetch specifica
                      imported_df_numeric, import_err, last_ts_gs = fetch_sim_gsheet_data(
                          sheet_id_sim,
                          input_window,
-                         GSHEET_DATE_COL, # Nome colonna data nel GSheet
+                         GSHEET_DATE_COL,
                          GSHEET_DATE_FORMAT,
-                         column_mapping_gsheet_to_model_sim, # Mappatura
-                         feature_columns_current_model, # Feature richieste dal modello
-                         imputed_values_sim # Valori costanti per feature mancanti
+                         column_mapping_gsheet_to_model_sim,
+                         feature_columns_current_model,
+                         imputed_values_sim
                      )
 
                      if import_err:
                          st.error(f"Importazione GSheet fallita: {import_err}")
-                         st.session_state.imported_sim_data_gs_df = None # Resetta cache sessione
+                         st.session_state.imported_sim_data_gs_df = None
                          sim_data_input = None
                      elif imported_df_numeric is not None:
                           st.success(f"Importate e processate {len(imported_df_numeric)} rilevazioni da GSheet.")
-                          # Verifica shape finale
                           if imported_df_numeric.shape == (input_window, len(feature_columns_current_model)):
-                              # Salva in session state per possibile riutilizzo senza re-import
                               st.session_state.imported_sim_data_gs_df = imported_df_numeric
-                              # Prepara i dati numpy per la predizione
                               sim_data_input = imported_df_numeric.values
-                              sim_start_time_info = last_ts_gs if last_ts_gs else datetime.now(italy_tz) # Usa ultimo timestamp GSheet se disponibile
+                              sim_start_time_info = last_ts_gs if last_ts_gs else datetime.now(italy_tz)
                               with st.expander("Mostra Dati Numerici Importati (pronti per modello)"):
                                    st.dataframe(imported_df_numeric.round(3))
                           else:
-                               # Questo non dovrebbe accadere se i controlli nella funzione fetch sono corretti
                                st.error(f"Errore Shape dati GSheet post-processamento ({imported_df_numeric.shape}) vs atteso ({input_window}, {len(feature_columns_current_model)}).")
                                st.session_state.imported_sim_data_gs_df = None
                                sim_data_input = None
-                     else: # Caso generico di fallimento non gestito
+                     else:
                           st.error("Importazione GSheet non riuscita per motivi sconosciuti.")
                           st.session_state.imported_sim_data_gs_df = None
                           sim_data_input = None
 
-             # Se i dati sono già stati importati in una run precedente, riutilizzali
              elif sim_method == 'Importa da Google Sheet (Ultime Rilevazioni)' and 'imported_sim_data_gs_df' in st.session_state:
                  imported_df_state = st.session_state.imported_sim_data_gs_df
                  if isinstance(imported_df_state, pd.DataFrame) and imported_df_state.shape == (input_window, len(feature_columns_current_model)):
                      sim_data_input = imported_df_state.values
-                     # Recupera anche il timestamp se lo abbiamo salvato (non implementato sopra, usiamo now)
                      # TODO: Salvare anche il timestamp 'last_ts_gs' in session state se si vuole essere precisi
                      sim_start_time_info = datetime.now(italy_tz)
                      st.info("Utilizzo dati importati precedentemente da Google Sheet (da cache sessione).")
                      with st.expander("Mostra Dati Importati (da cache sessione)"):
                          st.dataframe(imported_df_state.round(3))
-                 # else: Non mostrare warning se non ci sono dati validi in cache, l'utente deve importare
 
 
         # --- Simulazione: Dettagliato per Intervallo (Tabella) ---
-        # MODIFICATO: Subheader e caption
         elif sim_method == 'Dettagliato per Intervallo (Tabella)':
+            # ... (codice invariato, usa feature_columns_current_model) ...
             st.subheader(f'Inserisci dati dettagliati per le {input_window} rilevazioni di input (~{input_hours:.1f} ore)')
             st.caption("Modifica la tabella sottostante con i valori desiderati per ogni intervallo di 30 minuti.")
 
-            # Chiave univoca per session state basata su parametri modello
             session_key_hourly = f"sim_hourly_data_{input_window}_{'_'.join(sorted(feature_columns_current_model))}"
 
-            # Inizializza DataFrame in session state se non esiste o non corrisponde
             needs_reinit = True
             if session_key_hourly in st.session_state:
                 df_state = st.session_state[session_key_hourly]
@@ -1853,69 +1898,57 @@ elif page == 'Simulazione':
                  init_vals = {}
                  for col in feature_columns_current_model:
                       med_val = 0.0
-                      # Usa mediana CSV come default se disponibile
                       if data_ready_csv and col in df_current_csv and pd.notna(df_current_csv[col].median()): med_val = df_current_csv[col].median()
-                      # Fallback a 20% soglia default se disponibile
-                      elif col in DEFAULT_THRESHOLDS: med_val = DEFAULT_THRESHOLDS.get(col, 0.0) * 0.2
-                      # Assicura pioggia >= 0
+                      elif col in DEFAULT_THRESHOLDS: # Usa soglia alert default come riferimento
+                          med_val = DEFAULT_THRESHOLDS.get(col, {}).get('alert', 0.0) * 0.2
                       if 'Cumulata' in col or 'Pioggia' in col: med_val = max(0.0, med_val)
                       init_vals[col] = float(med_val)
-                 # Crea DataFrame iniziale, assicurando ordine colonne e fillna
                  init_df = pd.DataFrame(np.repeat([list(init_vals.values())], input_window, axis=0), columns=list(init_vals.keys()))
-                 st.session_state[session_key_hourly] = init_df[feature_columns_current_model].fillna(0.0) # Riordina e fillna
+                 st.session_state[session_key_hourly] = init_df[feature_columns_current_model].fillna(0.0)
 
-            # Prepara DataFrame per l'editor (copia da session state)
             df_for_editor = st.session_state[session_key_hourly].copy()
-            # Assicura ordine colonne e tipo float
             try:
                 df_for_editor = df_for_editor[feature_columns_current_model].astype(float)
             except Exception as e_cast_editor:
                  st.error(f"Errore preparazione tabella per modifica: {e_cast_editor}. Reset tabella.")
-                 del st.session_state[session_key_hourly] # Rimuovi stato errato
-                 st.rerun() # Forza reinizializzazione
+                 del st.session_state[session_key_hourly]
+                 st.rerun()
 
-            # Configurazione colonne editor (formato, step, min/max)
             column_config_editor = {}
             for col in feature_columns_current_model:
                  label_edit = get_station_label(col, short=True)
                  fmt = "%.3f"; step = 0.01; min_v=None; max_v=None
-                 if 'Cumulata' in col or 'Pioggia' in col: fmt = "%.1f"; step = 0.5; min_v=0.0; label_edit += " (mm/30m)" # MODIFICATO: Aggiunto unità
+                 if 'Cumulata' in col or 'Pioggia' in col: fmt = "%.1f"; step = 0.5; min_v=0.0; label_edit += " (mm/30m)"
                  elif 'Umidita' in col: fmt = "%.1f"; step = 1.0; min_v=0.0; max_v=100.0
-                 elif 'Livello' in col: fmt = "%.3f"; step = 0.01; label_edit += " (m)" # MODIFICATO: Aggiunto unità
+                 elif 'Livello' in col: fmt = "%.3f"; step = 0.01; label_edit += " (m)"
 
-                 column_config_editor[col] = st.column_config.NumberColumn(label=label_edit, help=col, format=fmt, step=step, min_value=min_v, max_value=max_v, required=True) # Rende la colonna obbligatoria
+                 column_config_editor[col] = st.column_config.NumberColumn(label=label_edit, help=col, format=fmt, step=step, min_value=min_v, max_value=max_v, required=True)
 
-            # Mostra data editor
             edited_df = st.data_editor(
                 df_for_editor,
-                height=(input_window + 1) * 35 + 3, # Altezza dinamica base
+                height=(input_window + 1) * 35 + 3,
                 use_container_width=True,
                 column_config=column_config_editor,
-                key=f"data_editor_{session_key_hourly}", # Key univoca per l'editor
-                num_rows="fixed" # Numero righe fisso
+                key=f"data_editor_{session_key_hourly}",
+                num_rows="fixed"
             )
 
-            # Validazione dati editati
             validation_passed = False
             if not isinstance(edited_df, pd.DataFrame):
                 st.error("Errore interno: L'editor non ha restituito un DataFrame.")
             elif edited_df.shape[0] != input_window:
                 st.error(f"Errore: La tabella deve avere esattamente {input_window} righe (intervalli).")
             elif list(edited_df.columns) != feature_columns_current_model:
-                 # Questo non dovrebbe succedere con column_config, ma controlliamo
                  st.error("Errore: Colonne della tabella modificate in modo imprevisto.")
             elif edited_df.isnull().sum().sum() > 0:
                  st.warning("Attenzione: Valori mancanti rilevati nella tabella. Compilare tutte le celle.")
             else:
-                 # Se tutto ok, prova a convertire in numpy e prepara per simulazione
                  try:
                       sim_data_input_edit = edited_df[feature_columns_current_model].astype(float).values
-                      # Controllo shape finale numpy array
                       if sim_data_input_edit.shape == (input_window, len(feature_columns_current_model)):
                           sim_data_input = sim_data_input_edit
-                          sim_start_time_info = datetime.now(italy_tz) # Usa ora corrente
+                          sim_start_time_info = datetime.now(italy_tz)
                           validation_passed = True
-                          # Aggiorna session state SOLO se i dati sono cambiati e validi
                           if not st.session_state[session_key_hourly].equals(edited_df):
                               st.session_state[session_key_hourly] = edited_df
                               st.caption("Modifiche tabella salvate in sessione.")
@@ -1925,8 +1958,8 @@ elif page == 'Simulazione':
 
 
         # --- Simulazione: Ultime Rilevazioni da CSV ---
-        # MODIFICATO: Subheader
         elif sim_method == 'Usa Ultime Rilevazioni da CSV Caricato':
+             # ... (codice invariato, usa feature_columns_current_model) ...
              st.subheader(f"Usa le ultime {input_window} rilevazioni (~{input_hours:.1f} ore) dai dati CSV caricati")
              st.warning("⚠️ Assicurati che l'intervallo temporale dei dati CSV sia coerente con quello su cui il modello è stato addestrato!")
              if not data_ready_csv:
@@ -1935,26 +1968,20 @@ elif page == 'Simulazione':
                  st.error(f"Dati CSV ({len(df_current_csv)} righe) insufficienti per la finestra di input richiesta ({input_window} rilevazioni).")
              else:
                   try:
-                       # Seleziona le ultime 'input_window' righe e le feature richieste DAL MODELLO
-                       latest_csv_data_df = df_current_csv.iloc[-input_window:][feature_columns_current_model] # Seleziona E ORDINA
+                       latest_csv_data_df = df_current_csv.iloc[-input_window:][feature_columns_current_model]
 
-                       # Verifica NaN nelle righe selezionate
                        if latest_csv_data_df.isnull().sum().sum() > 0:
                             st.error(f"Trovati valori mancanti (NaN) nelle ultime {input_window} rilevazioni delle colonne richieste nel CSV. Impossibile usare per simulazione.")
                             with st.expander("Mostra righe CSV con NaN (ultime rilevazioni)"):
                                  st.dataframe(latest_csv_data_df[latest_csv_data_df.isnull().any(axis=1)])
                             sim_data_input = None
                        else:
-                            # Converti in numpy array
                             latest_csv_data_np = latest_csv_data_df.astype(float).values
-                            # Verifica shape finale
                             if latest_csv_data_np.shape == (input_window, len(feature_columns_current_model)):
                                 sim_data_input = latest_csv_data_np
-                                # Trova il timestamp dell'ultimo dato CSV usato
                                 try:
                                     last_ts_csv_used = df_current_csv.iloc[-1][date_col_name_csv]
                                     if pd.notna(last_ts_csv_used):
-                                         # Assicura sia timezone-aware
                                          if last_ts_csv_used.tzinfo is None: sim_start_time_info = italy_tz.localize(last_ts_csv_used)
                                          else: sim_start_time_info = last_ts_csv_used.tz_convert(italy_tz)
                                          st.caption(f"Simulazione basata su dati CSV fino a: {sim_start_time_info.strftime('%d/%m/%Y %H:%M %Z')}")
@@ -1962,10 +1989,9 @@ elif page == 'Simulazione':
                                 except Exception: sim_start_time_info = datetime.now(italy_tz); st.caption("Ora inizio previsione: Ora corrente (errore lettura timestamp CSV).")
 
                                 with st.expander("Mostra dati CSV usati per l'input"):
-                                     # Mostra anche colonna data per riferimento
                                      cols_to_show_csv = [date_col_name_csv] + feature_columns_current_model
                                      st.dataframe(df_current_csv.iloc[-input_window:][cols_to_show_csv].round(3))
-                            else: # Errore shape imprevisto
+                            else:
                                 st.error(f"Errore shape dati CSV estratti ({latest_csv_data_np.shape}) vs atteso ({input_window}, {len(feature_columns_current_model)}).")
                                 sim_data_input = None
                   except KeyError as ke:
@@ -1975,7 +2001,7 @@ elif page == 'Simulazione':
                        st.error(f"Errore imprevisto durante estrazione dati CSV per simulazione: {e_csv_sim_extract}")
                        sim_data_input = None
 
-        # --- ESECUZIONE SIMULAZIONE (Comune a tutti i metodi) ---
+        # --- ESECUZIONE SIMULAZIONE (MODIFICATA per tabella e grafici) ---
         st.divider()
         # Verifica se i dati di input sono pronti
         input_ready = sim_data_input is not None and isinstance(sim_data_input, np.ndarray) and sim_data_input.shape == (input_window, len(feature_columns_current_model)) and not np.isnan(sim_data_input).any()
@@ -2001,7 +2027,6 @@ elif page == 'Simulazione':
                        start_pred_time = sim_start_time_info if sim_start_time_info else datetime.now(italy_tz)
                        st.caption(f"Previsione calcolata a partire da: {start_pred_time.strftime('%d/%m/%Y %H:%M %Z')}")
 
-                       # MODIFICATO: Calcola tempi ogni 30 min
                        pred_times_sim = [start_pred_time + timedelta(minutes=30*(i+1)) for i in range(output_window)]
                        # 1. Crea DataFrame iniziale dai risultati numerici
                        results_df_sim = pd.DataFrame(predictions_sim, columns=target_columns_model)
@@ -2009,53 +2034,69 @@ elif page == 'Simulazione':
                        results_df_sim.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_sim])
 
                        # 3. Rinomina colonne
-                       rename_dict = {'Ora Prevista': 'Ora Prevista'} # Mantiene colonna tempo
-                       original_to_renamed_map = {} # Mappa per identificare le colonne numeriche dopo il rename
+                       rename_dict = {'Ora Prevista': 'Ora Prevista'}
+                       original_to_renamed_map = {}
                        for col in target_columns_model:
                            unit = '(m)' if 'Livello' in col else ''
                            new_name = f"{get_station_label(col, short=True)} {unit}".strip()
-                           # Gestisci potenziali nomi duplicati aggiungendo un suffisso se necessario
                            count = 1
                            final_name = new_name
                            while final_name in rename_dict.values():
                                count += 1
                                final_name = f"{new_name}_{count}"
                            rename_dict[col] = final_name
-                           original_to_renamed_map[col] = final_name # Salva il nome finale
+                           original_to_renamed_map[col] = final_name
 
-                       results_df_sim.rename(columns=rename_dict, inplace=True)
+                       results_df_sim_renamed = results_df_sim.rename(columns=rename_dict)
 
-                       # 4. Arrotonda SOLO le colonne numeriche (quelle che derivano dalle previsioni)
-                       #    Identifica i nomi delle colonne numeriche DOPO la rinomina
+                       # 4. Arrotonda SOLO le colonne numeriche (dopo rinomina)
                        numeric_cols_renamed = [original_to_renamed_map[col] for col in target_columns_model if col in original_to_renamed_map]
-
-                       # Crea una copia per la visualizzazione (opzionale ma più sicuro)
-                       df_to_display = results_df_sim.copy()
-
-                       # Applica round solo alle colonne numeriche identificate
+                       df_to_display = results_df_sim_renamed.copy()
                        try:
-                           # Filtra ulteriormente per assicurarsi che le colonne esistano nel df
                            cols_in_df_to_round = [col for col in numeric_cols_renamed if col in df_to_display.columns]
                            if cols_in_df_to_round:
                                df_to_display[cols_in_df_to_round] = df_to_display[cols_in_df_to_round].round(3)
                            else:
                                st.warning("Nessuna colonna numerica trovata per l'arrotondamento pre-visualizzazione.")
-
-                           # 5. Mostra il DataFrame (ora con colonne numeriche arrotondate)
-                           st.dataframe(df_to_display)
-
                        except Exception as e_round_display:
-                            st.error(f"Errore durante l'arrotondamento selettivo o la visualizzazione: {e_round_display}")
-                            st.write("Visualizzazione DataFrame originale (senza arrotondamento specifico):")
-                            st.dataframe(results_df_sim) # Fallback
+                           st.error(f"Errore durante l'arrotondamento selettivo: {e_round_display}")
+                           df_to_display = results_df_sim_renamed # Fallback senza arrotondamento
 
+                       # --- NUOVO: Applicazione stile per valori sopra soglia ALERT ---
+                       def style_alert_value(val, original_col_name, thresholds_dict):
+                           """ Funzione per applicare stile rosso se val >= soglia alert. """
+                           alert_thresh = thresholds_dict.get(original_col_name, {}).get('alert')
+                           style = ''
+                           if pd.notna(val) and pd.notna(alert_thresh) and val >= alert_thresh:
+                               style = 'color: red; font-weight: bold;'
+                           return style
 
-                       # 6. Link per il download (usa il DataFrame originale NON arrotondato specificamente per display)
+                       # Crea lo styler
+                       styler = df_to_display.style
+
+                       # Applica lo stile cella per cella alle colonne numeriche
+                       for original_col, renamed_col in original_to_renamed_map.items():
+                            if renamed_col in df_to_display.columns: # Sicurezza
+                                styler = styler.applymap(
+                                    lambda x: style_alert_value(x, original_col, st.session_state.dashboard_thresholds),
+                                    subset=[renamed_col]
+                                )
+
+                       # Mostra il DataFrame STILIZZATO
+                       st.dataframe(styler)
+
+                       # 6. Link per il download (usa DataFrame originale NON stilizzato)
                        st.markdown(get_table_download_link(results_df_sim, f"simulazione_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
 
-                       # --- Grafici (funzione plot_predictions è stata modificata) ---
+                       # --- Grafici (MODIFICATI per passare soglie) ---
                        st.subheader('📈 Grafici Previsioni Simulate')
-                       figs_sim = plot_predictions(predictions_sim, active_config, start_pred_time)
+                       # Passa il dizionario delle soglie alla funzione plot_predictions
+                       figs_sim = plot_predictions(
+                           predictions_sim,
+                           active_config,
+                           st.session_state.dashboard_thresholds, # <-- Passa le soglie qui
+                           start_pred_time
+                       )
                        sim_cols = st.columns(min(len(figs_sim), 2))
                        for i, fig_sim in enumerate(figs_sim):
                            with sim_cols[i % len(sim_cols)]:
@@ -2070,50 +2111,42 @@ elif page == 'Simulazione':
 
 
 # --- PAGINA ANALISI DATI STORICI (INVARIATA nella logica principale) ---
-# --- Assicura che usi df_current_csv che può essere None ---
+# ... (codice invariato) ...
 elif page == 'Analisi Dati Storici':
     st.header('🔎 Analisi Dati Storici (da file CSV)')
-    if not data_ready_csv: # Controlla se df_current_csv è valido
+    if not data_ready_csv:
         st.warning("⚠️ Dati Storici CSV non disponibili. Carica un file CSV valido nella sidebar per usare questa funzionalità.")
     else:
         st.info(f"Dataset CSV caricato: {len(df_current_csv)} righe.")
         st.caption(f"Periodo dati: dal {df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')} al {df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')}")
 
-        # Selezione intervallo date (invariata)
-        # ... (codice selezione date invariato) ...
         min_date = df_current_csv[date_col_name_csv].min().date()
         max_date = df_current_csv[date_col_name_csv].max().date()
         col1, col2 = st.columns(2)
-        # Aggiungi controllo se min_date == max_date
+
         if min_date == max_date:
              start_date = min_date
              end_date = max_date
              col1.info(f"Disponibile solo il giorno: {min_date.strftime('%d/%m/%Y')}")
         else:
              start_date = col1.date_input('Data inizio', min_date, min_value=min_date, max_value=max_date, key="analisi_start_date")
-             end_date = col2.date_input('Data fine', max_date, min_value=start_date, max_value=max_date, key="analisi_end_date") # min_value = start_date
+             end_date = col2.date_input('Data fine', max_date, min_value=start_date, max_value=max_date, key="analisi_end_date")
 
         if start_date > end_date:
              st.error("Data inizio non può essere successiva alla data fine.")
         else:
-            # Filtra DataFrame per date selezionate (invariato)
-            # ... (codice filtro date e gestione timezone invariato) ...
             try:
-                # Crea datetime completi per il confronto
                 start_dt = datetime.combine(start_date, datetime.min.time())
                 end_dt = datetime.combine(end_date, datetime.max.time())
 
-                # Gestisci timezone se presente nel DataFrame CSV
                 df_date_col = df_current_csv[date_col_name_csv]
                 if pd.api.types.is_datetime64_any_dtype(df_date_col) and df_date_col.dt.tz is not None:
                      tz_csv = df_date_col.dt.tz
                      start_dt = tz_csv.localize(start_dt)
                      end_dt = tz_csv.localize(end_dt)
                 elif not pd.api.types.is_datetime64_any_dtype(df_date_col):
-                     # Questo non dovrebbe accadere se la pulizia iniziale ha funzionato
                      st.error(f"Errore interno: La colonna data CSV '{date_col_name_csv}' non è di tipo datetime."); st.stop()
 
-                # Applica filtro
                 mask = (df_current_csv[date_col_name_csv] >= start_dt) & (df_current_csv[date_col_name_csv] <= end_dt)
                 filtered_df = df_current_csv.loc[mask]
             except Exception as e_filter:
@@ -2124,22 +2157,16 @@ elif page == 'Analisi Dati Storici':
                  st.warning(f"Nessun dato trovato nel periodo selezionato ({start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}).")
             else:
                  st.success(f"Trovati {len(filtered_df)} record nel periodo selezionato.")
-                 # Tabs per diverse analisi (invariato)
                  tab1, tab2, tab3 = st.tabs(["📊 Andamento Temporale", "📈 Statistiche/Distribuzione", "🔗 Correlazione"])
 
-                 # Feature numeriche disponibili nei dati filtrati (invariato)
-                 # ... (codice selezione feature per analisi invariato) ...
                  potential_features_analysis = filtered_df.select_dtypes(include=np.number).columns.tolist()
-                 potential_features_analysis = [f for f in potential_features_analysis if f not in ['index', 'level_0']] # Rimuovi colonne indice
-                 # Crea mapping label -> nome colonna
+                 potential_features_analysis = [f for f in potential_features_analysis if f not in ['index', 'level_0']]
                  feature_labels_analysis = {get_station_label(f, short=True): f for f in potential_features_analysis}
                  if not feature_labels_analysis:
                      st.warning("Nessuna colonna numerica valida trovata nei dati filtrati per l'analisi."); st.stop()
 
                  with tab1:
                       st.subheader("Andamento Temporale Features")
-                      # Selezione multiselect (invariata)
-                      # ... (codice multiselect e plot TS invariato) ...
                       default_labels_ts = [lbl for lbl, f in feature_labels_analysis.items() if 'Livello' in f][:2]
                       if not default_labels_ts: default_labels_ts = list(feature_labels_analysis.keys())[:min(2, len(feature_labels_analysis))]
                       selected_labels_ts = st.multiselect("Seleziona feature da visualizzare:", options=list(feature_labels_analysis.keys()), default=default_labels_ts, key="analisi_ts_multi")
@@ -2162,17 +2189,12 @@ elif page == 'Analisi Dati Storici':
                                 margin=dict(t=50, b=40, l=40, r=10)
                             )
                            st.plotly_chart(fig_ts, use_container_width=True)
-                           # Download link
                            ts_filename = f"andamento_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
                            st.markdown(get_plotly_download_link(fig_ts, ts_filename), unsafe_allow_html=True)
                       else: st.info("Seleziona almeno una feature per visualizzare l'andamento temporale.")
 
-
                  with tab2:
                       st.subheader("Statistiche Descrittive e Distribuzione")
-                      # Selezione singola feature (invariata)
-                      # ... (codice selectbox, describe, histogram invariato) ...
-                      # Default al primo livello o alla prima feature
                       default_stat_label = next((lbl for lbl, f in feature_labels_analysis.items() if 'Livello' in f), list(feature_labels_analysis.keys())[0])
                       selected_label_stat = st.selectbox("Seleziona feature per statistiche:", options=list(feature_labels_analysis.keys()), index=list(feature_labels_analysis.keys()).index(default_stat_label), key="analisi_stat_select")
                       feature_stat = feature_labels_analysis.get(selected_label_stat)
@@ -2189,61 +2211,52 @@ elif page == 'Analisi Dati Storici':
                                margin=dict(t=50, b=40, l=40, r=10)
                            )
                            st.plotly_chart(fig_hist, use_container_width=True)
-                           # Download link
                            hist_filename = f"distrib_{selected_label_stat.replace(' ','_').replace('(','').replace(')','')}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
                            st.markdown(get_plotly_download_link(fig_hist, hist_filename), unsafe_allow_html=True)
 
                  with tab3:
                       st.subheader("Matrice di Correlazione e Scatter Plot")
-                      # Selezione feature per correlazione (invariata)
-                      # ... (codice multiselect, corr matrix, heatmap, scatter plot invariato) ...
-                      default_corr_labels = list(feature_labels_analysis.keys()) # Default tutte
+                      default_corr_labels = list(feature_labels_analysis.keys())
                       selected_labels_corr = st.multiselect("Seleziona feature per correlazione:", options=list(feature_labels_analysis.keys()), default=default_corr_labels, key="analisi_corr_multi")
                       features_corr = [feature_labels_analysis[lbl] for lbl in selected_labels_corr]
 
                       if len(features_corr) > 1:
-                           # Calcola matrice correlazione
                            corr_matrix = filtered_df[features_corr].corr()
-                           # Prepara etichette brevi per heatmap
                            heatmap_labels = [get_station_label(f, short=True) for f in features_corr]
 
-                           # Crea heatmap
                            fig_hm = go.Figure(data=go.Heatmap(
                                z=corr_matrix.values, x=heatmap_labels, y=heatmap_labels,
-                               colorscale='RdBu', zmin=-1, zmax=1, # Scala colori rosso-blu
+                               colorscale='RdBu', zmin=-1, zmax=1,
                                colorbar=dict(title='Corr'),
-                               text=corr_matrix.round(2).values, texttemplate="%{text}", # Mostra valori
+                               text=corr_matrix.round(2).values, texttemplate="%{text}",
                                hoverongaps=False
                            ))
                            fig_hm.update_layout(
                                title='Matrice di Correlazione',
-                               height=max(400, len(heatmap_labels)*35), # Altezza dinamica
-                               xaxis_tickangle=-45, yaxis_autorange='reversed', # Layout assi
-                               margin=dict(t=50, b=40, l=60, r=10) # Margini
+                               height=max(400, len(heatmap_labels)*35),
+                               xaxis_tickangle=-45, yaxis_autorange='reversed',
+                               margin=dict(t=50, b=40, l=60, r=10)
                             )
                            st.plotly_chart(fig_hm, use_container_width=True)
-                           # Download link heatmap
                            hm_filename = f"correlazione_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
                            st.markdown(get_plotly_download_link(fig_hm, hm_filename), unsafe_allow_html=True)
 
-                           # Scatter Plot per coppie (solo se < N feature per performance)
                            if len(selected_labels_corr) <= 10:
                                 st.markdown("**Scatter Plot Correlazione (Coppia di Feature)**")
                                 cs1, cs2 = st.columns(2)
                                 label_x = cs1.selectbox("Feature Asse X:", selected_labels_corr, index=0, key="scatter_x_select")
-                                # Default Y diverso da X se possibile
                                 default_y_index = 1 if len(selected_labels_corr) > 1 else 0
                                 label_y = cs2.selectbox("Feature Asse Y:", selected_labels_corr, index=default_y_index, key="scatter_y_select")
 
                                 fx = feature_labels_analysis.get(label_x)
                                 fy = feature_labels_analysis.get(label_y)
 
-                                if fx and fy and fx != fy: # Assicura che siano valide e diverse
+                                if fx and fy and fx != fy:
                                     fig_sc = go.Figure(data=[go.Scatter(
                                         x=filtered_df[fx], y=filtered_df[fy], mode='markers',
-                                        marker=dict(size=5, opacity=0.6), # Marcatori piccoli e semi-trasparenti
+                                        marker=dict(size=5, opacity=0.6),
                                         name=f'{label_x} vs {label_y}',
-                                        text=filtered_df[date_col_name_csv].dt.strftime('%d/%m %H:%M'), # Mostra data in hover
+                                        text=filtered_df[date_col_name_csv].dt.strftime('%d/%m %H:%M'),
                                         hovertemplate=f'<b>{label_x}</b>: %{{x:.2f}}<br><b>{label_y}</b>: %{{y:.2f}}<br>%{{text}}<extra></extra>'
                                     )])
                                     fig_sc.update_layout(
@@ -2252,7 +2265,6 @@ elif page == 'Analisi Dati Storici':
                                         margin=dict(t=50, b=40, l=40, r=10)
                                     )
                                     st.plotly_chart(fig_sc, use_container_width=True)
-                                    # Download link scatter
                                     sc_filename = f"scatter_{label_x.replace(' ','_')}_vs_{label_y.replace(' ','_')}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
                                     st.markdown(get_plotly_download_link(fig_sc, sc_filename), unsafe_allow_html=True)
                                 elif fx and fy and fx == fy:
@@ -2261,10 +2273,9 @@ elif page == 'Analisi Dati Storici':
                                 st.info("Troppe feature selezionate (>10) per visualizzare lo scatter plot interattivo.")
                       elif len(features_corr) == 1:
                            st.info("Seleziona almeno due feature per calcolare la correlazione.")
-                      else: # 0 feature selezionate
+                      else:
                            st.info("Seleziona almeno due feature per visualizzare la matrice di correlazione.")
 
-                 # Download dati filtrati (invariato)
                  st.divider()
                  st.subheader('Download Dati Filtrati (CSV)')
                  download_filename_filtered = f"dati_filtrati_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
@@ -2272,26 +2283,22 @@ elif page == 'Analisi Dati Storici':
 
 
 # --- PAGINA ALLENAMENTO MODELLO (INVARIATA nella logica principale) ---
-# --- Assicura che usi df_current_csv che può essere None ---
+# ... (codice invariato) ...
 elif page == 'Allenamento Modello':
     st.header('🎓 Allenamento Nuovo Modello LSTM')
-    if not data_ready_csv: # Controlla se df_current_csv è valido
+    if not data_ready_csv:
         st.warning("⚠️ Dati Storici CSV non disponibili. Carica un file CSV valido nella sidebar per allenare un nuovo modello.")
     else:
         st.success(f"Dati CSV disponibili per l'allenamento: {len(df_current_csv)} righe.")
         st.subheader('Configurazione Addestramento')
 
-        # Input nome modello (invariato)
         default_save_name = f"modello_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
         save_name_input = st.text_input("Nome base per salvare il modello (file .pth, .json, .joblib)", default_save_name, key="train_save_filename")
-        # Pulisci nome file da caratteri non validi
-        save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_') # Sostituisce non-alphanum e non '-' con '_'
-        if not save_name: save_name = "modello_default" # Fallback se il nome diventa vuoto
+        save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_')
+        if not save_name: save_name = "modello_default"
         if save_name != save_name_input: st.caption(f"Nome file corretto in: `{save_name}`")
 
-        # --- Selezione Feature Input ---
         st.markdown("**1. Seleziona Feature Input per il Modello:**")
-        # Feature disponibili sono quelle globali definite, MA solo quelle presenti nel CSV caricato
         all_global_features = st.session_state.feature_columns
         features_present_in_csv = [f for f in all_global_features if f in df_current_csv.columns]
         missing_from_csv = [f for f in all_global_features if f not in df_current_csv.columns]
@@ -2302,40 +2309,32 @@ elif page == 'Allenamento Modello':
              st.error("Errore: Nessuna delle feature definite globalmente è presente nel file CSV caricato. Impossibile procedere.")
              st.stop()
 
-        # Checkbox per selezionare le feature (mostra solo quelle presenti)
         selected_features_train = []
         with st.expander(f"Seleziona Feature Input (Disponibili: {len(features_present_in_csv)})", expanded=False):
             cols_feat_train = st.columns(4)
             for i, feat in enumerate(features_present_in_csv):
                  label_feat_train = get_station_label(feat, short=True)
-                 # Default selezionato? Mettiamo True di default
                  is_checked = st.checkbox(label_feat_train, value=True, key=f"train_feat_check_{feat}", help=feat)
                  if is_checked:
                       selected_features_train.append(feat)
         if not selected_features_train: st.warning("Seleziona almeno una feature di input.")
         else: st.caption(f"{len(selected_features_train)} feature di input selezionate.")
 
-        # --- Selezione Target Output ---
         st.markdown("**2. Seleziona Target Output (solo sensori di Livello tra gli input selezionati):**")
         selected_targets_train = []
-        # Opzioni target sono SOLO le feature di livello GIA' selezionate come input
         hydro_level_features_options = [f for f in selected_features_train if 'Livello' in f]
 
         if not hydro_level_features_options:
              st.warning("Nessuna colonna 'Livello' tra le feature di input selezionate. Impossibile selezionare target.")
         else:
-            # Default target: prova a usare quelli del modello attivo (se di livello e selezionati), altrimenti il primo
             default_targets_train = []
             if active_config and active_config.get("target_columns"):
-                 # Prendi i target del modello attivo che sono anche tra le opzioni valide ora
                  valid_active_targets = [t for t in active_config["target_columns"] if t in hydro_level_features_options]
                  if valid_active_targets: default_targets_train = valid_active_targets
-            # Se ancora vuoto, usa il primo livello disponibile come default
             if not default_targets_train and hydro_level_features_options:
                  default_targets_train = [hydro_level_features_options[0]]
 
-            # Checkbox per selezionare i target
-            cols_target_train = st.columns(min(len(hydro_level_features_options), 5)) # Max 5 colonne
+            cols_target_train = st.columns(min(len(hydro_level_features_options), 5))
             for i, feat_target in enumerate(hydro_level_features_options):
                 with cols_target_train[i % len(cols_target_train)]:
                      lbl_target = get_station_label(feat_target, short=True)
@@ -2346,23 +2345,19 @@ elif page == 'Allenamento Modello':
         if not selected_targets_train: st.warning("Seleziona almeno un target di output (Livello).")
         else: st.caption(f"{len(selected_targets_train)} target di output selezionati.")
 
-        # --- Parametri Modello e Training (invariato) ---
         st.markdown("**3. Imposta Parametri Modello e Addestramento:**")
         with st.expander("Parametri Modello e Training", expanded=True):
-             # ... (codice parametri invariato, usa default da modello attivo se presente) ...
              c1t, c2t, c3t = st.columns(3)
-             # Default intelligenti basati su modello attivo, se esiste
              default_iw = active_config["input_window"] if active_config else 24
              default_ow = active_config["output_window"] if active_config else 12
              default_hs = active_config["hidden_size"] if active_config else 128
              default_nl = active_config["num_layers"] if active_config else 2
              default_dr = active_config["dropout"] if active_config else 0.2
-             default_bs = active_config.get("batch_size", 32) if active_config else 32 # Usa get per retrocompatibilità
+             default_bs = active_config.get("batch_size", 32) if active_config else 32
              default_vs = active_config.get("val_split_percent", 20) if active_config else 20
              default_lr = active_config.get("learning_rate", 0.001) if active_config else 0.001
              default_ep = active_config.get("epochs_run", 50) if active_config else 50
 
-             # NOTA: iw_t e ow_t si riferiscono al NUMERO DI RIGHE/RILEVAZIONI, non ore direttamente
              iw_t = c1t.number_input("Finestra Input (n. rilevazioni)", 6, 168, default_iw, 6, key="t_param_in_win")
              ow_t = c1t.number_input("Finestra Output (n. rilevazioni)", 1, 72, default_ow, 1, key="t_param_out_win")
              vs_t = c1t.slider("% Dati per Validazione", 0, 50, default_vs, 1, key="t_param_val_split", help="0% = nessun set di validazione")
@@ -2375,15 +2370,12 @@ elif page == 'Allenamento Modello':
              bs_t = c3t.select_slider("Batch Size", [8, 16, 32, 64, 128, 256], default_bs, key="t_param_batch")
              ep_t = c3t.number_input("Numero Epoche", 5, 500, default_ep, 5, key="t_param_epochs")
 
-        # --- Avvio Addestramento ---
         st.markdown("**4. Avvia Addestramento:**")
-        # Validazione input prima di abilitare bottone
         valid_name = bool(save_name)
         valid_features = bool(selected_features_train)
         valid_targets = bool(selected_targets_train)
         ready_to_train = valid_name and valid_features and valid_targets
 
-        # Mostra warning specifici se non pronto
         if not valid_features: st.error("❌ Seleziona almeno una feature di input.")
         if not valid_targets: st.error("❌ Seleziona almeno un target di output (Livello).")
         if not valid_name: st.error("❌ Inserisci un nome valido per salvare il modello.")
@@ -2392,111 +2384,90 @@ elif page == 'Allenamento Modello':
 
         if train_button and ready_to_train:
              st.info(f"Avvio addestramento per il modello '{save_name}'...")
-             # 1. Preparazione Dati
              with st.spinner('Preparazione dati per training...'):
-                  # Verifica finale che le colonne selezionate siano nel df
                   cols_needed = selected_features_train + selected_targets_train
                   missing_in_df_final = [c for c in cols_needed if c not in df_current_csv.columns]
                   if missing_in_df_final:
                        st.error(f"Errore Critico: Le colonne selezionate {', '.join(missing_in_df_final)} non sono state trovate nel DataFrame CSV finale. Impossibile procedere.")
                        st.stop()
 
-                  # Prepara dati usando la funzione (che gestisce split e scaling)
                   X_tr, y_tr, X_v, y_v, sc_f_tr, sc_t_tr = prepare_training_data(
-                      df_current_csv.copy(), # Usa copia per sicurezza
+                      df_current_csv.copy(),
                       selected_features_train,
                       selected_targets_train,
                       iw_t, ow_t, vs_t
                   )
                   if X_tr is None or y_tr is None or sc_f_tr is None or sc_t_tr is None:
                        st.error("Preparazione dati fallita. Controlla i log e i parametri (finestre vs lunghezza dati).")
-                       st.stop() # Blocca esecuzione se preparazione fallisce
-                  # Verifica validazione (X_v e y_v possono essere vuoti se vs_t = 0)
+                       st.stop()
                   val_set_size = len(X_v) if X_v is not None else 0
                   st.success(f"Dati pronti: {len(X_tr)} sequenze di training, {val_set_size} sequenze di validazione.")
 
-             # 2. Addestramento Modello
              st.subheader("⏳ Addestramento in corso...")
              input_size_train = len(selected_features_train)
              output_size_train = len(selected_targets_train)
              trained_model = None
              train_start_time = time.time()
              try:
-                 # Chiama la funzione train_model
                  trained_model, train_losses, val_losses = train_model(
-                     X_tr, y_tr, X_v, y_v, # Dati preparati
-                     input_size_train, output_size_train, ow_t, # Dimensioni IO e finestra output
-                     hs_t, nl_t, ep_t, bs_t, lr_t, dr_t # Iperparametri
+                     X_tr, y_tr, X_v, y_v,
+                     input_size_train, output_size_train, ow_t,
+                     hs_t, nl_t, ep_t, bs_t, lr_t, dr_t
                  )
                  train_end_time = time.time()
                  st.info(f"Tempo di addestramento: {train_end_time - train_start_time:.2f} secondi.")
 
              except Exception as e_train_run:
                  st.error(f"Errore durante l'addestramento: {e_train_run}")
-                 st.error(traceback.format_exc()) # Mostra traceback per debug
-                 trained_model = None # Assicura che non si provi a salvare
+                 st.error(traceback.format_exc())
+                 trained_model = None
 
-             # 3. Salvataggio Risultati (se training completato)
              if trained_model:
                  st.success("Addestramento completato con successo!")
                  st.subheader("💾 Salvataggio Risultati Modello")
-                 # Crea directory modelli se non esiste
                  os.makedirs(MODELS_DIR, exist_ok=True)
-                 # Percorsi file basati sul nome scelto
                  base_path = os.path.join(MODELS_DIR, save_name)
                  m_path = f"{base_path}.pth"
                  c_path = f"{base_path}.json"
                  sf_path = f"{base_path}_features.joblib"
                  st_path = f"{base_path}_targets.joblib"
 
-                 # Prepara dizionario config da salvare
                  final_val_loss = None
                  if val_losses and vs_t > 0:
-                      valid_val_losses = [v for v in val_losses if v is not None and np.isfinite(v)] # Escludi None e Inf/NaN
+                      valid_val_losses = [v for v in val_losses if v is not None and np.isfinite(v)]
                       if valid_val_losses: final_val_loss = min(valid_val_losses)
 
                  config_save = {
                      "input_window": iw_t, "output_window": ow_t, "hidden_size": hs_t,
                      "num_layers": nl_t, "dropout": dr_t,
-                     "feature_columns": selected_features_train, # Salva ESATTAMENTE le feature usate
-                     "target_columns": selected_targets_train,  # Salva ESATTAMENTE i target usati
+                     "feature_columns": selected_features_train,
+                     "target_columns": selected_targets_train,
                      "training_date": datetime.now(italy_tz).isoformat(),
                      "final_val_loss": final_val_loss if final_val_loss is not None else 'N/A',
                      "epochs_run": ep_t, "batch_size": bs_t, "val_split_percent": vs_t,
                      "learning_rate": lr_t,
-                     "display_name": save_name, # Usa nome file pulito come display name default
-                     "source_data_info": data_source_info # Info su file CSV usato (se disponibile)
+                     "display_name": save_name,
+                     "source_data_info": data_source_info
                  }
 
-                 # Salva i file
                  try:
-                     # Salva modello (state_dict)
                      torch.save(trained_model.state_dict(), m_path)
-                     # Salva config (JSON)
                      with open(c_path, 'w', encoding='utf-8') as f:
                          json.dump(config_save, f, indent=4, ensure_ascii=False)
-                     # Salva scaler (Joblib)
                      joblib.dump(sc_f_tr, sf_path)
                      joblib.dump(sc_t_tr, st_path)
 
                      st.success(f"Modello '{save_name}' e file associati salvati in '{MODELS_DIR}/'")
                      st.subheader("⬇️ Download File Modello Addestrato")
                      col_dl1, col_dl2, col_dl3, col_dl4 = st.columns(4)
-                     # Usa funzione helper per creare link download
                      with col_dl1: st.markdown(get_download_link_for_file(m_path, "Modello (.pth)"), unsafe_allow_html=True)
                      with col_dl2: st.markdown(get_download_link_for_file(c_path, "Config (.json)"), unsafe_allow_html=True)
                      with col_dl3: st.markdown(get_download_link_for_file(sf_path, "Scaler Feat (.joblib)"), unsafe_allow_html=True)
                      with col_dl4: st.markdown(get_download_link_for_file(st_path, "Scaler Targ (.joblib)"), unsafe_allow_html=True)
 
-                     # Bottone per pulire cache modelli e ricaricare app
                      st.info("Dopo il download, potresti voler ricaricare l'app per vedere il nuovo modello nella lista.")
                      if st.button("Pulisci Cache e Ricarica App", key="train_reload_app"):
-                         # Pulisce cache specifiche selettivamente
                          find_available_models.clear()
-                         # load_model_config.clear() # Cache per path, si aggiorna da sola
-                         # load_specific_model.clear() # Cache per path, si aggiorna da sola
-                         # load_specific_scalers.clear() # Cache per path, si aggiorna da sola
-                         # Potrebbe essere necessario pulire anche lo stato del modello attivo
                          st.session_state.pop('active_model_name', None)
                          st.session_state.pop('active_config', None)
                          st.session_state.pop('active_model', None)
@@ -2511,12 +2482,12 @@ elif page == 'Allenamento Modello':
                      st.error(f"Errore durante il salvataggio dei file del modello: {e_save_files}")
                      st.error(traceback.format_exc())
 
-             elif not train_button: # Se il bottone non è stato premuto (pagina caricata ma non eseguito training)
-                 pass # Non fare nulla
-             else: # Se training avviato ma fallito (trained_model è None)
+             elif not train_button:
+                 pass
+             else:
                  st.error("Addestramento fallito o interrotto. Impossibile salvare il modello.")
 
 
 # --- Footer (invariato) ---
 st.sidebar.divider()
-st.sidebar.info('App Idrologica Dashboard & Predict © 2024 Alberto Bussaglia') # Mantenuto anno originale
+st.sidebar.info('App Idrologica Dashboard & Predict © 2024 Alberto Bussaglia')
