@@ -318,15 +318,15 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
         st.error(f"Errore imprevisto durante predict: {e}");
         st.error(traceback.format_exc()); return None
 
-# --- MODIFICATA: plot_predictions aggiunge soglie e migliora titolo ---
+# --- MODIFICATA: plot_predictions aggiunge soglie, warning e migliora titolo ---
 def plot_predictions(predictions, config, thresholds, start_time=None):
     """
     Genera grafici Plotly per le previsioni del modello, includendo le soglie.
     Utilizza intervalli di 30 minuti per l'asse temporale.
     Il titolo mostra il nome della stazione più chiaramente.
+    Aggiunge warning se le soglie non vengono trovate per un sensore target.
     """
     figs = [] # Restituito anche in caso di errore per evitare crash downstream
-    # --- NUOVO: Controllo robusto sugli input ---
     if config is None or not isinstance(config, dict):
         st.error("Errore grafico: Configurazione modello mancante o non valida.")
         return figs
@@ -337,11 +337,9 @@ def plot_predictions(predictions, config, thresholds, start_time=None):
         st.warning("Attenzione grafico: Dizionario soglie mancante o non valido. Grafici senza soglie.")
         thresholds = {} # Usa un dizionario vuoto per evitare errori successivi
 
-    # Estrazione sicura dei parametri dal config
     output_w = config.get("output_window")
-    target_cols = config.get("target_columns")
+    target_cols = config.get("target_columns") # Questi sono i nomi dal JSON del modello
 
-    # Controllo validità parametri config
     if not isinstance(output_w, int) or output_w <= 0:
         st.error(f"Errore grafico: Finestra output ('output_window'={output_w}) non valida nel config.")
         return figs
@@ -352,91 +350,122 @@ def plot_predictions(predictions, config, thresholds, start_time=None):
         st.error(f"Errore grafico: Shape predizioni {predictions.shape} non corrisponde a output ({output_w}, {len(target_cols)}).")
         return figs
 
-    # Creazione asse X
+    # Gestione asse X
     if start_time and isinstance(start_time, datetime):
-        # Calcola step temporali ogni 30 minuti
+        # Assicura che start_time sia timezone-aware (se thresholds è usato, probabilmente lo è)
+        if start_time.tzinfo is None:
+             start_time = italy_tz.localize(start_time) # Rende aware se naive
+        else:
+             start_time = start_time.tz_convert(italy_tz) # Converte a timezone Italia se già aware
+
         steps = [start_time + timedelta(minutes=30*(h+1)) for h in range(output_w)]
         x_axis, x_title = steps, "Data e Ora Previste (intervalli 30 min)"
     else:
         if start_time: st.warning("Formato start_time non valido per asse X temporale. Uso indici.")
-        # Usa indici come fallback se non c'è start_time valido
         steps_idx = np.arange(1, output_w + 1)
         x_axis, x_title = steps_idx, f"Passi Futuri ({output_w} x 30 min)"
 
-    # Ciclo sui target per creare i grafici
-    for i, sensor in enumerate(target_cols):
-        if i >= predictions.shape[1]: # Sicurezza aggiuntiva
+    # Itera sui sensori target definiti nel config del modello
+    for i, sensor in enumerate(target_cols): # 'sensor' qui è il NOME COLONNA TARGET DAL MODELLO JSON
+        if i >= predictions.shape[1]: # Sicurezza
             st.error(f"Errore grafico: Indice sensore {i} fuori dai limiti delle predizioni.")
             continue
 
         fig = go.Figure()
+        # Usa get_station_label con il nome del sensore dal config del modello
+        station_name_graph = get_station_label(sensor, short=False)
 
-        # Estrai nome stazione per titolo grafico
-        station_name_graph = get_station_label(sensor, short=False) # Usa la funzione helper (nome completo località)
-
-        # Aggiungi linea previsione
+        # Aggiungi traccia previsione
         try:
             fig.add_trace(go.Scatter(
                 x=x_axis,
                 y=predictions[:, i],
                 mode='lines+markers',
                 name=f'Previsto',
-                line=dict(color='blue'), # Colore linea previsione
-                hovertemplate=f'<b>{station_name_graph}</b><br>%{{x|%d/%m %H:%M}} (%{{customdata[0]}})<br>Prev: %{{y:.2f}}<extra></extra>', # Mostra ora e valore
-                customdata=[(f"Step {h+1}",) for h in range(output_w)] # Aggiunge numero step a hover
+                line=dict(color='blue'), # Colore standard previsione
+                hovertemplate=f'<b>{station_name_graph}</b><br>%{{x|%d/%m %H:%M}} (%{{customdata[0]}})<br>Prev: %{{y:.2f}}<extra></extra>',
+                customdata=[(f"Step {h+1}",) for h in range(output_w)] # Info aggiuntiva su hover
                 ))
         except Exception as e_trace:
             st.error(f"Errore aggiunta trace previsione per {sensor}: {e_trace}")
-            continue
+            continue # Salta al prossimo sensore
 
-        # --- NUOVO/MODIFICATO: Aggiungi linee soglia ---
-        sensor_thresholds = thresholds.get(sensor, {}) # Prendi dizionario soglie (vuoto se non esiste)
+        # --- NUOVO/MODIFICATO: Logica recupero soglie con WARNING ---
+        # CERCA la soglia usando il nome ESATTO del sensore come definito nel config del modello ('sensor')
+        sensor_thresholds = thresholds.get(sensor, None) # Cerca chiave esatta, restituisce None se non trovata
+
+        thresholds_found = False # Flag per titolo grafico
+        # --- NUOVO: Warning se la chiave non viene trovata ---
+        if sensor_thresholds is None:
+            # Mostra un warning nell'app Streamlit
+            available_keys_sample = list(thresholds.keys())[:5] # Mostra solo alcune chiavi esempio
+            st.warning(f"⚠️ **Soglie non trovate per '{station_name_graph}' (target: `{sensor}`).**\n"
+                       f"   Il nome target dal config modello (`{sensor}`) non corrisponde a nessuna chiave nel dizionario soglie.\n"
+                       f"   Verifica che il nome nel JSON del modello corrisponda a uno di questi (o simili): `{available_keys_sample}...`.\n"
+                       f"   Il grafico per questo sensore non mostrerà le linee di soglia.", icon="📊")
+            sensor_thresholds = {} # Imposta a dict vuoto per procedere senza errori nel codice successivo
+        else:
+             thresholds_found = True # Le soglie sono state trovate (anche se magari solo una delle due)
+
+
+        # Recupera valori soglia dal dizionario (che può essere vuoto se non trovato sopra)
         threshold_alert = sensor_thresholds.get('alert')
         threshold_attention = sensor_thresholds.get('attention')
 
-        # Aggiungi linea soglia ALLERTA (Rossa)
+        # Aggiungi linea soglia ALLERTA (Rossa) - solo se trovata e valida
         if threshold_alert is not None and isinstance(threshold_alert, (int, float)):
             try:
                 fig.add_hline(
                     y=threshold_alert, line_dash="dash", line_color="red",
                     annotation_text=f"Allerta ({threshold_alert:.1f})",
                     annotation_position="bottom right",
-                    annotation_font=dict(color="red", size=10) # Rende l'annotation rossa
+                    annotation_font=dict(color="red", size=10)
                 )
+                thresholds_found = True # Conferma che almeno una soglia è stata aggiunta
             except Exception as e_hline_a: st.warning(f"Errore aggiunta hline Allerta per {sensor}: {e_hline_a}")
 
-        # Aggiungi linea soglia ATTENZIONE (Arancione)
+        # Aggiungi linea soglia ATTENZIONE (Arancione) - solo se trovata e valida
         if threshold_attention is not None and isinstance(threshold_attention, (int, float)):
-             # Assicurati che l'attenzione non sia maggiore dell'allerta, se l'allerta esiste
+             # Controllo consistenza (warning se attenzione > allerta)
              if threshold_alert is not None and isinstance(threshold_alert, (int, float)) and threshold_attention > threshold_alert:
-                 st.warning(f"Soglia Attenzione ({threshold_attention}) per '{station_name_graph}' supera Allerta ({threshold_alert}). Verrà visualizzata, ma la logica di allerta prevarrà.")
+                  st.warning(f"Nota: Soglia Attenzione ({threshold_attention}) per '{station_name_graph}' supera Allerta ({threshold_alert}).", icon="⚠️")
              try:
                  fig.add_hline(
-                    y=threshold_attention, line_dash="dash", line_color="orange", # Orange più visibile di yellow
+                    y=threshold_attention, line_dash="dash", line_color="orange",
                     annotation_text=f"Attenzione ({threshold_attention:.1f})",
-                    annotation_position="top right", # Posizione diversa per evitare sovrapposizioni
-                    annotation_font=dict(color="orange", size=10) # Rende l'annotation arancione
+                    annotation_position="top right", # Posizione diversa
+                    annotation_font=dict(color="orange", size=10)
                 )
+                 thresholds_found = True # Conferma che almeno una soglia è stata aggiunta
              except Exception as e_hline_att: st.warning(f"Errore aggiunta hline Attenzione per {sensor}: {e_hline_att}")
 
-        # Layout grafico
+        # Configura Layout grafico
         try:
             yaxis_unit_suffix = ""
             if '(mm)' in sensor: yaxis_unit_suffix = ' (mm)'
             elif '(m)' in sensor or '(mt)' in sensor: yaxis_unit_suffix = ' (m)'
+
+            # --- MODIFICATO: Titolo include info su soglie ---
+            title_text = f'Previsione: {station_name_graph}'
+            if not thresholds_found and sensor_thresholds is not None: # Se sensor_thresholds non è None ma non ha né alert né attention validi
+                 title_text += ' (Soglie non definite)'
+            elif not thresholds_found: # Se sensor_thresholds era None (chiave non trovata)
+                 title_text += ' (Soglie NON TROVATE!)'
+            # Non aggiungere nulla se le soglie sono trovate e plottate
+
             fig.update_layout(
-                title=f'Previsione Simulazione: {station_name_graph}',
+                title=title_text,
                 xaxis_title=x_title,
                 yaxis_title=f'Valore Previsto{yaxis_unit_suffix}',
                 height=400,
                 hovermode="x unified",
-                margin=dict(t=50, b=40, l=50, r=10) # Margini leggermente diversi
+                margin=dict(t=50, b=40, l=50, r=10) # Margini
             )
-            fig.update_yaxes(rangemode='tozero') # Forza asse Y a partire da zero
+            fig.update_yaxes(rangemode='tozero') # Asse Y parte da zero
         except Exception as e_layout:
             st.error(f"Errore configurazione layout grafico per {sensor}: {e_layout}")
 
-        figs.append(fig) # Aggiungi grafico alla lista
+        figs.append(fig) # Aggiungi il grafico completato alla lista
 
     return figs
 
