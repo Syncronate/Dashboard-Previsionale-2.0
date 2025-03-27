@@ -54,18 +54,20 @@ DASHBOARD_REFRESH_INTERVAL_SECONDS = 300 # Aggiorna dashboard ogni 5 minuti (300
 # --- MODIFICATO: Aumentato numero di righe per coprire 24h con intervalli di 30min ---
 DASHBOARD_HISTORY_ROWS = 48 # MODIFICATO: Numero di righe storiche da recuperare (48 righe = 24 ore @ 30 min/riga)
 
-# --- MODIFICATO: DEFAULT_THRESHOLDS ora contiene soglie alert e attention ---
+# --- MODIFICATO: DEFAULT_THRESHOLDS con i nuovi valori richiesti ---
 DEFAULT_THRESHOLDS = { # Soglie predefinite (l'utente può modificarle)
     # Nome Sensore: {'alert': value, 'attention': value}
-    'Arcevia - Pioggia Ora (mm)':          {'alert': 10.0, 'attention': 7.0},
-    'Barbara - Pioggia Ora (mm)':          {'alert': 10.0, 'attention': 7.0},
-    'Corinaldo - Pioggia Ora (mm)':        {'alert': 10.0, 'attention': 7.0},
-    'Misa - Pioggia Ora (mm)':             {'alert': 10.0, 'attention': 7.0}, # Bettolelle Pioggia?
-    'Serra dei Conti - Livello Misa (mt)': {'alert': 2.5,  'attention': 2.0},
-    'Pianello di Ostra - Livello Misa (m)':{'alert': 3.0,  'attention': 2.5},
-    'Nevola - Livello Nevola (mt)':        {'alert': 2.0,  'attention': 1.5}, # Corinaldo Nevola?
-    'Misa - Livello Misa (mt)':            {'alert': 2.8,  'attention': 2.3}, # Bettolelle Livello?
-    'Ponte Garibaldi - Livello Misa 2 (mt)':{'alert': 4.0, 'attention': 3.0}
+    # Pioggia (tutte le stazioni)
+    'Arcevia - Pioggia Ora (mm)':          {'alert': 5.0, 'attention': 2.0},
+    'Barbara - Pioggia Ora (mm)':          {'alert': 5.0, 'attention': 2.0},
+    'Corinaldo - Pioggia Ora (mm)':        {'alert': 5.0, 'attention': 2.0},
+    'Misa - Pioggia Ora (mm)':             {'alert': 5.0, 'attention': 2.0}, # Bettolelle Pioggia?
+    # Livelli
+    'Serra dei Conti - Livello Misa (mt)': {'alert': 1.7,  'attention': 1.2},
+    'Pianello di Ostra - Livello Misa (m)':{'alert': 2.0,  'attention': 1.5},
+    'Nevola - Livello Nevola (mt)':        {'alert': 2.5,  'attention': 2.0}, # Corinaldo Livello Nevola
+    'Misa - Livello Misa (mt)':            {'alert': 2.0,  'attention': 1.7}, # Bettolelle Livello Misa
+    'Ponte Garibaldi - Livello Misa 2 (mt)':{'alert': 2.0, 'attention': 1.8}
 }
 # Define Italy timezone
 italy_tz = pytz.timezone('Europe/Rome')
@@ -732,6 +734,9 @@ if 'last_dashboard_data' not in st.session_state: st.session_state.last_dashboar
 if 'last_dashboard_error' not in st.session_state: st.session_state.last_dashboard_error = None
 if 'last_dashboard_fetch_time' not in st.session_state: st.session_state.last_dashboard_fetch_time = None
 if 'active_alerts' not in st.session_state: st.session_state.active_alerts = []
+# --- NUOVO: Aggiungi stato per allerte di attenzione ---
+if 'active_attentions' not in st.session_state: st.session_state.active_attentions = []
+
 
 # ==============================================================================
 # --- LAYOUT STREAMLIT ---
@@ -748,57 +753,43 @@ st.sidebar.subheader('Dati Storici (per Analisi/Training)')
 uploaded_data_file = st.sidebar.file_uploader('Carica CSV Dati Storici (Opzionale)', type=['csv'], key="data_uploader")
 
 # --- Logica Caricamento DF (INVARIATA) ---
-# Questa logica viene eseguita solo se un file viene caricato o se DEFAULT_DATA_PATH esiste
-# Non impatta la dashboard se non si interagisce con essa.
+# ... (codice logica caricamento CSV invariato) ...
 df = None; df_load_error = None; data_source_info = ""
 data_path_to_load = None; is_uploaded = False
-# ... (logica caricamento CSV invariata) ...
 if uploaded_data_file is not None:
     data_path_to_load = uploaded_data_file; is_uploaded = True
     data_source_info = f"File caricato: **{uploaded_data_file.name}**"
 elif os.path.exists(DEFAULT_DATA_PATH):
-    # Carica solo se non già presente in session state per evitare ricariche inutili
     if 'df' not in st.session_state or st.session_state.df is None:
         data_path_to_load = DEFAULT_DATA_PATH; is_uploaded = False
         data_source_info = f"File default: **{DEFAULT_DATA_PATH}**"
     else:
-        # Dati già caricati da sessione
         data_path_to_load = None
         data_source_info = f"File default: **{DEFAULT_DATA_PATH}** (usando cache sessione)"
 elif 'df' not in st.session_state or st.session_state.df is None:
-     # Solo se non c'è file di default E non c'è niente in sessione
      df_load_error = f"'{DEFAULT_DATA_PATH}' non trovato. Carica un CSV per Analisi/Training."
 
-
-# Carica e processa solo se necessario
-# Verifica se st.session_state.df non è già popolato da un run precedente
-# e se c'è un file da caricare (nuovo upload o default non ancora in sessione)
 if data_path_to_load and ('df' not in st.session_state or st.session_state.df is None or is_uploaded):
     try:
-        # ... (resto della logica di caricamento e pulizia CSV invariata) ...
         read_args = {'sep': ';', 'decimal': ',', 'low_memory': False}
         encodings_to_try = ['utf-8', 'latin1', 'iso-8859-1']
         df_loaded = False
         for enc in encodings_to_try:
             try:
-                # Assicurati che il file object sia all'inizio se è stato caricato
                 if hasattr(data_path_to_load, 'seek'): data_path_to_load.seek(0)
                 df_temp = pd.read_csv(data_path_to_load, encoding=enc, **read_args)
                 df_loaded = True; break
             except UnicodeDecodeError: continue
-            except Exception as read_e: raise read_e # Rilancia altri errori di lettura
+            except Exception as read_e: raise read_e
         if not df_loaded: raise ValueError(f"Impossibile leggere CSV con encoding {', '.join(encodings_to_try)}.")
 
         date_col_csv = st.session_state.date_col_name_csv
         if date_col_csv not in df_temp.columns: raise ValueError(f"Colonna data CSV '{date_col_csv}' mancante.")
 
-        # Tentativo conversione data più robusto
         try:
-            # Prova il formato atteso prima
             df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%Y %H:%M', errors='raise')
         except ValueError:
             try:
-                 # Se fallisce, prova inferenza (con warning)
                  df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], errors='coerce')
                  if df_temp[date_col_csv].isnull().any():
                       st.sidebar.warning(f"Formato data CSV non standard in alcune righe di '{date_col_csv}'. Righe con data invalida saranno scartate.")
@@ -807,15 +798,12 @@ if data_path_to_load and ('df' not in st.session_state or st.session_state.df is
             except Exception as e_date_csv_infer:
                  raise ValueError(f"Errore conversione data CSV '{date_col_csv}' anche con inferenza: {e_date_csv_infer}")
 
-        # Rimuovi righe dove la data non è stata convertita correttamente
         df_temp = df_temp.dropna(subset=[date_col_csv])
         if df_temp.empty:
             raise ValueError("Nessuna riga valida dopo la conversione/pulizia della data CSV.")
 
-        # Ordina per data
         df_temp = df_temp.sort_values(by=date_col_csv).reset_index(drop=True)
 
-        # Usa le feature globali come riferimento, ma controlla esistenza nel df caricato
         current_f_cols_state = st.session_state.feature_columns
         features_actually_in_df = [col for col in current_f_cols_state if col in df_temp.columns]
         missing_features_in_df = [col for col in current_f_cols_state if col not in df_temp.columns]
@@ -823,20 +811,14 @@ if data_path_to_load and ('df' not in st.session_state or st.session_state.df is
         if missing_features_in_df:
              st.sidebar.warning(f"Attenzione: Le seguenti feature globali non sono nel CSV: {', '.join(missing_features_in_df)}. Saranno ignorate per Analisi/Training basato su questo CSV.")
 
-        # Pulizia colonne numeriche (solo quelle presenti nel df e definite globalmente)
         for col in features_actually_in_df:
-             # Verifica dtype prima di applicare metodi stringa
              if pd.api.types.is_object_dtype(df_temp[col]):
                   df_temp[col] = df_temp[col].astype(str).str.strip()
-                  df_temp[col] = df_temp[col].replace(['N/A', '', '-', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False) # Aggiunto NaN/nan espliciti
-                  # Sostituisci '.' come separatore migliaia (se presente) e poi ',' con '.' per decimali
+                  df_temp[col] = df_temp[col].replace(['N/A', '', '-', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
                   df_temp[col] = df_temp[col].str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-
-             # Converti in numerico, errori diventano NaN
              df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce')
 
-        # Controllo NaN e fill (solo sulle colonne numeriche attese e presenti)
-        cols_to_check_nan = features_actually_in_df # Già filtrato per esistenza
+        cols_to_check_nan = features_actually_in_df
         n_nan_before_fill = df_temp[cols_to_check_nan].isnull().sum().sum()
         if n_nan_before_fill > 0:
               st.sidebar.caption(f"Trovati {n_nan_before_fill} NaN/non numerici nelle colonne feature/target del CSV. Eseguito ffill/bfill.")
@@ -846,26 +828,21 @@ if data_path_to_load and ('df' not in st.session_state or st.session_state.df is
                   st.sidebar.error(f"NaN residui ({n_nan_after_fill}) dopo fill. Controlla inizio/fine file CSV o colonne con tutti NaN.")
                   nan_cols_report = df_temp[cols_to_check_nan].isnull().sum()
                   st.sidebar.json(nan_cols_report[nan_cols_report > 0].to_dict())
-                  # Considera fill con 0 come ultima risorsa se necessario
-                  # df_temp[cols_to_check_nan] = df_temp[cols_to_check_nan].fillna(0)
 
-        # Salva il DataFrame processato in session state
         st.session_state.df = df_temp
         st.sidebar.success(f"Dati CSV caricati e processati ({len(st.session_state.df)} righe valide).")
-        df = st.session_state.df # Aggiorna variabile locale df
+        df = st.session_state.df
 
     except Exception as e:
-        df = None; st.session_state.df = None # Assicura reset in caso di errore
+        df = None; st.session_state.df = None
         df_load_error = f'Errore caricamento/processamento dati CSV ({data_source_info}): {type(e).__name__} - {e}'
         st.sidebar.error(f"Errore CSV: {df_load_error}")
         st.sidebar.info("Le funzionalità 'Analisi Dati Storici' e 'Allenamento Modello' non saranno disponibili.")
 
-# Recupera df da session state se non caricato in questo run
 df = st.session_state.get('df', None)
 if df is None and df_load_error:
-     # Mostra errore solo se c'è stato un tentativo fallito di caricamento
      if 'data_uploader' in st.session_state and st.session_state.data_uploader is not None:
-          pass # L'errore è già mostrato sopra
+          pass
      elif os.path.exists(DEFAULT_DATA_PATH):
           st.sidebar.warning(f"Dati CSV default ('{DEFAULT_DATA_PATH}') non caricabili. {df_load_error}")
      else:
@@ -1013,15 +990,13 @@ elif selected_model_display_name == MODEL_CHOICE_NONE:
      st.sidebar.info("Nessun modello selezionato per la simulazione.")
 
 
-# --- MODIFICATA: Configurazione Soglie Dashboard (Alert + Attenzione) ---
+# --- MODIFICATA: Configurazione Soglie Dashboard (Alert + Attenzione) - CORREZIONE ERRORE ---
 st.sidebar.divider()
 st.sidebar.subheader("Configurazione Soglie Dashboard")
 with st.sidebar.expander("Modifica Soglie di Allerta (Rosso) e Attenzione (Giallo)", expanded=False):
     temp_thresholds_update = json.loads(json.dumps(st.session_state.dashboard_thresholds)) # Deep copy per modifica sicura
 
     monitorable_cols = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
-    # cols_thresh = st.columns(2) # Due colonne per ridurre spazio verticale
-    # col_idx_thresh = 0
 
     for col in monitorable_cols:
         label_short = get_station_label(col, short=True)
@@ -1034,7 +1009,8 @@ with st.sidebar.expander("Modifica Soglie di Allerta (Rosso) e Attenzione (Giall
 
         is_level = 'Livello' in col or '(m)' in col or '(mt)' in col
         step = 0.1 if is_level else 1.0
-        fmt = "%.1f" if is_level else "%.0f"
+        # --- MODIFICATO: Usare %.2f per livelli per maggiore precisione come richiesto nelle soglie default ---
+        fmt = "%.2f" if is_level else "%.1f"
         min_v = 0.0
 
         c1_th, c2_th = st.columns(2) # Colonne per le due soglie
@@ -1045,43 +1021,78 @@ with st.sidebar.expander("Modifica Soglie di Allerta (Rosso) e Attenzione (Giall
                 label=f"🔴 Allerta", value=current_alert, min_value=min_v, step=step, format=fmt,
                 key=f"thresh_alert_{col}", help=f"Soglia di ALLERTA (Rossa) per: {col}"
             )
+            # Assicurati che new_alert non sia None per la logica successiva
+            if new_alert is None: new_alert = min_v # Fallback a minimo se l'input diventa vuoto
+
             if new_alert != current_alert:
                 if col not in temp_thresholds_update: temp_thresholds_update[col] = {}
                 temp_thresholds_update[col]['alert'] = new_alert
 
         # Input Soglia Attenzione (Gialla/Arancione)
         with c2_th:
-            # Valore massimo per attenzione non può superare l'allerta
-            max_attention_value = new_alert if new_alert is not None else current_attention
+            # Calcola il massimo valore consentito per la soglia di attenzione (basato sul valore ATTUALE del widget allerta)
+            max_attention_value = new_alert
+
+            # --- CORREZIONE ERRORE: Assicura che 'value' non superi 'max_value' ---
+            # Imposta il valore di default ('value') per il widget Attention
+            # prendendo il minimo tra il valore attuale in sessione e il massimo consentito ora
+            default_attention_value = min(current_attention, max_attention_value)
+            # --- FINE CORREZIONE ---
+
             new_attention = st.number_input(
-                label=f"🟠 Attenzione", value=current_attention, min_value=min_v, max_value=max_attention_value, step=step, format=fmt,
-                key=f"thresh_attention_{col}", help=f"Soglia di ATTENZIONE (Gialla/Arancione) per: {col}. Non può superare la soglia di Allerta."
+                label=f"🟠 Attenzione",
+                value=default_attention_value, # Usa il valore default aggiustato
+                min_value=min_v,
+                max_value=max_attention_value, # Il massimo rimane new_alert
+                step=step,
+                format=fmt,
+                key=f"thresh_attention_{col}",
+                help=f"Soglia di ATTENZIONE (Gialla/Arancione) per: {col}. Non può superare la soglia di Allerta."
             )
-            # Assicura che attenzione <= allerta
-            if new_attention > new_alert:
-                 new_attention = new_alert
-                 st.warning(f"Soglia Attenzione per '{label_short}' limitata al valore di Allerta ({new_alert}).")
+            # Assicurati che new_attention non sia None
+            if new_attention is None: new_attention = min_v
 
             if new_attention != current_attention:
+                # Assicura che il valore inserito non superi l'allerta (il widget dovrebbe già farlo, ma doppia sicurezza)
+                adjusted_new_attention = min(new_attention, new_alert)
                 if col not in temp_thresholds_update: temp_thresholds_update[col] = {}
-                temp_thresholds_update[col]['attention'] = new_attention
+                temp_thresholds_update[col]['attention'] = adjusted_new_attention
+                if adjusted_new_attention < new_attention: # Se il valore è stato limitato
+                     st.warning(f"Soglia Attenzione per '{label_short}' limitata al valore di Allerta ({new_alert}).")
 
-        # col_idx_thresh += 1
         st.divider() # Separatore tra sensori
 
     if st.button("Salva Soglie", key="save_thresholds", type="primary"):
         # Validazione finale: assicura attention <= alert per ogni sensore prima di salvare
         validation_ok = True
+        final_thresholds_to_save = {}
         for col, thresholds_dict in temp_thresholds_update.items():
             alert_val = thresholds_dict.get('alert')
             attention_val = thresholds_dict.get('attention')
-            if alert_val is not None and attention_val is not None and attention_val > alert_val:
+
+            # Gestisci valori None (non dovrebbero esserci con i fallback sopra, ma per sicurezza)
+            if alert_val is None: alert_val = DEFAULT_THRESHOLDS.get(col, {}).get('alert', 0.0)
+            if attention_val is None: attention_val = DEFAULT_THRESHOLDS.get(col, {}).get('attention', 0.0)
+
+            if attention_val > alert_val:
                  st.error(f"Errore validazione per '{get_station_label(col, short=True)}': Soglia Attenzione ({attention_val}) non può essere maggiore della Soglia Allerta ({alert_val}).")
                  validation_ok = False
                  break # Ferma alla prima violazione
+            final_thresholds_to_save[col] = {'alert': alert_val, 'attention': attention_val}
+
 
         if validation_ok:
-            st.session_state.dashboard_thresholds = json.loads(json.dumps(temp_thresholds_update)) # Salva deep copy
+            # Assicurati che tutti i sensori monitorabili siano presenti nel dizionario finale
+            for col in monitorable_cols:
+                if col not in final_thresholds_to_save:
+                     # Se un sensore non è stato toccato, prendi i valori dallo stato corrente
+                     current_vals = st.session_state.dashboard_thresholds.get(col, {})
+                     final_thresholds_to_save[col] = {
+                         'alert': current_vals.get('alert', DEFAULT_THRESHOLDS.get(col, {}).get('alert', 0.0)),
+                         'attention': current_vals.get('attention', DEFAULT_THRESHOLDS.get(col, {}).get('attention', 0.0))
+                     }
+
+            st.session_state.dashboard_thresholds = json.loads(json.dumps(final_thresholds_to_save)) # Salva deep copy
             st.success("Soglie aggiornate!")
             time.sleep(0.5)
             st.rerun()
@@ -1305,9 +1316,10 @@ if page == 'Dashboard':
             if pd.notna(current_value) and isinstance(current_value, (int, float)):
                  value_numeric = current_value
                  # Formattazione per display
+                 # --- MODIFICATO: Usa format corretto per livelli (%.2f) ---
                  if unit == '(mm)': value_display = f"{current_value:.1f} {unit}"
                  elif unit == '(m)': value_display = f"{current_value:.2f} {unit}"
-                 else: value_display = f"{current_value:.2f}" # Fallback senza unità
+                 else: value_display = f"{current_value:.2f}" # Fallback
 
                  # Controllo soglie (Alert ha priorità su Attention)
                  if threshold_alert is not None and isinstance(threshold_alert, (int, float)) and current_value >= threshold_alert:
@@ -1327,9 +1339,10 @@ if page == 'Dashboard':
             elif pd.notna(value_numeric): status = "✅ OK"
             else: status = "⚪ N/D" # Non disponibile
 
-            # Soglie per display (mostra entrambe se disponibili)
-            alert_display = f"{threshold_alert:.1f}" if threshold_alert is not None else "-"
-            attention_display = f"{threshold_attention:.1f}" if threshold_attention is not None else "-"
+            # Soglie per display (mostra entrambe se disponibili, format corretto)
+            fmt_thresh = "%.2f" if unit == '(m)' else "%.1f"
+            alert_display = fmt_thresh % threshold_alert if threshold_alert is not None else "-"
+            attention_display = fmt_thresh % threshold_attention if threshold_attention is not None else "-"
             threshold_display_combined = f"Att: {attention_display} / All: {alert_display}"
 
             table_rows.append({
@@ -1380,10 +1393,9 @@ if page == 'Dashboard':
             }
         )
 
-        # Aggiorna alert globali in session state (solo allerta rossa per riepilogo)
+        # Aggiorna alert globali in session state
         st.session_state.active_alerts = current_alerts
-        # Salva anche stato attenzione per possibile uso futuro (non mostrato nel riepilogo attuale)
-        st.session_state.active_attentions = current_attentions
+        st.session_state.active_attentions = current_attentions # Salva anche stato attenzione
 
         st.divider()
 
@@ -1471,18 +1483,19 @@ if page == 'Dashboard':
                 ))
 
                 # --- NUOVO: Aggiungi entrambe le linee soglia ---
+                fmt_thresh_graph = "%.2f" if unit_individual == '(m)' else "%.1f"
                 # Aggiungi linea soglia ALLERTA (Rossa)
                 if threshold_alert_indiv is not None and isinstance(threshold_alert_indiv, (int, float)):
                     fig_individual.add_hline(
                         y=threshold_alert_indiv, line_dash="dash", line_color="red",
-                        annotation_text=f"Allerta ({threshold_alert_indiv:.1f})",
+                        annotation_text=f"Allerta ({fmt_thresh_graph % threshold_alert_indiv})",
                         annotation_position="bottom right"
                     )
                 # Aggiungi linea soglia ATTENZIONE (Gialla/Arancione)
                 if threshold_attention_indiv is not None and isinstance(threshold_attention_indiv, (int, float)):
                      fig_individual.add_hline(
                         y=threshold_attention_indiv, line_dash="dash", line_color="orange",
-                        annotation_text=f"Attenzione ({threshold_attention_indiv:.1f})",
+                        annotation_text=f"Attenzione ({fmt_thresh_graph % threshold_attention_indiv})",
                         annotation_position="top right" # Posizione diversa
                     )
 
@@ -1516,15 +1529,17 @@ if page == 'Dashboard':
             sorted_alerts = sorted(active_alerts_sess, key=lambda x: get_station_label(x[0], short=False))
             for col, val, thr in sorted_alerts:
                 label_alert = get_station_label(col, short=False) # Nome completo località
-                # Prova a ottenere tipo sensore da STATION_COORDS
                 sensor_info = STATION_COORDS.get(col, {})
                 sensor_type_alert = sensor_info.get('type', '') # Es. 'Pioggia' o 'Livello'
                 type_str = f" ({sensor_type_alert})" if sensor_type_alert else ""
 
-                # Formattazione valore e soglia
-                val_fmt = f"{val:.1f}" if 'Pioggia' in col else f"{val:.2f}"
-                thr_fmt = f"{thr:.1f}" if isinstance(thr, (int, float)) else str(thr)
-                unit = '(mm)' if 'Pioggia' in col else ('(m)' if 'Livello' in col else '') # Determina unità
+                # Formattazione valore e soglia (usa format corretto)
+                unit = '(mm)' if 'Pioggia' in col else ('(m)' if 'Livello' in col else '')
+                fmt_val_rep = "%.2f" if unit == '(m)' else "%.1f"
+                fmt_thr_rep = "%.2f" if unit == '(m)' else "%.1f"
+
+                val_fmt = fmt_val_rep % val
+                thr_fmt = fmt_thr_rep % thr if isinstance(thr, (int, float)) else str(thr)
 
                 # Crea riga markdown
                 alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit}** >= Soglia Allerta **{thr_fmt}{unit}**\n"
@@ -2067,7 +2082,7 @@ elif page == 'Simulazione':
                            """ Funzione per applicare stile rosso se val >= soglia alert. """
                            alert_thresh = thresholds_dict.get(original_col_name, {}).get('alert')
                            style = ''
-                           if pd.notna(val) and pd.notna(alert_thresh) and val >= alert_thresh:
+                           if pd.notna(val) and pd.notna(alert_thresh) and isinstance(val, (int, float)) and val >= alert_thresh:
                                style = 'color: red; font-weight: bold;'
                            return style
 
