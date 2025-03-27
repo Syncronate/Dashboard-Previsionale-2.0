@@ -305,7 +305,17 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
     except Exception as e:
         st.error(f"Errore imprevisto durante predict: {e}");
         st.error(traceback.format_exc()); return None
-
+# --- NUOVO: Mappatura Nomi Target Modello (JSON) -> Nomi Soglie (GSheet) ---
+MODEL_TARGET_TO_GSHEET_MAP = {
+    # "Nome nel JSON Target": "Nome nel Dizionario Soglie (GSheet)"
+    "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)": "Serra dei Conti - Livello Misa (mt)",
+    "Livello Idrometrico Sensore 1112 [m] (Bettolelle)":      "Misa - Livello Misa (mt)",
+    "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)": "Nevola - Livello Nevola (mt)",
+    "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)": "Pianello di Ostra - Livello Misa (m)",
+    # --- Aggiungi questa riga SE Ponte Garibaldi è un target nel tuo modello ---
+    "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)": "Ponte Garibaldi - Livello Misa 2 (mt)"
+    # Aggiungi altre eventuali mappature se ci sono altri target di livello
+}
 # --- MODIFICATA: plot_predictions usa mappatura per cercare soglie ---
 def plot_predictions(predictions, config, thresholds, start_time=None):
     """
