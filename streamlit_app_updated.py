@@ -318,15 +318,15 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
         st.error(f"Errore imprevisto durante predict: {e}");
         st.error(traceback.format_exc()); return None
 
-# --- MODIFICATA: plot_predictions aggiunge soglie, warning e migliora titolo ---
+# --- MODIFICATA: plot_predictions usa mappatura per cercare soglie ---
 def plot_predictions(predictions, config, thresholds, start_time=None):
     """
     Genera grafici Plotly per le previsioni del modello, includendo le soglie.
-    Utilizza intervalli di 30 minuti per l'asse temporale.
-    Il titolo mostra il nome della stazione più chiaramente.
-    Aggiunge warning se le soglie non vengono trovate per un sensore target.
+    Usa una mappatura per trovare le soglie corrette se i nomi target del modello
+    non corrispondono alle chiavi del dizionario soglie.
     """
-    figs = [] # Restituito anche in caso di errore per evitare crash downstream
+    figs = []
+    # --- Controlli input robusti (come prima) ---
     if config is None or not isinstance(config, dict):
         st.error("Errore grafico: Configurazione modello mancante o non valida.")
         return figs
@@ -335,11 +335,12 @@ def plot_predictions(predictions, config, thresholds, start_time=None):
         return figs
     if thresholds is None or not isinstance(thresholds, dict):
         st.warning("Attenzione grafico: Dizionario soglie mancante o non valido. Grafici senza soglie.")
-        thresholds = {} # Usa un dizionario vuoto per evitare errori successivi
+        thresholds = {}
 
     output_w = config.get("output_window")
-    target_cols = config.get("target_columns") # Questi sono i nomi dal JSON del modello
+    target_cols = config.get("target_columns") # Nomi dal JSON del modello
 
+    # --- Controlli validità config e predizioni (come prima) ---
     if not isinstance(output_w, int) or output_w <= 0:
         st.error(f"Errore grafico: Finestra output ('output_window'={output_w}) non valida nel config.")
         return figs
@@ -350,14 +351,10 @@ def plot_predictions(predictions, config, thresholds, start_time=None):
         st.error(f"Errore grafico: Shape predizioni {predictions.shape} non corrisponde a output ({output_w}, {len(target_cols)}).")
         return figs
 
-    # Gestione asse X
+    # --- Gestione asse X (come prima) ---
     if start_time and isinstance(start_time, datetime):
-        # Assicura che start_time sia timezone-aware (se thresholds è usato, probabilmente lo è)
-        if start_time.tzinfo is None:
-             start_time = italy_tz.localize(start_time) # Rende aware se naive
-        else:
-             start_time = start_time.tz_convert(italy_tz) # Converte a timezone Italia se già aware
-
+        if start_time.tzinfo is None: start_time = italy_tz.localize(start_time)
+        else: start_time = start_time.tz_convert(italy_tz)
         steps = [start_time + timedelta(minutes=30*(h+1)) for h in range(output_w)]
         x_axis, x_title = steps, "Data e Ora Previste (intervalli 30 min)"
     else:
@@ -365,107 +362,93 @@ def plot_predictions(predictions, config, thresholds, start_time=None):
         steps_idx = np.arange(1, output_w + 1)
         x_axis, x_title = steps_idx, f"Passi Futuri ({output_w} x 30 min)"
 
-    # Itera sui sensori target definiti nel config del modello
-    for i, sensor in enumerate(target_cols): # 'sensor' qui è il NOME COLONNA TARGET DAL MODELLO JSON
-        if i >= predictions.shape[1]: # Sicurezza
-            st.error(f"Errore grafico: Indice sensore {i} fuori dai limiti delle predizioni.")
-            continue
+    # --- Ciclo sui target del modello ---
+    for i, sensor_json_name in enumerate(target_cols): # Nome dal JSON
+        if i >= predictions.shape[1]: continue # Sicurezza
 
         fig = go.Figure()
-        # Usa get_station_label con il nome del sensore dal config del modello
-        station_name_graph = get_station_label(sensor, short=False)
+        # Usa get_station_label con il nome JSON per il titolo principale
+        station_name_graph = get_station_label(sensor_json_name, short=False)
 
-        # Aggiungi traccia previsione
+        # --- Aggiungi traccia previsione (come prima) ---
         try:
             fig.add_trace(go.Scatter(
-                x=x_axis,
-                y=predictions[:, i],
-                mode='lines+markers',
-                name=f'Previsto',
-                line=dict(color='blue'), # Colore standard previsione
+                x=x_axis, y=predictions[:, i], mode='lines+markers', name='Previsto',
+                line=dict(color='blue'),
                 hovertemplate=f'<b>{station_name_graph}</b><br>%{{x|%d/%m %H:%M}} (%{{customdata[0]}})<br>Prev: %{{y:.2f}}<extra></extra>',
-                customdata=[(f"Step {h+1}",) for h in range(output_w)] # Info aggiuntiva su hover
-                ))
+                customdata=[(f"Step {h+1}",) for h in range(output_w)]
+            ))
         except Exception as e_trace:
-            st.error(f"Errore aggiunta trace previsione per {sensor}: {e_trace}")
-            continue # Salta al prossimo sensore
+            st.error(f"Errore aggiunta trace previsione per {sensor_json_name}: {e_trace}")
+            continue
 
-        # --- NUOVO/MODIFICATO: Logica recupero soglie con WARNING ---
-        # CERCA la soglia usando il nome ESATTO del sensore come definito nel config del modello ('sensor')
-        sensor_thresholds = thresholds.get(sensor, None) # Cerca chiave esatta, restituisce None se non trovata
+        # --- NUOVO/MODIFICATO: Ricerca soglie tramite mappatura ---
+        gsheet_key_for_threshold = MODEL_TARGET_TO_GSHEET_MAP.get(sensor_json_name) # Trova nome GSheet
+        sensor_thresholds = None # Inizializza a None
+        thresholds_lookup_successful = False # Flag per il titolo
 
-        thresholds_found = False # Flag per titolo grafico
-        # --- NUOVO: Warning se la chiave non viene trovata ---
-        if sensor_thresholds is None:
-            # Mostra un warning nell'app Streamlit
-            available_keys_sample = list(thresholds.keys())[:5] # Mostra solo alcune chiavi esempio
-            st.warning(f"⚠️ **Soglie non trovate per '{station_name_graph}' (target: `{sensor}`).**\n"
-                       f"   Il nome target dal config modello (`{sensor}`) non corrisponde a nessuna chiave nel dizionario soglie.\n"
-                       f"   Verifica che il nome nel JSON del modello corrisponda a uno di questi (o simili): `{available_keys_sample}...`.\n"
-                       f"   Il grafico per questo sensore non mostrerà le linee di soglia.", icon="📊")
-            sensor_thresholds = {} # Imposta a dict vuoto per procedere senza errori nel codice successivo
+        if gsheet_key_for_threshold:
+            # Se abbiamo trovato un nome GSheet corrispondente nella mappa...
+            # ...cerca le soglie usando QUEL nome GSheet nel dizionario thresholds
+            sensor_thresholds = thresholds.get(gsheet_key_for_threshold)
+            if sensor_thresholds is not None:
+                thresholds_lookup_successful = True # Trovato il dict delle soglie!
+            else:
+                # Il nome mappato esiste, ma non c'è nel dizionario soglie attuale? (Meno probabile)
+                st.warning(f"⚠️ Soglie non definite per '{station_name_graph}' (target JSON: `{sensor_json_name}`, chiave GSheet cercata: `{gsheet_key_for_threshold}`).\n"
+                           f"   La mappatura esiste, ma la chiave GSheet non ha soglie nel dizionario attuale.", icon="📊")
         else:
-             thresholds_found = True # Le soglie sono state trovate (anche se magari solo una delle due)
+            # Se il nome JSON non è stato trovato nella mappatura
+            st.warning(f"⚠️ **Mappatura mancante per '{station_name_graph}' (target JSON: `{sensor_json_name}`).**\n"
+                       f"   Aggiungere la corrispondenza in `MODEL_TARGET_TO_GSHEET_MAP` per visualizzare le soglie.", icon="🔗")
 
+        # Assicura che sensor_thresholds sia un dizionario per sicurezza nelle chiamate .get()
+        if sensor_thresholds is None:
+            sensor_thresholds = {}
 
-        # Recupera valori soglia dal dizionario (che può essere vuoto se non trovato sopra)
+        # Recupera i valori (saranno None se non definiti o se la ricerca è fallita)
         threshold_alert = sensor_thresholds.get('alert')
         threshold_attention = sensor_thresholds.get('attention')
 
-        # Aggiungi linea soglia ALLERTA (Rossa) - solo se trovata e valida
+        # --- Aggiungi linee soglia (logica invariata, usa threshold_alert/attention) ---
+        # Aggiungi linea soglia ALLERTA (Rossa)
         if threshold_alert is not None and isinstance(threshold_alert, (int, float)):
             try:
-                fig.add_hline(
-                    y=threshold_alert, line_dash="dash", line_color="red",
-                    annotation_text=f"Allerta ({threshold_alert:.1f})",
-                    annotation_position="bottom right",
-                    annotation_font=dict(color="red", size=10)
-                )
-                thresholds_found = True # Conferma che almeno una soglia è stata aggiunta
-            except Exception as e_hline_a: st.warning(f"Errore aggiunta hline Allerta per {sensor}: {e_hline_a}")
+                fig.add_hline( y=threshold_alert, line_dash="dash", line_color="red",
+                    annotation_text=f"Allerta ({threshold_alert:.1f})", annotation_position="bottom right",
+                    annotation_font=dict(color="red", size=10) )
+            except Exception as e_hline_a: st.warning(f"Errore aggiunta hline Allerta per {sensor_json_name}: {e_hline_a}")
 
-        # Aggiungi linea soglia ATTENZIONE (Arancione) - solo se trovata e valida
+        # Aggiungi linea soglia ATTENZIONE (Arancione)
         if threshold_attention is not None and isinstance(threshold_attention, (int, float)):
-             # Controllo consistenza (warning se attenzione > allerta)
              if threshold_alert is not None and isinstance(threshold_alert, (int, float)) and threshold_attention > threshold_alert:
                   st.warning(f"Nota: Soglia Attenzione ({threshold_attention}) per '{station_name_graph}' supera Allerta ({threshold_alert}).", icon="⚠️")
              try:
-                 fig.add_hline(
-                    y=threshold_attention, line_dash="dash", line_color="orange",
-                    annotation_text=f"Attenzione ({threshold_attention:.1f})",
-                    annotation_position="top right", # Posizione diversa
-                    annotation_font=dict(color="orange", size=10)
-                )
-                 thresholds_found = True # Conferma che almeno una soglia è stata aggiunta
-             except Exception as e_hline_att: st.warning(f"Errore aggiunta hline Attenzione per {sensor}: {e_hline_att}")
+                 fig.add_hline( y=threshold_attention, line_dash="dash", line_color="orange",
+                    annotation_text=f"Attenzione ({threshold_attention:.1f})", annotation_position="top right",
+                    annotation_font=dict(color="orange", size=10) )
+             except Exception as e_hline_att: st.warning(f"Errore aggiunta hline Attenzione per {sensor_json_name}: {e_hline_att}")
 
-        # Configura Layout grafico
+        # --- Configura Layout grafico (titolo aggiornato) ---
         try:
             yaxis_unit_suffix = ""
-            if '(mm)' in sensor: yaxis_unit_suffix = ' (mm)'
-            elif '(m)' in sensor or '(mt)' in sensor: yaxis_unit_suffix = ' (m)'
+            if '(mm)' in sensor_json_name: yaxis_unit_suffix = ' (mm)'
+            elif '(m)' in sensor_json_name or '(mt)' in sensor_json_name: yaxis_unit_suffix = ' (m)'
 
-            # --- MODIFICATO: Titolo include info su soglie ---
+            # Aggiorna titolo in base al successo della ricerca soglie
             title_text = f'Previsione: {station_name_graph}'
-            if not thresholds_found and sensor_thresholds is not None: # Se sensor_thresholds non è None ma non ha né alert né attention validi
-                 title_text += ' (Soglie non definite)'
-            elif not thresholds_found: # Se sensor_thresholds era None (chiave non trovata)
-                 title_text += ' (Soglie NON TROVATE!)'
-            # Non aggiungere nulla se le soglie sono trovate e plottate
+            if not thresholds_lookup_successful:
+                title_text += ' (Soglie non trovate/mappate)'
 
             fig.update_layout(
-                title=title_text,
-                xaxis_title=x_title,
-                yaxis_title=f'Valore Previsto{yaxis_unit_suffix}',
-                height=400,
-                hovermode="x unified",
-                margin=dict(t=50, b=40, l=50, r=10) # Margini
+                title=title_text, xaxis_title=x_title, yaxis_title=f'Valore Previsto{yaxis_unit_suffix}',
+                height=400, hovermode="x unified", margin=dict(t=50, b=40, l=50, r=10)
             )
-            fig.update_yaxes(rangemode='tozero') # Asse Y parte da zero
+            fig.update_yaxes(rangemode='tozero')
         except Exception as e_layout:
-            st.error(f"Errore configurazione layout grafico per {sensor}: {e_layout}")
+            st.error(f"Errore configurazione layout grafico per {sensor_json_name}: {e_layout}")
 
-        figs.append(fig) # Aggiungi il grafico completato alla lista
+        figs.append(fig)
 
     return figs
 
@@ -784,6 +767,17 @@ def get_station_label(col_name, short=False):
             else:
                 # Return full location ID if not short
                 return location_id
+# --- NUOVO: Mappatura Nomi Target Modello (JSON) -> Nomi Soglie (GSheet) ---
+MODEL_TARGET_TO_GSHEET_MAP = {
+    # "Nome nel JSON Target": "Nome nel Dizionario Soglie (GSheet)"
+    "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)": "Serra dei Conti - Livello Misa (mt)",
+    "Livello Idrometrico Sensore 1112 [m] (Bettolelle)":      "Misa - Livello Misa (mt)",
+    "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)": "Nevola - Livello Nevola (mt)",
+    "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)": "Pianello di Ostra - Livello Misa (m)",
+    # --- Aggiungi questa riga SE Ponte Garibaldi è un target nel tuo modello ---
+    "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)": "Ponte Garibaldi - Livello Misa 2 (mt)"
+    # Aggiungi altre eventuali mappature se ci sono altri target di livello
+}
     # Fallback if not in STATION_COORDS
     parts = col_name.split(' - ')
     if len(parts) > 1:
