@@ -744,27 +744,48 @@ def extract_sheet_id(url):
         if match: return match.group(1)
     return None
 
-# --- Funzione Estrazione Etichetta Stazione invariata ---
+# --- Funzione Estrazione Etichetta Stazione (CORRETTA INDENTAZIONE) ---
 def get_station_label(col_name, short=False):
-    # ... (codice invariato) ...
+    # Cerca prima nelle coordinate/info definite
     if col_name in STATION_COORDS:
         location_id = STATION_COORDS[col_name].get('location_id')
         if location_id:
             if short:
                 sensor_type = STATION_COORDS[col_name].get('type', '')
-                # Check if multiple sensors share the same location_id
+                # Controlla se ci sono più sensori nella stessa località
                 sensors_at_loc = [sc['type'] for sc_name, sc in STATION_COORDS.items() if sc.get('location_id') == location_id]
                 if len(sensors_at_loc) > 1:
-                    # Abbreviate type if multiple sensors at the same location
+                    # Abbrevia il tipo se ci sono più sensori
                     type_abbr = 'P' if sensor_type == 'Pioggia' else ('L' if sensor_type == 'Livello' else '')
                     label = f"{location_id} ({type_abbr})"
-                    return label[:25] + ('...' if len(label) > 25 else '') # Troncamento più esplicito
+                    # Troncamento robusto
+                    return label[:25] + ('...' if len(label) > 25 else '')
                 else:
-                    # Only one sensor type at this location, just use location ID
+                    # Un solo tipo di sensore, usa solo l'ID località
+                    # Troncamento robusto
                     return location_id[:25] + ('...' if len(location_id) > 25 else '')
             else:
-                # Return full location ID if not short
+                # Versione non breve, restituisci solo l'ID località
                 return location_id
+    # --- Fallback se col_name NON è in STATION_COORDS ---
+    # <<< QUESTA PARTE DEVE ESSERE ALLINEATA CON l' "if col_name in STATION_COORDS:" sopra >>>
+    parts = col_name.split(' - ')
+    if len(parts) > 1:
+        # Se il formato è "Località - Misura (Unità)"
+        location = parts[0].strip()
+        measurement = parts[1].split(' (')[0].strip()
+        if short:
+             label = f"{location} - {measurement}"
+             # Troncamento robusto
+             return label[:25] + ('...' if len(label) > 25 else '')
+        else:
+             # Versione non breve, restituisci solo la parte località
+             return location
+    else:
+        # Fallback ulteriore se il formato non è riconosciuto
+        label = col_name.split(' (')[0].strip()
+        # Troncamento robusto
+        return label[:25] + ('...' if len(label) > 25 else '')
 # --- NUOVO: Mappatura Nomi Target Modello (JSON) -> Nomi Soglie (GSheet) ---
 MODEL_TARGET_TO_GSHEET_MAP = {
     # "Nome nel JSON Target": "Nome nel Dizionario Soglie (GSheet)"
