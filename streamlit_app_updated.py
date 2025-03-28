@@ -26,6 +26,7 @@ import traceback # Per stampare errori dettagliati
 import mimetypes # Per indovinare i tipi MIME per i download
 from streamlit_js_eval import streamlit_js_eval # Per forzare refresh periodico
 import pytz # Per gestione timezone
+import google.generativeai as genai # NUOVO: Import per Google Gemini
 
 # Configurazione della pagina
 st.set_page_config(page_title="Modello Predittivo Idrologico", page_icon="🌊", layout="wide")
@@ -320,6 +321,7 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
     except Exception as e:
         st.error(f"Errore imprevisto durante predict: {e}");
         st.error(traceback.format_exc()); return None
+
 
 # --- MODIFICATA: plot_predictions aggiunge soglie e migliora titolo ---
 def plot_predictions(predictions, config, thresholds, start_time=None):
@@ -705,6 +707,125 @@ def get_station_label(col_name, short=False):
     else: # Fallback even further if format is unexpected
         label = col_name.split(' (')[0].strip()
         return label[:25] + ('...' if len(label) > 25 else '')
+
+
+# --- NUOVA FUNZIONE CHATBOT (per Google ) ---
+@st.cache_data(show_spinner="🤖 Analisi AI (Gemini) in corso...", ttl=300)
+def get_hydrometric_analysis_gemini(
+    _predictions: np.ndarray,
+    _target_columns: list,
+    _pred_times: list,
+    _thresholds: dict,
+    _google_api_key: str  # Modificato nome parametro API key
+    ) -> str:
+    """
+    Chiama Google Gemini 1.5 Pro per ottenere un'analisi del trend idrometrico previsto.
+
+    Args:
+        _predictions: Array NumPy delle previsioni (output_window x num_targets).
+        _target_columns: Lista dei nomi delle colonne target previste.
+        _pred_times: Lista dei timestamp datetime per ogni previsione.
+        _thresholds: Dizionario delle soglie {nome_sensore: {'alert': v, 'attention': v}}.
+        _google_api_key: Chiave API di Google AI Studio.
+
+    Returns:
+        Stringa contenente l'analisi del chatbot, o un messaggio di errore.
+    """
+    if not _google_api_key:
+        return "⚠️ **Errore Configurazione Chatbot:** Chiave API Google (`google_api_key`) non trovata. Impostala nei secrets di Streamlit."
+
+    try:
+        # Configura l'API key di Google
+        genai.configure(api_key=_google_api_key)
+    except Exception as e:
+        # Potrebbe esserci un errore nella libreria stessa o nel formato della chiave
+        return f"⚠️ **Errore Configurazione Libreria Gemini:** {e}"
+
+    # Filtra solo i sensori di livello e formatta i dati per il prompt (logica invariata)
+    analysis_prompt_details = "Dati di input per l'analisi:\n"
+    found_level_sensors = False
+    for i, sensor_name in enumerate(_target_columns):
+        if 'Livello' in sensor_name or '(m)' in sensor_name or '(mt)' in sensor_name:
+            found_level_sensors = True
+            sensor_thresholds = _thresholds.get(sensor_name, {})
+            alert_thresh = sensor_thresholds.get('alert', 'N/D')
+            attention_thresh = sensor_thresholds.get('attention', 'N/D')
+            sensor_label = get_station_label(sensor_name, short=False)
+            alert_display = f"{alert_thresh:.2f}" if isinstance(alert_thresh, (int, float)) else "N/D"
+            attention_display = f"{attention_thresh:.2f}" if isinstance(attention_thresh, (int, float)) else "N/D"
+            analysis_prompt_details += f"\n**{sensor_label}** (Soglie: Attenzione={attention_display}m, Allerta={alert_display}m):\n"
+            pred_values = _predictions[:, i]
+            time_value_pairs = []
+            for t, val in zip(_pred_times, pred_values):
+                time_str = t.strftime('%H:%M')
+                time_value_pairs.append(f"{time_str}: {val:.2f}m")
+            analysis_prompt_details += " - " + ", ".join(time_value_pairs) + "\n"
+
+    if not found_level_sensors:
+        return "ℹ️ Nessun sensore di livello trovato tra i target della simulazione per l'analisi."
+
+    # Combina le istruzioni in un unico prompt per Gemini
+    full_prompt = f"""Sei un esperto idrologo che analizza i risultati di una simulazione idrometrica.
+Ti vengono forniti i livelli idrometrici previsti per diversi sensori nei prossimi intervalli di 30 minuti, insieme alle soglie di attenzione e allerta per ciascun sensore.
+Il tuo compito è fornire un'analisi concisa (massimo 3-4 frasi) e professionale dell'andamento previsto.
+
+Analizza il seguente andamento idrometrico previsto per le prossime {len(_pred_times) * 0.5:.1f} ore ({len(_pred_times)} intervalli da 30 min):
+
+{analysis_prompt_details}
+
+Fornisci un breve riassunto professionale (3-4 frasi) focalizzandoti su:
+1. Tendenza generale dei livelli (stabili, in aumento, in diminuzione?).
+2. Eventuali superamenti previsti delle soglie di *attenzione* o *allerta*, specificando quali sensori e quando.
+3. Qualsiasi altro aspetto rilevante (es. picchi rapidi).
+Sii conciso e professionale. Evita saluti o introduzioni non necessarie.
+"""
+
+    try:
+        # Inizializza il modello Gemini desiderato
+        # Usiamo 'gemini-1.5-pro-latest' come richiesto.
+        model = genai.GenerativeModel('gemini-2.5-pro-exp-03-25')
+
+        # Configurazione generazione (opzionale)
+        generation_config = genai.GenerationConfig(
+            temperature=0.3,
+            max_output_tokens=150
+        )
+
+        # Chiama l'API Gemini
+        response = model.generate_content(
+            full_prompt,
+            generation_config=generation_config
+            )
+
+        # Estrai il testo dalla risposta (gestendo potenziali blocchi o errori)
+        if response and response.candidates and response.candidates[0].content.parts:
+             analysis_text = response.text # Metodo helper per estrarre testo concatenato
+             return analysis_text
+        elif response.prompt_feedback.block_reason:
+             # Se la risposta è stata bloccata per motivi di sicurezza/policy
+             return f"⚠️ **Errore Chatbot (Gemini):** La generazione della risposta è stata bloccata. Motivo: {response.prompt_feedback.block_reason}"
+        else:
+             # Se non c'è testo ma nessun blocco esplicito (caso insolito)
+             return "⚠️ **Errore Chatbot (Gemini):** La risposta del modello era vuota o non valida."
+
+    except Exception as e:
+        # Gestione errori API di Google (più generica, da raffinare se necessario)
+        error_type = type(e).__name__
+        error_msg = str(e)
+        print(f"Errore chiamata Gemini API: {error_type} - {error_msg}") # Log per debug
+        traceback.print_exc() # Stampa traceback completo nel log
+
+        if "API key not valid" in error_msg or "PermissionDenied" in error_type:
+             return "⚠️ **Errore Autenticazione Chatbot (Gemini):** La chiave API Google non è valida o mancano i permessi."
+        elif "ResourceExhausted" in error_type or "quota" in error_msg.lower():
+             return "⚠️ **Errore Chatbot (Gemini):** Raggiunto il limite di richieste (quota) all'API Google AI. Riprova più tardi."
+        elif "model" in error_msg.lower() and ("not found" in error_msg.lower() or "does not exist" in error_msg.lower()):
+             return f"⚠️ **Errore Chatbot (Gemini):** Modello 'gemini-1.5-pro-latest' non trovato o non accessibile con la tua chiave API. Verifica la disponibilità del modello o prova con 'gemini-pro'."
+        else:
+             # Errore generico dell'API o della libreria
+             return f"⚠️ **Errore Inatteso Chatbot (Gemini):** Si è verificato un problema ({error_type}). Controlla i log per dettagli."
+
+# --- FINE NUOVA FUNZIONE CHATBOT (Gemini) ---
 
 
 # --- Inizializzazione Session State invariata ---
@@ -1586,7 +1707,7 @@ if page == 'Dashboard':
          st.warning(f"Impossibile impostare auto-refresh: {e_js}")
 
 
-# --- PAGINA SIMULAZIONE (MODIFICATA per grafici, titolo, tabella) ---
+# --- PAGINA SIMULAZIONE (MODIFICATA per GEMINI) ---
 elif page == 'Simulazione':
     st.header('🧪 Simulazione Idrologica')
     if not model_ready:
@@ -2016,7 +2137,7 @@ elif page == 'Simulazione':
                        st.error(f"Errore imprevisto durante estrazione dati CSV per simulazione: {e_csv_sim_extract}")
                        sim_data_input = None
 
-        # --- ESECUZIONE SIMULAZIONE (MODIFICATA per tabella e grafici) ---
+        # --- ESECUZIONE SIMULAZIONE (MODIFICATA per tabella, grafici e CHATBOT Gemini) ---
         st.divider()
         # Verifica se i dati di input sono pronti
         input_ready = sim_data_input is not None and isinstance(sim_data_input, np.ndarray) and sim_data_input.shape == (input_window, len(feature_columns_current_model)) and not np.isnan(sim_data_input).any()
@@ -2043,6 +2164,36 @@ elif page == 'Simulazione':
                        st.caption(f"Previsione calcolata a partire da: {start_pred_time.strftime('%d/%m/%Y %H:%M %Z')}")
 
                        pred_times_sim = [start_pred_time + timedelta(minutes=30*(i+1)) for i in range(output_window)]
+
+                       # --- NUOVO: CHIAMATA AL CHATBOT GEMINI ---
+                       chatbot_analysis_text = "Analisi Chatbot non disponibile." # Default
+                       google_api_key = st.secrets.get("google_api_key") # Legge la chiave Google dai secrets
+
+                       if google_api_key:
+                           # Chiama la NUOVA funzione per Gemini
+                           chatbot_analysis_text = get_hydrometric_analysis_gemini( # Usa la funzione Gemini
+                               predictions_sim,
+                               target_columns_model,
+                               pred_times_sim,
+                               st.session_state.dashboard_thresholds,
+                               google_api_key # Passa la chiave Google
+                           )
+                       else:
+                           # Messaggio aggiornato per la chiave Google
+                           chatbot_analysis_text = "⚠️ **Configurazione Chatbot Mancante:** Imposta la chiave `google_api_key` nei secrets di Streamlit per abilitare l'analisi AI con Gemini."
+
+                       # --- VISUALIZZAZIONE ANALISI CHATBOT (Logica invariata) ---
+                       st.markdown("---")
+                       st.subheader("🤖 Analisi AI (Gemini) dell'Andamento Idrometrico Previsto")
+                       if "⚠️" in chatbot_analysis_text:
+                           st.warning(chatbot_analysis_text)
+                       elif "ℹ️" in chatbot_analysis_text:
+                           st.info(chatbot_analysis_text)
+                       else:
+                           st.success(chatbot_analysis_text) # Mostra l'analisi se OK
+                       st.markdown("---") # Separatore
+
+                       # --- Visualizzazione Tabella Risultati (Codice Esistente Modificato) ---
                        # 1. Crea DataFrame iniziale dai risultati numerici
                        results_df_sim = pd.DataFrame(predictions_sim, columns=target_columns_model)
                        # 2. Inserisci la colonna 'Ora Prevista' come stringa
@@ -2070,14 +2221,20 @@ elif page == 'Simulazione':
                        try:
                            cols_in_df_to_round = [col for col in numeric_cols_renamed if col in df_to_display.columns]
                            if cols_in_df_to_round:
-                               df_to_display[cols_in_df_to_round] = df_to_display[cols_in_df_to_round].round(3)
+                               # Determina decimali in base all'unità (es. 3 per livelli 'm')
+                               rounding_map = {}
+                               for orig_col, ren_col in original_to_renamed_map.items():
+                                   if ren_col in cols_in_df_to_round:
+                                       rounding_map[ren_col] = 3 if '(m)' in ren_col or '(mt)' in orig_col else 2 # 3 decimali per livelli, 2 per altri
+                               df_to_display = df_to_display.round(rounding_map)
                            else:
                                st.warning("Nessuna colonna numerica trovata per l'arrotondamento pre-visualizzazione.")
                        except Exception as e_round_display:
                            st.error(f"Errore durante l'arrotondamento selettivo: {e_round_display}")
                            df_to_display = results_df_sim_renamed # Fallback senza arrotondamento
 
-                       # --- NUOVO: Applicazione stile per valori sopra soglia ALERT ---
+
+                       # 5. Funzione e applicazione stile per valori sopra soglia ALERT
                        def style_alert_value(val, original_col_name, thresholds_dict):
                            """ Funzione per applicare stile rosso se val >= soglia alert. """
                            alert_thresh = thresholds_dict.get(original_col_name, {}).get('alert')
@@ -2092,7 +2249,7 @@ elif page == 'Simulazione':
                        # Applica lo stile cella per cella alle colonne numeriche
                        for original_col, renamed_col in original_to_renamed_map.items():
                             if renamed_col in df_to_display.columns: # Sicurezza
-                                styler = styler.applymap(
+                                styler = styler.map( # Usa .map per applicare la funzione
                                     lambda x: style_alert_value(x, original_col, st.session_state.dashboard_thresholds),
                                     subset=[renamed_col]
                                 )
@@ -2100,8 +2257,14 @@ elif page == 'Simulazione':
                        # Mostra il DataFrame STILIZZATO
                        st.dataframe(styler)
 
-                       # 6. Link per il download (usa DataFrame originale NON stilizzato)
-                       st.markdown(get_table_download_link(results_df_sim, f"simulazione_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
+                       # 6. Link per il download (usa DataFrame originale NON stilizzato, ma arrotondato)
+                       # Arrotonda anche il df originale per il download
+                       try:
+                            results_df_sim_rounded_dl = results_df_sim.round(rounding_map) if 'rounding_map' in locals() else results_df_sim.round(3)
+                       except:
+                            results_df_sim_rounded_dl = results_df_sim.round(3) # Fallback
+                       st.markdown(get_table_download_link(results_df_sim_rounded_dl, f"simulazione_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
+
 
                        # --- Grafici (MODIFICATI per passare soglie) ---
                        st.subheader('📈 Grafici Previsioni Simulate')
@@ -2160,7 +2323,14 @@ elif page == 'Analisi Dati Storici':
                      start_dt = tz_csv.localize(start_dt)
                      end_dt = tz_csv.localize(end_dt)
                 elif not pd.api.types.is_datetime64_any_dtype(df_date_col):
-                     st.error(f"Errore interno: La colonna data CSV '{date_col_name_csv}' non è di tipo datetime."); st.stop()
+                     # Se naive, assumi Italy TZ per il confronto
+                     start_dt = italy_tz.localize(start_dt)
+                     end_dt = italy_tz.localize(end_dt)
+                     if df_date_col.dt.tz is None: # Localizza anche colonna dati se naive
+                        df_current_csv[date_col_name_csv] = df_date_col.dt.tz_localize(italy_tz)
+                     else: # Se colonna dati è già aware, converti le date filtro al suo tz
+                        start_dt = start_dt.tz_convert(df_date_col.dt.tz)
+                        end_dt = end_dt.tz_convert(df_date_col.dt.tz)
 
                 mask = (df_current_csv[date_col_name_csv] >= start_dt) & (df_current_csv[date_col_name_csv] <= end_dt)
                 filtered_df = df_current_csv.loc[mask]
