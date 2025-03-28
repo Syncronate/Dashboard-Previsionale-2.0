@@ -2488,6 +2488,16 @@ elif page == 'Allenamento Modello':
                 else:
                     # --- Preparazione Dati (viene fatta QUI prima di iniziare i trial) ---
                     st.info(f"Preparazione dati per ottimizzazione HP (Finestre: In={iw_t}, Out={ow_t}, Val={vs_t}%)...")
+                    with st.spinner(            # --- Pulsante per AVVIARE SOLO l'ottimizzazione ---
+            start_optimization = st.button("🚀 Avvia Ottimizzazione HP", key="hp_opt_start_button")
+
+            if start_optimization:
+                # Controllo se feature e target sono selezionati
+                if not selected_features_train or not selected_targets_train:
+                     st.error("Seleziona prima le Feature e i Target per poter preparare i dati.")
+                else:
+                    # --- Preparazione Dati (viene fatta QUI prima di iniziare i trial) ---
+                    st.info(f"Preparazione dati per ottimizzazione HP (Finestre: In={iw_t}, Out={ow_t}, Val={vs_t}%)...")
                     with st.spinner('Preparazione dati...'):
                         # Definisci le colonne necessarie (usando set per sicurezza contro duplicati)
                         cols_needed_hp = list(set(selected_features_train + selected_targets_train))
@@ -2525,7 +2535,10 @@ elif page == 'Allenamento Modello':
 
                     # --- Inizio Loop Random Search (il resto del codice rimane uguale) ---
                     st.info(f"Avvio Ottimizzazione Random Search con {n_trials_hp} trials...")
-                    # ... (resto del loop for i in range(n_trials_hp):) ...
+                    # ... (resto del loop for i in range(n_trials_hp):) ...):
+                        # Definisci le colonne necessarie (usando set per sicurezza contro duplicati)
+                        cols_needed_hp = list(set(selected_features_train + selected_targets_train))
+                        
                         if missing_in_df_final_hp:
                              st.error(f"Errore Critico HP: Le colonne selezionate {', '.join(missing_in_df_final_hp)} non sono nel CSV. Impossibile procedere.")
                              st.stop()
