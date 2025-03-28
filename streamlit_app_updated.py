@@ -783,7 +783,7 @@ Sii conciso e professionale. Evita saluti o introduzioni non necessarie.
     try:
         # Inizializza il modello Gemini desiderato
         # Usiamo 'gemini-1.5-pro-latest' come richiesto.
-        model = genai.GenerativeModel('gemini-2.5-pro-exp-03-25')
+        model = genai.GenerativeModel('gemini-2.0-flash-thinking-exp-01-21')
 
         # Configurazione generazione (opzionale)
         generation_config = genai.GenerationConfig(
