@@ -2478,6 +2478,54 @@ elif page == 'Allenamento Modello':
                     with st.spinner('Preparazione dati...'):
                         cols_needed_hp = selected_features_train + selected_targets_train
                         missing_in_df_final_hp = [c for c in cols_needed_hp if c not in df_current_csv.columns]
+                                    # --- Pulsante per AVVIARE SOLO l'ottimizzazione ---
+            start_optimization = st.button("🚀 Avvia Ottimizzazione HP", key="hp_opt_start_button")
+
+            if start_optimization:
+                # Controllo se feature e target sono selezionati
+                if not selected_features_train or not selected_targets_train:
+                     st.error("Seleziona prima le Feature e i Target per poter preparare i dati.")
+                else:
+                    # --- Preparazione Dati (viene fatta QUI prima di iniziare i trial) ---
+                    st.info(f"Preparazione dati per ottimizzazione HP (Finestre: In={iw_t}, Out={ow_t}, Val={vs_t}%)...")
+                    with st.spinner('Preparazione dati...'):
+                        # Definisci le colonne necessarie (usando set per sicurezza contro duplicati)
+                        cols_needed_hp = list(set(selected_features_train + selected_targets_train))
+
+                        # --- !!! CORREZIONE QUI !!! ---
+                        # Calcola quali colonne mancano nel CSV PRIMA di usare la variabile
+                        missing_in_df_final_hp = [c for c in cols_needed_hp if c not in df_current_csv.columns]
+                        # --- !!! FINE CORREZIONE !!! ---
+
+                        # Ora puoi controllare la variabile 'missing_in_df_final_hp'
+                        if missing_in_df_final_hp:
+                             # L'errore NameError avveniva qui perché la variabile non era definita
+                             st.error(f"Errore Critico HP: Le colonne selezionate {', '.join(missing_in_df_final_hp)} non sono nel CSV. Impossibile procedere.")
+                             st.stop() # Interrompe l'esecuzione se mancano colonne
+
+                        # Se il controllo sopra passa, procedi con la preparazione dei dati
+                        X_tr_hp, y_tr_hp, X_v_hp, y_v_hp, sc_f_hp, sc_t_hp = prepare_training_data(
+                              df_current_csv.copy(),
+                              selected_features_train, # Usa le feature selezionate
+                              selected_targets_train,  # Usa i target selezionati
+                              iw_t, ow_t, vs_t # Usa i valori dai widget principali
+                          )
+
+                        # Controlli successivi sul risultato di prepare_training_data
+                        if X_tr_hp is None or y_tr_hp is None or sc_f_hp is None or sc_t_hp is None or X_v_hp is None or y_v_hp is None:
+                           st.error("Preparazione dati per HP fallita. Controlla i log e i parametri (finestre vs lunghezza dati).")
+                           st.stop()
+                        if X_v_hp.size == 0:
+                            st.error(f"Errore: % Validazione è {vs_t}% ma il set di validazione risulta vuoto dopo la preparazione. Dataset troppo piccolo o split non valido?")
+                            st.stop()
+
+                        st.success(f"Dati pronti per HP: {len(X_tr_hp)} train, {len(X_v_hp)} validation.")
+                        input_size_hp = X_tr_hp.shape[2]
+                        output_size_hp = y_tr_hp.shape[2]
+
+                    # --- Inizio Loop Random Search (il resto del codice rimane uguale) ---
+                    st.info(f"Avvio Ottimizzazione Random Search con {n_trials_hp} trials...")
+                    # ... (resto del loop for i in range(n_trials_hp):) ...
                         if missing_in_df_final_hp:
                              st.error(f"Errore Critico HP: Le colonne selezionate {', '.join(missing_in_df_final_hp)} non sono nel CSV. Impossibile procedere.")
                              st.stop()
