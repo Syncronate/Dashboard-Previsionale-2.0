@@ -26,6 +26,7 @@ import traceback # Per stampare errori dettagliati
 import mimetypes # Per indovinare i tipi MIME per i download
 from streamlit_js_eval import streamlit_js_eval # Per forzare refresh periodico
 import pytz # Per gestione timezone
+import random # Assicurati che questo import sia presente all'inizio del file
 
 # Configurazione della pagina
 st.set_page_config(page_title="Modello Predittivo Idrologico", page_icon="🌊", layout="wide")
@@ -508,20 +509,7 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
         return None, f"Errore imprevisto recupero dati GSheet: {type(e).__name__} - {e}\n{traceback.format_exc()}", actual_fetch_time
 
 
-# --- train_model invariata, usata solo per training ---
-# -*- coding: utf-8 -*-
-import streamlit as st
-import torch
-import pandas as pd
-import numpy as np
-# ... altri import ...
-import random # Aggiungi questo import
-import time
-import traceback # Già presente
-
-# ... (resto del codice iniziale: costanti, classi Dataset/LSTM, funzioni utilità, ecc.) ...
-
-# --- MODIFICATA: train_model per ottimizzazione ---
+# --- MODIFICATA/SOSTITUISCI QUESTA FUNZIONE: train_model per ottimizzazione ---
 def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_window,
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
                 is_optimization_trial=False, # NUOVO: Flag per trial di ottimizzazione
@@ -533,7 +521,14 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = HydroLSTM(input_size, hidden_size, output_size, output_window, num_layers, dropout).to(device)
     train_dataset = TimeSeriesDataset(X_train, y_train)
-    val_dataset = TimeSeriesDataset(X_val, y_val) if X_val is not None and X_val.size > 0 else None # Gestione val vuoto/None
+    # Gestione più robusta per X_val/y_val potenzialmente None o vuoti
+    val_dataset = None
+    if X_val is not None and y_val is not None and X_val.size > 0 and y_val.size > 0:
+         try:
+             val_dataset = TimeSeriesDataset(X_val, y_val)
+         except Exception as e_val_ds:
+             st.warning(f"Impossibile creare Validation Dataset: {e_val_ds}") # Avvisa ma non blocca
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=0) if val_dataset else None
     criterion = nn.MSELoss()
@@ -542,21 +537,33 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
 
     train_losses, val_losses = [], []
     best_val_loss = float('inf')
-    best_model_state_dict = None # Necessario per trovare il best_val_loss anche in trial
+    best_model_state_dict = None # Per salvare lo stato migliore (solo in training finale)
 
     # --- Gestione Output Streamlit differenziato ---
     progress_bar = None
-    status_text = None
+    status_text_global = None # Rinominato per evitare clash con quello interno al trial
     loss_chart_placeholder = None
+
+    # Funzione helper per grafico loss (definita qui per chiarezza, era globale prima)
+    def update_loss_chart(t_loss, v_loss, placeholder):
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=t_loss, mode='lines', name='Train Loss'))
+        valid_v_loss = [v for v in v_loss if v is not None and np.isfinite(v)] if v_loss else []
+        if valid_v_loss:
+             fig.add_trace(go.Scatter(y=valid_v_loss, mode='lines', name='Validation Loss'))
+        fig.update_layout(title='Andamento Loss', xaxis_title='Epoca', yaxis_title='Loss (MSE)', height=300, margin=dict(t=30, b=0))
+        if placeholder: placeholder.plotly_chart(fig, use_container_width=True)
+
+
     if not is_optimization_trial:
         progress_bar = st.progress(0)
-        status_text = st.empty()
+        status_text_global = st.empty()
         loss_chart_placeholder = st.empty()
         st.write(f"Inizio training per {epochs} epoche su {device}...")
     else:
-        # Durante l'ottimizzazione, usiamo un testo più conciso
-        status_text = st.empty() # Usiamo st.empty per poter aggiornare
-        status_text.text(f"Trial HP {opt_trial_num}/{opt_total_trials}: Inizio {epochs} epoche...")
+        # Durante l'ottimizzazione, potremmo non voler usare st.empty globalmente
+        # Lo gestiamo all'interno del loop di ottimizzazione
+        pass
 
     start_training_time = time.time()
     for epoch in range(epochs):
@@ -571,6 +578,15 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
+
+        # Gestione train_loss NaN/inf
+        if not np.isfinite(train_loss):
+            if not is_optimization_trial:
+                st.warning(f"Epoch {epoch+1}: Train loss è NaN/inf. Interruzione training.")
+            # Se siamo in trial, restituisci 'inf' per segnalare fallimento
+            # Se in training finale, potresti voler restituire None o sollevare errore
+            return float('inf') if is_optimization_trial else (model, train_losses, val_losses) # Modello fino a questo punto
+
         train_loss /= len(train_loader)
         train_losses.append(train_loss)
 
@@ -584,67 +600,67 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
                     outputs = model(X_batch)
                     loss = criterion(outputs, y_batch)
                     epoch_val_loss += loss.item()
-            current_val_loss = epoch_val_loss / len(val_loader)
-            val_losses.append(current_val_loss)
-            scheduler.step(current_val_loss) # Scheduler step basato su val_loss
 
-            # Aggiorna best_val_loss (importante per return)
-            if current_val_loss < best_val_loss:
-                best_val_loss = current_val_loss
-                # Non salviamo state_dict se siamo in trial per risparmiare memoria/tempo
-                # if not is_optimization_trial:
-                #     best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()}
+            # Gestione val_loss NaN/inf
+            if not np.isfinite(epoch_val_loss):
+                 if not is_optimization_trial: # Mostra warning solo in training finale
+                      st.warning(f"Epoch {epoch+1}: Validation loss è NaN/inf.")
+                 current_val_loss = float('inf') # Segnala come infinito per lo scheduler/best_loss
+            else:
+                 current_val_loss = epoch_val_loss / len(val_loader)
+
+            val_losses.append(current_val_loss)
+            # Passa a scheduler solo se la loss è finita
+            if np.isfinite(current_val_loss):
+                 scheduler.step(current_val_loss)
+
+                 # Aggiorna best_val_loss (importante per return) e salva stato SE non è trial
+                 if current_val_loss < best_val_loss:
+                     best_val_loss = current_val_loss
+                     if not is_optimization_trial:
+                         # Copia state_dict solo per il training finale per salvare il modello migliore
+                         best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()}
+            # Se current_val_loss è inf, non aggiornare best_val_loss (rimane 'inf' o il valore buono precedente)
         else:
             val_losses.append(None) # Aggiungi None se non c'è validation
 
         # --- Aggiornamento UI ---
         current_lr = optimizer.param_groups[0]['lr']
-        val_loss_str = f"{current_val_loss:.6f}" if current_val_loss is not None else "N/A"
+        val_loss_str = f"{current_val_loss:.6f}" if current_val_loss is not None and np.isfinite(current_val_loss) else ("NaN/Inf" if current_val_loss is not None else "N/A")
         epoch_time = time.time() - epoch_start_time
 
         if not is_optimization_trial:
             progress_percentage = (epoch + 1) / epochs
             if progress_bar: progress_bar.progress(progress_percentage)
-            if status_text: status_text.text(f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) - Train Loss: {train_loss:.6f}, Val Loss: {val_loss_str} - LR: {current_lr:.6f}')
-            # Aggiorna grafico loss solo se non siamo in ottimizzazione
-            # update_loss_chart(train_losses, val_losses, loss_chart_placeholder) # Funzione definita prima
-        else:
-            # Output più conciso per i trial HP
-             if status_text: status_text.text(f"Trial HP {opt_trial_num}/{opt_total_trials}: Epoca {epoch+1}/{epochs}, Val Loss: {val_loss_str}, LR: {current_lr:.6f}")
-
+            if status_text_global: status_text_global.text(f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) - Train Loss: {train_loss:.6f}, Val Loss: {val_loss_str} - LR: {current_lr:.6f}')
+            if loss_chart_placeholder: update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
+        # Non mostrare output per epoca durante ottimizzazione HP per non intasare
 
     total_training_time = time.time() - start_training_time
 
     if not is_optimization_trial:
         st.write(f"Training completato in {total_training_time:.1f} secondi.")
-        # --- Logica caricamento best model (solo per training finale) ---
-        # (Questa parte viene saltata se is_optimization_trial=True perché non salviamo best_model_state_dict)
-        # MA DOBBIAMO SALVARE IL MODELLO FINALE PER IL TRAINING NORMALE
-        final_model_to_return = model # Restituisci l'ultimo modello del training normale
-        if best_model_state_dict: # Questa logica si attiva solo se non è optimization trial E c'era validation
+        final_model_to_return = model # Restituisci l'ultimo modello di default
+
+        if best_model_state_dict: # Se abbiamo salvato uno stato migliore (solo in training finale con validation)
             try:
                 best_model_state_dict_on_device = {k: v.to(device) for k, v in best_model_state_dict.items()}
                 model.load_state_dict(best_model_state_dict_on_device)
-                st.success(f"Caricato modello migliore (Epoca con Val Loss: {best_val_loss:.6f})")
+                st.success(f"Caricato modello migliore dall'epoca con Val Loss: {best_val_loss:.6f}")
                 final_model_to_return = model # Ora è il modello migliore
             except Exception as e_load_best:
                 st.error(f"Errore caricamento best model state: {e_load_best}. Uso modello ultima epoca.")
         elif not val_loader:
-            st.warning("Nessun set di validazione, usato modello dell'ultima epoca.")
-        # Rimuovi l'else ridondante
-        # else:
-        #     st.warning("Nessun miglioramento rilevato o errore nel salvataggio stato migliore, usato modello dell'ultima epoca.")
+            st.warning("Nessun set di validazione fornito, usato modello dell'ultima epoca.")
+        elif val_loader: # C'era validation ma non è stato salvato un best_model_state_dict
+             st.warning("Nessun miglioramento rilevato sulla validation loss o errore nel salvataggio stato migliore, usato modello dell'ultima epoca.")
 
         return final_model_to_return, train_losses, val_losses # Return per training normale
     else:
         # Return per trial di ottimizzazione
-        # Pulisci testo status
-        if status_text: status_text.empty()
-        # Restituisci la miglior validation loss trovata durante questo trial
-        # Se non c'era validation, best_val_loss è rimasto float('inf')
-        return best_val_loss if val_loader else float('inf')
-
-# ... (resto del codice: funzioni download, extract, label, init session state, ecc.) ...
+        # Restituisci la miglior validation loss finita trovata durante questo trial
+        # Se non c'era validation o la loss è sempre stata inf, restituisce 'inf'
+        return best_val_loss if np.isfinite(best_val_loss) else float('inf')
 
 
 # --- Funzioni Helper Download invariate ---
@@ -785,7 +801,16 @@ if 'last_dashboard_fetch_time' not in st.session_state: st.session_state.last_da
 if 'active_alerts' not in st.session_state: st.session_state.active_alerts = []
 # --- NUOVO: Aggiungi stato per allerte di attenzione ---
 if 'active_attentions' not in st.session_state: st.session_state.active_attentions = []
-
+# --- NUOVO: Stato per Ottimizzazione HP ---
+if 'hp_optimize_enabled' not in st.session_state: st.session_state.hp_optimize_enabled = False
+if 'best_hp_params' not in st.session_state: st.session_state.best_hp_params = None
+if 'hp_n_trials' not in st.session_state: st.session_state.hp_n_trials = 30
+if 'hp_epochs_per_trial' not in st.session_state: st.session_state.hp_epochs_per_trial = 15
+if 'hp_lr_range' not in st.session_state: st.session_state.hp_lr_range = (1e-4, 5e-3)
+if 'hp_bs_range' not in st.session_state: st.session_state.hp_bs_range = (32, 128)
+if 'hp_hs_range' not in st.session_state: st.session_state.hp_hs_range = (64, 256)
+if 'hp_nl_range' not in st.session_state: st.session_state.hp_nl_range = (1, 4)
+if 'hp_dr_range' not in st.session_state: st.session_state.hp_dr_range = (0.1, 0.4)
 
 # ==============================================================================
 # --- LAYOUT STREAMLIT ---
@@ -1153,7 +1178,7 @@ with st.sidebar.expander("Modifica Soglie di Allerta (Rosso) e Attenzione (Giall
 st.sidebar.divider()
 st.sidebar.header('Menu Navigazione')
 model_ready = st.session_state.active_model is not None and st.session_state.active_config is not None
-data_ready_csv = df is not None # df ora riflette lo stato post-caricamento/errore
+data_ready_csv = df_current_csv is not None # df ora riflette lo stato post-caricamento/errore
 
 radio_options = ['Dashboard', 'Simulazione', 'Analisi Dati Storici', 'Allenamento Modello']
 requires_model = ['Simulazione']
@@ -2346,8 +2371,7 @@ elif page == 'Analisi Dati Storici':
                  st.markdown(get_table_download_link(filtered_df, download_filename_filtered), unsafe_allow_html=True)
 
 
-# --- PAGINA ALLENAMENTO MODELLO (INVARIATA nella logica principale) ---
-# ... inizio della pagina Allenamento Modello ...
+# --- PAGINA ALLENAMENTO MODELLO (MODIFICATA PER HP OPT) ---
 elif page == 'Allenamento Modello':
     st.header('🎓 Allenamento Nuovo Modello LSTM')
     if not data_ready_csv:
@@ -2356,303 +2380,303 @@ elif page == 'Allenamento Modello':
         st.success(f"Dati CSV disponibili per l'allenamento: {len(df_current_csv)} righe.")
         st.subheader('Configurazione Addestramento')
 
-        # --- Nome Modello (invariato) ---
         default_save_name = f"modello_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
         save_name_input = st.text_input("Nome base per salvare il modello (file .pth, .json, .joblib)", default_save_name, key="train_save_filename")
         save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_')
         if not save_name: save_name = "modello_default"
         if save_name != save_name_input: st.caption(f"Nome file corretto in: `{save_name}`")
 
-        # --- Selezione Feature (invariato) ---
         st.markdown("**1. Seleziona Feature Input per il Modello:**")
-        # ... (codice selezione feature) ...
-        selected_features_train = [...] # Assumi che questa lista venga popolata
+        all_global_features = st.session_state.feature_columns
+        features_present_in_csv = [f for f in all_global_features if f in df_current_csv.columns]
+        missing_from_csv = [f for f in all_global_features if f not in df_current_csv.columns]
+        if missing_from_csv:
+            st.caption(f"Nota: Le seguenti feature globali non sono nel CSV caricato e non possono essere usate: {', '.join(missing_from_csv)}")
+
+        if not features_present_in_csv:
+             st.error("Errore: Nessuna delle feature definite globalmente è presente nel file CSV caricato. Impossibile procedere.")
+             st.stop()
+
+        selected_features_train = []
+        # --- Aggiornato default per multiselect/checkboxes se `best_hp_params` esiste ---
+        # (Anche se le features non sono parte dell'ottimizzazione, manteniamo la logica di selezione)
+        default_features = features_present_in_csv # Di default seleziona tutte quelle disponibili
+
+        with st.expander(f"Seleziona Feature Input (Disponibili: {len(features_present_in_csv)})", expanded=False):
+            cols_feat_train = st.columns(4)
+            col_idx_feat = 0
+            for i, feat in enumerate(features_present_in_csv):
+                 with cols_feat_train[col_idx_feat % 4]:
+                     label_feat_train = get_station_label(feat, short=True)
+                     # Mantiene il default a True (seleziona tutto)
+                     is_checked = st.checkbox(label_feat_train, value=(feat in default_features), key=f"train_feat_check_{feat}", help=feat)
+                     if is_checked:
+                          selected_features_train.append(feat)
+                 col_idx_feat += 1
         if not selected_features_train: st.warning("Seleziona almeno una feature di input.")
         else: st.caption(f"{len(selected_features_train)} feature di input selezionate.")
 
-        # --- Selezione Target (invariato) ---
+
         st.markdown("**2. Seleziona Target Output (solo sensori di Livello tra gli input selezionati):**")
-        # ... (codice selezione target) ...
-        selected_targets_train = [...] # Assumi che questa lista venga popolata
+        selected_targets_train = []
+        hydro_level_features_options = [f for f in selected_features_train if 'Livello' in f]
+
+        if not hydro_level_features_options:
+             st.warning("Nessuna colonna 'Livello' tra le feature di input selezionate. Impossibile selezionare target.")
+        else:
+            # Usa target del modello attivo come default, altrimenti il primo livello
+            default_targets_train = []
+            if active_config and active_config.get("target_columns"):
+                 valid_active_targets = [t for t in active_config["target_columns"] if t in hydro_level_features_options]
+                 if valid_active_targets: default_targets_train = valid_active_targets
+            if not default_targets_train and hydro_level_features_options:
+                 default_targets_train = [hydro_level_features_options[0]]
+
+            cols_target_train = st.columns(min(len(hydro_level_features_options), 5))
+            for i, feat_target in enumerate(hydro_level_features_options):
+                with cols_target_train[i % len(cols_target_train)]:
+                     lbl_target = get_station_label(feat_target, short=True)
+                     is_target_checked = st.checkbox(lbl_target, value=(feat_target in default_targets_train), key=f"train_target_check_{feat_target}", help=f"Seleziona come output: {feat_target}")
+                     if is_target_checked:
+                         selected_targets_train.append(feat_target)
+
         if not selected_targets_train: st.warning("Seleziona almeno un target di output (Livello).")
         else: st.caption(f"{len(selected_targets_train)} target di output selezionati.")
 
-        # --- Parametri Modello Principali (invariato, ma useremo i valori come default) ---
+        # ===========================================================
+        # --- Sezione Parametri Principali (MODIFICATA per usare HP Opt results) ---
+        # ===========================================================
         st.markdown("**3. Imposta Parametri Modello e Addestramento Principale:**")
-
-        # Recupera i migliori parametri trovati dall'ottimizzazione (se presenti)
-        best_hp_params_found = st.session_state.get('best_hp_params', None)
-
         with st.expander("Parametri Modello e Training", expanded=True):
              c1t, c2t, c3t = st.columns(3)
 
-             # --- Recupera default standard o da modello attivo ---
-             default_iw = active_config["input_window"] if active_config else 24
-             default_ow = active_config["output_window"] if active_config else 12
-             default_hs = active_config["hidden_size"] if active_config else 128
-             default_nl = active_config["num_layers"] if active_config else 2
-             default_dr = active_config["dropout"] if active_config else 0.2
-             default_bs = active_config.get("batch_size", 32) if active_config else 32
-             default_vs = active_config.get("val_split_percent", 20) if active_config else 20
-             default_lr = active_config.get("learning_rate", 0.001) if active_config else 0.001
-             default_ep = active_config.get("epochs_run", 50) if active_config else 50
+             # Prendi i parametri migliori trovati (se ci sono), altrimenti usa i default del modello attivo o globali
+             best_hp = st.session_state.get('best_hp_params', {})
 
-             # --- Usa i parametri HP trovati come NUOVI default se disponibili ---
-             if best_hp_params_found:
-                 st.success("💡 Usando i migliori parametri trovati dall'ottimizzazione HP come default.")
-                 # Sovrascrivi i default con quelli trovati
-                 default_lr = best_hp_params_found.get('learning_rate', default_lr)
-                 default_hs = best_hp_params_found.get('hidden_size', default_hs)
-                 default_nl = best_hp_params_found.get('num_layers', default_nl)
-                 default_dr = best_hp_params_found.get('dropout', default_dr)
-                 default_bs = best_hp_params_found.get('batch_size', default_bs)
-                 # Potresti anche informare l'utente
-                 st.caption(f"(LR: {default_lr:.6f}, Hidden: {default_hs}, Layers: {default_nl}, Dropout: {default_dr:.2f}, Batch: {default_bs})")
+             # Valori di fallback (dal modello attivo o globali)
+             fallback_iw = active_config["input_window"] if active_config else 24
+             fallback_ow = active_config["output_window"] if active_config else 12
+             fallback_hs = active_config["hidden_size"] if active_config else 128
+             fallback_nl = active_config["num_layers"] if active_config else 2
+             fallback_dr = active_config["dropout"] if active_config else 0.2
+             fallback_bs = active_config.get("batch_size", 32) if active_config else 32
+             fallback_vs = active_config.get("val_split_percent", 20) if active_config else 20
+             fallback_lr = active_config.get("learning_rate", 0.001) if active_config else 0.001
+             fallback_ep = active_config.get("epochs_run", 50) if active_config else 50
 
+             # Usa i valori da best_hp se presenti, altrimenti usa i fallback
+             # Finestre NON sono ottimizzate
+             iw_t = c1t.number_input("Finestra Input (n. rilevazioni)", 6, 168, fallback_iw, 6, key="t_param_in_win")
+             ow_t = c1t.number_input("Finestra Output (n. rilevazioni)", 1, 72, fallback_ow, 1, key="t_param_out_win")
+             # Split Validazione NON è ottimizzato
+             vs_t = c1t.slider("% Dati per Validazione", 0, 50, fallback_vs, 1, key="t_param_val_split", help="0% = nessun set di validazione. Richiesto > 0 per Ottimizzazione HP.")
 
-             # --- Widget Parametri Principali (usano i default aggiornati) ---
-             iw_t = c1t.number_input("Finestra Input (n. rilevazioni)", 6, 168, default_iw, 6, key="t_param_in_win")
-             ow_t = c1t.number_input("Finestra Output (n. rilevazioni)", 1, 72, default_ow, 1, key="t_param_out_win")
-             vs_t = c1t.slider("% Dati per Validazione", 0, 50, default_vs, 1, key="t_param_val_split", help="0% = nessun set di validazione. NECESSARIO > 0 per Ottimizzazione HP.")
+             hs_t = c2t.number_input("Neuroni Nascosti (Hidden Size)", 16, 1024,
+                                     value=best_hp.get("hidden_size", fallback_hs), # Usa best_hp o fallback
+                                     step=16, key="t_param_hidden")
+             nl_t = c2t.number_input("Numero Livelli LSTM (Layers)", 1, 8,
+                                     value=best_hp.get("num_layers", fallback_nl), # Usa best_hp o fallback
+                                     step=1, key="t_param_layers")
+             dr_t = c2t.slider("Dropout", 0.0, 0.7,
+                               value=best_hp.get("dropout", fallback_dr), # Usa best_hp o fallback
+                               step=0.05, key="t_param_dropout")
 
-             hs_t = c2t.number_input("Neuroni Nascosti (Hidden Size)", 16, 1024, default_hs, 16, key="t_param_hidden")
-             nl_t = c2t.number_input("Numero Livelli LSTM (Layers)", 1, 8, default_nl, 1, key="t_param_layers")
-             dr_t = c2t.slider("Dropout", 0.0, 0.7, default_dr, 0.05, key="t_param_dropout")
-
-             lr_t = c3t.number_input("Learning Rate", 1e-5, 1e-2, default_lr, format="%.5f", step=1e-4, key="t_param_lr")
-             bs_t = c3t.select_slider("Batch Size", [8, 16, 32, 64, 128, 256], default_bs, key="t_param_batch")
-             ep_t = c3t.number_input("Numero Epoche (Training Finale)", 5, 500, default_ep, 5, key="t_param_epochs")
-
+             lr_t = c3t.number_input("Learning Rate", 1e-5, 1e-2,
+                                     value=best_hp.get("learning_rate", fallback_lr), # Usa best_hp o fallback
+                                     format="%.5f", step=1e-4, key="t_param_lr")
+             bs_options = [8, 16, 32, 64, 128, 256] # Opzioni batch size
+             bs_val = best_hp.get("batch_size", fallback_bs) # Usa best_hp o fallback
+             if bs_val not in bs_options: bs_val = fallback_bs # Assicura sia un'opzione valida
+             bs_t = c3t.select_slider("Batch Size", options=bs_options,
+                                      value=bs_val,
+                                      key="t_param_batch")
+             ep_t = c3t.number_input("Numero Epoche (Training Finale)", 5, 1000, # Aumentato max epoche finale
+                                     value=fallback_ep, # Epoche NON vengono da HP Opt (quelle erano per i trial)
+                                     step=5, key="t_param_epochs")
 
         # ===========================================================
         # --- NUOVA SEZIONE: Ottimizzazione Iperparametri (Random Search) ---
         # ===========================================================
         st.markdown("**4. Ottimizzazione Iperparametri con Random Search (Opzionale)**")
-        optimize_hp = st.checkbox("Abilita Ottimizzazione Iperparametri", key="enable_hp_opt")
+
+        # Recupera i parametri salvati se esistono (per mantenere lo stato tra rerun)
+        # if 'hp_optimize_enabled' not in st.session_state: st.session_state.hp_optimize_enabled = False # Già inizializzato sopra
+        # if 'best_hp_params' not in st.session_state: st.session_state.best_hp_params = None # Già inizializzato sopra
+
+        # Usa il valore in session_state per il checkbox
+        optimize_hp = st.checkbox("Abilita Ottimizzazione Iperparametri", value=st.session_state.hp_optimize_enabled, key="enable_hp_opt_cb")
+        st.session_state.hp_optimize_enabled = optimize_hp # Aggiorna lo stato
 
         if optimize_hp:
             # Controlla se la validazione è attiva (necessaria per l'ottimizzazione)
             if vs_t <= 0:
-                st.error("L'ottimizzazione degli iperparametri richiede una percentuale di dati per la Validazione > 0%. Imposta '% Dati per Validazione' sopra.")
-                st.stop() # Blocca l'esecuzione ulteriore di questa sezione
+                st.error("L'ottimizzazione degli iperparametri richiede una percentuale di dati per la Validazione > 0%. Imposta '% Dati per Validazione' (sopra) ad un valore > 0.")
+                # Non blocchiamo qui, ma il pulsante di avvio sarà implicitamente disabilitato se vs_t=0 causa errore in prepare_data
+            else:
+                st.info("Verranno eseguiti allenamenti brevi con parametri casuali per trovare una buona configurazione iniziale.")
+                n_trials_hp = st.number_input("Numero di Trial Random Search da Eseguire", min_value=5, max_value=200, value=st.session_state.get('hp_n_trials', 30), step=5, key="hp_n_trials_input")
+                st.session_state.hp_n_trials = n_trials_hp # Salva in sessione
+                epochs_per_trial = st.number_input("Numero Epoche per ciascun Trial HP", min_value=3, max_value=50, value=st.session_state.get('hp_epochs_per_trial', 15), step=1, key="hp_epochs_per_trial_input", help="Meno epoche per velocizzare la ricerca.")
+                st.session_state.hp_epochs_per_trial = epochs_per_trial # Salva in sessione
 
-            st.info("Verranno eseguiti allenamenti brevi con parametri casuali per trovare una buona configurazione iniziale.")
-            n_trials_hp = st.number_input("Numero di Trial Random Search da Eseguire", min_value=5, max_value=200, value=30, step=5, key="hp_n_trials")
-            epochs_per_trial = st.number_input("Numero Epoche per ciascun Trial HP", min_value=3, max_value=50, value=15, step=1, key="hp_epochs_per_trial", help="Meno epoche per velocizzare la ricerca.")
+                st.markdown("**Definisci i Range di Ricerca:**")
+                c1_hp, c2_hp, c3_hp = st.columns(3)
 
-            st.markdown("**Definisci i Range di Ricerca:**")
-            c1_hp, c2_hp, c3_hp = st.columns(3)
+                with c1_hp:
+                    lr_range_default = st.session_state.get('hp_lr_range', (1e-4, 5e-3))
+                    lr_range_hp = st.slider("Range Learning Rate", 1e-5, 1e-2, lr_range_default, format="%.5f", key="hp_lr_range_slider")
+                    st.session_state.hp_lr_range = lr_range_hp
 
-            with c1_hp:
-                # Range per Learning Rate (logaritmico è spesso meglio, ma slider lineare è più semplice UI)
-                lr_range_hp = st.slider("Range Learning Rate", 1e-5, 1e-2, (1e-4, 5e-3), format="%.5f", key="hp_lr_range")
-                # Range per Batch Size
-                bs_choices_hp = [16, 32, 64, 128]
-                bs_range_hp = st.select_slider("Range Batch Size (Potenze di 2)", options=bs_choices_hp, value=(32, 128), key="hp_bs_range")
-                # Trova indici per le scelte
-                bs_indices = [bs_choices_hp.index(b) for b in bs_choices_hp if b >= bs_range_hp[0] and b <= bs_range_hp[1]]
-                possible_batch_sizes = [bs_choices_hp[i] for i in bs_indices] if bs_indices else [bs_range_hp[0]]
+                    bs_choices_hp = [16, 32, 64, 128]
+                    bs_range_default = st.session_state.get('hp_bs_range', (32, 128))
+                    # Assicurati che i default siano nella lista choices
+                    bs_range_default = (max(bs_choices_hp[0], bs_range_default[0]), min(bs_choices_hp[-1], bs_range_default[1]))
+                    bs_range_hp = st.select_slider("Range Batch Size", options=bs_choices_hp, value=bs_range_default, key="hp_bs_range_slider")
+                    st.session_state.hp_bs_range = bs_range_hp
+                    # Calcola le opzioni possibili basate sul range selezionato
+                    bs_indices = [i for i, b in enumerate(bs_choices_hp) if b >= bs_range_hp[0] and b <= bs_range_hp[1]]
+                    possible_batch_sizes = [bs_choices_hp[i] for i in bs_indices] if bs_indices else [bs_range_hp[0]]
 
+                with c2_hp:
+                    hs_range_default = st.session_state.get('hp_hs_range', (64, 256))
+                    hs_range_hp = st.slider("Range Hidden Size", 32, 512, hs_range_default, step=16, key="hp_hs_range_slider")
+                    st.session_state.hp_hs_range = hs_range_hp
 
-            with c2_hp:
-                # Range per Hidden Size
-                hs_range_hp = st.slider("Range Hidden Size", 32, 512, (64, 256), step=16, key="hp_hs_range")
-                # Range per Num Layers
-                nl_range_hp = st.slider("Range Numero Layers", 1, 6, (1, 4), step=1, key="hp_nl_range")
+                    nl_range_default = st.session_state.get('hp_nl_range', (1, 4))
+                    nl_range_hp = st.slider("Range Numero Layers", 1, 6, nl_range_default, step=1, key="hp_nl_range_slider")
+                    st.session_state.hp_nl_range = nl_range_hp
 
-            with c3_hp:
-                 # Range per Dropout
-                 dr_range_hp = st.slider("Range Dropout", 0.0, 0.6, (0.1, 0.4), step=0.05, key="hp_dr_range")
+                with c3_hp:
+                    dr_range_default = st.session_state.get('hp_dr_range', (0.1, 0.4))
+                    dr_range_hp = st.slider("Range Dropout", 0.0, 0.6, dr_range_default, step=0.05, key="hp_dr_range_slider")
+                    st.session_state.hp_dr_range = dr_range_hp
 
+                # --- Pulsante per AVVIARE SOLO l'ottimizzazione ---
+                # Disabilita se vs_t è 0 (perché l'ottimizzazione fallirebbe)
+                start_optimization = st.button("🚀 Avvia Ottimizzazione HP", key="hp_opt_start_button", disabled=(vs_t <= 0))
 
-            # --- Pulsante per AVVIARE SOLO l'ottimizzazione ---
-            start_optimization = st.button("🚀 Avvia Ottimizzazione HP", key="hp_opt_start_button")
+                if start_optimization:
+                    # Validazione input prima di procedere
+                    if not selected_features_train: st.error("Seleziona almeno una feature di input (Sezione 1)."); st.stop()
+                    if not selected_targets_train: st.error("Seleziona almeno un target di output (Sezione 2)."); st.stop()
+                    if vs_t <= 0: st.error("Imposta '% Dati per Validazione' > 0 (Sezione 3)."); st.stop() # Doppio controllo
 
-            if start_optimization:
-                if not selected_features_train or not selected_targets_train:
-                     st.error("Seleziona prima le Feature e i Target per poter preparare i dati.")
-                else:
-                    # --- Preparazione Dati (viene fatta QUI prima di iniziare i trial) ---
-                    # Usiamo i parametri finestra (iw_t, ow_t) e split (vs_t) definiti nella sezione 3
+                    data_prepared_ok = False
+                    X_tr_hp, y_tr_hp, X_v_hp, y_v_hp = None, None, None, None
+                    input_size_hp, output_size_hp = None, None
+
+                    # --- Preparazione Dati (una sola volta) ---
                     st.info(f"Preparazione dati per ottimizzazione HP (Finestre: In={iw_t}, Out={ow_t}, Val={vs_t}%)...")
                     with st.spinner('Preparazione dati...'):
-                        cols_needed_hp = selected_features_train + selected_targets_train
-                        missing_in_df_final_hp = [c for c in cols_needed_hp if c not in df_current_csv.columns]
-                                    # --- Pulsante per AVVIARE SOLO l'ottimizzazione ---
-            start_optimization = st.button("🚀 Avvia Ottimizzazione HP", key="hp_opt_start_button")
-
-            if start_optimization:
-                # Controllo se feature e target sono selezionati
-                if not selected_features_train or not selected_targets_train:
-                     st.error("Seleziona prima le Feature e i Target per poter preparare i dati.")
-                else:
-                    # --- Preparazione Dati (viene fatta QUI prima di iniziare i trial) ---
-                    st.info(f"Preparazione dati per ottimizzazione HP (Finestre: In={iw_t}, Out={ow_t}, Val={vs_t}%)...")
-                    with st.spinner(            # --- Pulsante per AVVIARE SOLO l'ottimizzazione ---
-            start_optimization = st.button("🚀 Avvia Ottimizzazione HP", key="hp_opt_start_button")
-
-            if start_optimization:
-                # Controllo se feature e target sono selezionati
-                if not selected_features_train or not selected_targets_train:
-                     st.error("Seleziona prima le Feature e i Target per poter preparare i dati.")
-                else:
-                    # --- Preparazione Dati (viene fatta QUI prima di iniziare i trial) ---
-                    st.info(f"Preparazione dati per ottimizzazione HP (Finestre: In={iw_t}, Out={ow_t}, Val={vs_t}%)...")
-                    with st.spinner('Preparazione dati...'):
-                        # Definisci le colonne necessarie (usando set per sicurezza contro duplicati)
                         cols_needed_hp = list(set(selected_features_train + selected_targets_train))
-
-                        # --- !!! CORREZIONE QUI !!! ---
-                        # Calcola quali colonne mancano nel CSV PRIMA di usare la variabile
                         missing_in_df_final_hp = [c for c in cols_needed_hp if c not in df_current_csv.columns]
-                        # --- !!! FINE CORREZIONE !!! ---
 
-                        # Ora puoi controllare la variabile 'missing_in_df_final_hp'
-                        if missing_in_df_final_hp:
-                             # L'errore NameError avveniva qui perché la variabile non era definita
-                             st.error(f"Errore Critico HP: Le colonne selezionate {', '.join(missing_in_df_final_hp)} non sono nel CSV. Impossibile procedere.")
-                             st.stop() # Interrompe l'esecuzione se mancano colonne
-
-                        # Se il controllo sopra passa, procedi con la preparazione dei dati
-                        X_tr_hp, y_tr_hp, X_v_hp, y_v_hp, sc_f_hp, sc_t_hp = prepare_training_data(
-                              df_current_csv.copy(),
-                              selected_features_train, # Usa le feature selezionate
-                              selected_targets_train,  # Usa i target selezionati
-                              iw_t, ow_t, vs_t # Usa i valori dai widget principali
-                          )
-
-                        # Controlli successivi sul risultato di prepare_training_data
-                        if X_tr_hp is None or y_tr_hp is None or sc_f_hp is None or sc_t_hp is None or X_v_hp is None or y_v_hp is None:
-                           st.error("Preparazione dati per HP fallita. Controlla i log e i parametri (finestre vs lunghezza dati).")
-                           st.stop()
-                        if X_v_hp.size == 0:
-                            st.error(f"Errore: % Validazione è {vs_t}% ma il set di validazione risulta vuoto dopo la preparazione. Dataset troppo piccolo o split non valido?")
-                            st.stop()
-
-                        st.success(f"Dati pronti per HP: {len(X_tr_hp)} train, {len(X_v_hp)} validation.")
-                        input_size_hp = X_tr_hp.shape[2]
-                        output_size_hp = y_tr_hp.shape[2]
-
-                    # --- Inizio Loop Random Search (il resto del codice rimane uguale) ---
-                    st.info(f"Avvio Ottimizzazione Random Search con {n_trials_hp} trials...")
-                    # ... (resto del loop for i in range(n_trials_hp):) ...):
-                        # Definisci le colonne necessarie (usando set per sicurezza contro duplicati)
-                        cols_needed_hp = list(set(selected_features_train + selected_targets_train))
-                        
                         if missing_in_df_final_hp:
                              st.error(f"Errore Critico HP: Le colonne selezionate {', '.join(missing_in_df_final_hp)} non sono nel CSV. Impossibile procedere.")
                              st.stop()
 
-                        X_tr_hp, y_tr_hp, X_v_hp, y_v_hp, sc_f_hp, sc_t_hp = prepare_training_data(
+                        temp_X_tr, temp_y_tr, temp_X_v, temp_y_v, sc_f_hp, sc_t_hp = prepare_training_data(
                               df_current_csv.copy(),
                               selected_features_train,
                               selected_targets_train,
-                              iw_t, ow_t, vs_t # Usa i valori dai widget principali
+                              iw_t, ow_t, vs_t
                           )
-                        if X_tr_hp is None or y_tr_hp is None or sc_f_hp is None or sc_t_hp is None or X_v_hp is None or y_v_hp is None:
+
+                        if temp_X_tr is not None and temp_y_tr is not None and temp_X_v is not None and temp_y_v is not None and sc_f_hp is not None and sc_t_hp is not None:
+                            # Verifica aggiuntiva se X_v è vuoto nonostante vs_t > 0
+                            if X_v.shape[0] == 0:
+                                st.error(f"Errore Preparazione Dati HP: % Validazione è {vs_t}% ma il set di validazione risulta vuoto (0 sequenze). Dataset troppo piccolo o split non valido?")
+                                st.stop()
+                            else:
+                                X_tr_hp, y_tr_hp, X_v_hp, y_v_hp = temp_X_tr, temp_y_tr, temp_X_v, temp_y_v
+                                input_size_hp = X_tr_hp.shape[2]
+                                output_size_hp = y_tr_hp.shape[2]
+                                data_prepared_ok = True
+                                st.success(f"Dati pronti per HP: {len(X_tr_hp)} train, {len(X_v_hp)} validation.")
+                        else:
                            st.error("Preparazione dati per HP fallita. Controlla i log e i parametri (finestre vs lunghezza dati).")
                            st.stop()
-                        if X_v_hp.size == 0: # Doppio controllo se vs_t > 0 ma split fallisce
-                            st.error(f"Errore: % Validazione è {vs_t}% ma il set di validazione risulta vuoto. Dataset troppo piccolo o split non valido.")
-                            st.stop()
 
-                        st.success(f"Dati pronti per HP: {len(X_tr_hp)} train, {len(X_v_hp)} validation.")
-                        input_size_hp = X_tr_hp.shape[2]
-                        output_size_hp = y_tr_hp.shape[2]
+                    # --- Procedi solo se i dati sono pronti ---
+                    if data_prepared_ok:
+                        st.info(f"Avvio Ottimizzazione Random Search con {n_trials_hp} trials...")
+                        progress_bar_opt = st.progress(0)
+                        results_hp_list = []
+                        trial_status_placeholder = st.empty() # Placeholder per status trial
 
+                        # --- Loop Random Search ---
+                        for i in range(n_trials_hp):
+                            # 1. Campiona parametri
+                            current_lr = random.uniform(lr_range_hp[0], lr_range_hp[1])
+                            current_hidden = random.randint(hs_range_hp[0], hs_range_hp[1])
+                            current_hidden = round(current_hidden / 16) * 16 # Arrotonda a multipli di 16
+                            current_layers = random.randint(nl_range_hp[0], nl_range_hp[1])
+                            current_dropout = random.uniform(dr_range_hp[0], dr_range_hp[1])
+                            current_batch_size = random.choice(possible_batch_sizes)
 
-                    st.info(f"Avvio Ottimizzazione Random Search con {n_trials_hp} trials...")
-                    progress_bar_opt = st.progress(0)
-                    results_hp_list = [] # Lista per salvare tuple (params_dict, metric_float)
+                            current_params = {
+                                "learning_rate": current_lr, "hidden_size": current_hidden,
+                                "num_layers": current_layers, "dropout": current_dropout,
+                                "batch_size": current_batch_size, #"epochs": epochs_per_trial # Non salvarlo qui, passato a train_model
+                            }
 
-                    # --- Loop Random Search ---
-                    for i in range(n_trials_hp):
-                        # 1. Campiona parametri casualmente
-                        current_lr = random.uniform(lr_range_hp[0], lr_range_hp[1])
-                        current_hidden = random.randint(hs_range_hp[0], hs_range_hp[1])
-                        # Arrotonda hidden size al multiplo di step (16) più vicino se necessario
-                        current_hidden = round(current_hidden / 16) * 16
-                        current_layers = random.randint(nl_range_hp[0], nl_range_hp[1])
-                        current_dropout = random.uniform(dr_range_hp[0], dr_range_hp[1])
-                        current_batch_size = random.choice(possible_batch_sizes)
+                            trial_status_placeholder.write(f"⏳ Trial {i+1}/{n_trials_hp}: Params = LR:{current_lr:.5f}, Hidden:{current_hidden}, Layers:{current_layers}, Dropout:{current_dropout:.3f}, Batch:{current_batch_size}")
 
-                        current_params = {
-                            "learning_rate": current_lr,
-                            "hidden_size": current_hidden,
-                            "num_layers": current_layers,
-                            "dropout": current_dropout,
-                            "batch_size": current_batch_size,
-                            "epochs": epochs_per_trial # Epoche per questo trial
-                        }
+                            try:
+                                # 2. Chiama train_model
+                                best_val_loss_trial = train_model(
+                                             X_tr_hp, y_tr_hp, X_v_hp, y_v_hp,
+                                             input_size=input_size_hp, output_size=output_size_hp, output_window=ow_t,
+                                             hidden_size=current_params["hidden_size"], num_layers=current_params["num_layers"],
+                                             epochs=epochs_per_trial, # Usa epochs per trial qui
+                                             batch_size=current_params["batch_size"],
+                                             learning_rate=current_params["learning_rate"], dropout=current_params["dropout"],
+                                             is_optimization_trial=True, opt_trial_num=i+1, opt_total_trials=n_trials_hp
+                                           )
 
-                        trial_status_placeholder = st.empty()
-                        trial_status_placeholder.write(f"Trial {i+1}/{n_trials_hp}: Params = LR:{current_lr:.6f}, Hidden:{current_hidden}, Layers:{current_layers}, Dropout:{current_dropout:.3f}, Batch:{current_batch_size}")
+                                if best_val_loss_trial != float('inf'): # Controlla se è finita e non inf
+                                    results_hp_list.append((current_params, float(best_val_loss_trial)))
+                                    trial_status_placeholder.write(f"✅ Trial {i+1}/{n_trials_hp}: Completato. Best Val Loss = {best_val_loss_trial:.6f}")
+                                else:
+                                    trial_status_placeholder.write(f"⚠️ Trial {i+1}/{n_trials_hp}: Fallito o Val Loss non valida (inf/NaN).")
 
-                        try:
-                            # 2. Chiama train_model in modalità ottimizzazione
-                            best_val_loss_trial = train_model(
-                                         X_tr_hp, y_tr_hp, X_v_hp, y_v_hp, # Dati preparati
-                                         input_size=input_size_hp,
-                                         output_size=output_size_hp,
-                                         output_window=ow_t, # Dalla config principale
-                                         # Iperparametri campionati
-                                         hidden_size=current_params["hidden_size"],
-                                         num_layers=current_params["num_layers"],
-                                         epochs=current_params["epochs"],
-                                         batch_size=current_params["batch_size"],
-                                         learning_rate=current_params["learning_rate"],
-                                         dropout=current_params["dropout"],
-                                         # Flag e info per ottimizzazione
-                                         is_optimization_trial=True,
-                                         opt_trial_num=i+1,
-                                         opt_total_trials=n_trials_hp
-                                       )
+                            except Exception as e_opt_trial:
+                                 st.warning(f"Trial HP {i+1} fallito con errore: {e_opt_trial}")
+                                 # Non aggiungere a results_hp_list
+                                 trial_status_placeholder.write(f"❌ Trial {i+1}/{n_trials_hp}: Errore durante l'esecuzione.")
+                                 st.error(traceback.format_exc()) # Logga errore completo
 
-                            if best_val_loss_trial is not None and np.isfinite(best_val_loss_trial):
-                                results_hp_list.append((current_params, float(best_val_loss_trial)))
-                                trial_status_placeholder.write(f"Trial {i+1}/{n_trials_hp}: Completato. Best Val Loss = {best_val_loss_trial:.6f}")
+                            progress_bar_opt.progress((i + 1) / n_trials_hp)
+                            time.sleep(0.1) # Pausa UI
+
+                        # --- Fine Loop ---
+                        progress_bar_opt.empty()
+                        trial_status_placeholder.empty()
+
+                        # 3. Trova e mostra i migliori risultati
+                        if results_hp_list:
+                            valid_results = [r for r in results_hp_list if np.isfinite(r[1])]
+                            if valid_results:
+                                valid_results.sort(key=lambda x: x[1])
+                                best_params_found_hp, best_metric_found_hp = valid_results[0]
+
+                                st.success(f"🏁 Ottimizzazione Completata! Miglior risultato (Validation Loss): {best_metric_found_hp:.6f}")
+                                st.write("Migliori Parametri Trovati:")
+                                st.json(best_params_found_hp)
+
+                                # Salva i migliori parametri in session state
+                                st.session_state['best_hp_params'] = best_params_found_hp
+
+                                st.info("💡 I campi dei parametri principali (Sezione 3) sono stati aggiornati con i valori trovati. Puoi ora avviare l'allenamento finale o modificarli ulteriormente.")
+                                # Bottone per forzare rerun e vedere i widget aggiornati
+                                st.button("Applica e Ricarica Parametri", key="force_reload_params_button", on_click=st.rerun)
                             else:
-                                trial_status_placeholder.write(f"Trial {i+1}/{n_trials_hp}: Fallito o metrica non valida (Loss: {best_val_loss_trial}).")
-
-                        except Exception as e_opt_trial:
-                             st.warning(f"Trial HP {i+1} fallito con errore: {e_opt_trial}")
-                             # Puoi opzionalmente stampare il traceback per debug
-                             # st.error(traceback.format_exc())
-                             # Non aggiungere a results_hp_list
-
-                        progress_bar_opt.progress((i + 1) / n_trials_hp)
-                        time.sleep(0.1) # Piccola pausa per respiro UI
-
-                    # --- Fine Loop ---
-                    progress_bar_opt.empty() # Rimuovi barra progresso
-                    trial_status_placeholder.empty() # Rimuovi ultimo status trial
-
-                    # 3. Trova e mostra i migliori risultati
-                    if results_hp_list:
-                        # Filtra eventuali 'inf' rimasti (anche se non dovrebbero esserci con il check isfinite)
-                        valid_results = [r for r in results_hp_list if np.isfinite(r[1])]
-                        if valid_results:
-                            valid_results.sort(key=lambda x: x[1]) # Ordina per metrica (loss minore è meglio)
-                            best_params_found_hp, best_metric_found_hp = valid_results[0]
-
-                            st.success(f"✅ Ottimizzazione Completata! Miglior risultato (Validation Loss): {best_metric_found_hp:.6f}")
-                            st.write("Migliori Parametri Trovati:")
-                            st.json(best_params_found_hp)
-
-                            # Salva i migliori parametri in session state per pre-compilare i campi principali
-                            st.session_state['best_hp_params'] = best_params_found_hp
-
-                            st.info("I campi dei parametri principali (Sezione 3) sono stati aggiornati con questi valori. Puoi ora avviare l'allenamento finale.")
-                            # Forza un rerun per aggiornare i widget nella sezione 3
-                            st.button("Ok, Ricarica Parametri", key="force_reload_params", on_click=st.rerun)
-
+                                st.error("Ottimizzazione completata, ma nessun trial ha prodotto una metrica valida (tutti inf/NaN?).")
+                                if 'best_hp_params' in st.session_state: del st.session_state['best_hp_params']
                         else:
-                            st.error("Ottimizzazione completata, ma nessun trial ha prodotto una metrica valida.")
-                            if 'best_hp_params' in st.session_state: del st.session_state['best_hp_params'] # Rimuovi vecchi risultati
-                    else:
-                        st.error("Ottimizzazione fallita o nessun trial completato.")
-                        if 'best_hp_params' in st.session_state: del st.session_state['best_hp_params'] # Rimuovi vecchi risultati
-
+                            st.error("Ottimizzazione fallita o nessun trial completato con successo.")
+                            if 'best_hp_params' in st.session_state: del st.session_state['best_hp_params']
+        # --- Fine del blocco if optimize_hp: ---
 
         # ===========================================================
         # --- Fine Sezione Ottimizzazione HP ---
@@ -2661,7 +2685,8 @@ elif page == 'Allenamento Modello':
         st.divider() # Separatore prima del training finale
 
         # --- Avvio Addestramento Principale (Codice Esistente, ma USA i parametri dai widget aggiornati) ---
-        st.markdown("**5. Avvia Addestramento Principale:**")
+        st.markdown("**5. Avvia Addestramento Principale:**") # *** CORRETTO NUMERO SEZIONE ***
+
         valid_name = bool(save_name)
         valid_features = bool(selected_features_train)
         valid_targets = bool(selected_targets_train)
@@ -2674,54 +2699,47 @@ elif page == 'Allenamento Modello':
         train_button = st.button("▶️ Addestra Nuovo Modello (Finale)", type="primary", disabled=not ready_to_train, key="train_run_button")
 
         if train_button and ready_to_train:
-             st.info(f"Avvio addestramento FINALE per il modello '{save_name}'...")
-             # --- Preparazione Dati (Di nuovo? O riutilizzare se i parametri non sono cambiati?) ---
-             # Per sicurezza, riprepariamo i dati qui usando i parametri FINALI dai widget (iw_t, ow_t, vs_t)
-             # Questo gestisce il caso in cui l'utente modifica le finestre DOPO l'ottimizzazione HP.
+             st.info(f"Avvio addestramento finale per il modello '{save_name}'...")
+             # Usa i valori attuali dei widget (iw_t, ow_t, vs_t, etc.)
              with st.spinner('Preparazione dati per training finale...'):
-                 # ... (codice prepare_training_data identico a quello dentro l'if start_optimization) ...
-                 st.info(f"Preparazione dati per training finale (Finestre: In={iw_t}, Out={ow_t}, Val={vs_t}%)...")
-                 cols_needed_final = selected_features_train + selected_targets_train
-                 missing_in_df_final = [c for c in cols_needed_final if c not in df_current_csv.columns]
-                 if missing_in_df_final:
-                      st.error(f"Errore Critico Finale: Le colonne selezionate {', '.join(missing_in_df_final)} non sono nel CSV. Impossibile procedere.")
-                      st.stop()
+                  cols_needed = selected_features_train + selected_targets_train
+                  missing_in_df_final = [c for c in cols_needed if c not in df_current_csv.columns]
+                  if missing_in_df_final:
+                       st.error(f"Errore Critico: Le colonne selezionate {', '.join(missing_in_df_final)} non sono state trovate nel DataFrame CSV finale. Impossibile procedere.")
+                       st.stop()
 
-                 X_tr, y_tr, X_v, y_v, sc_f_tr, sc_t_tr = prepare_training_data(
+                  X_tr, y_tr, X_v, y_v, sc_f_tr, sc_t_tr = prepare_training_data(
                       df_current_csv.copy(),
-                      selected_features_train,
-                      selected_targets_train,
-                      iw_t, ow_t, vs_t # Usa i valori dai widget principali FINALI
+                      selected_features_train, # Usa le feature selezionate
+                      selected_targets_train, # Usa i target selezionati
+                      iw_t, # Usa valore widget finestra input
+                      ow_t, # Usa valore widget finestra output
+                      vs_t  # Usa valore widget split validazione
                   )
-                 if X_tr is None or y_tr is None or sc_f_tr is None or sc_t_tr is None:
-                      st.error("Preparazione dati finale fallita. Controlla i log e i parametri.")
+                  if X_tr is None or y_tr is None or sc_f_tr is None or sc_t_tr is None:
+                       st.error("Preparazione dati per training finale fallita. Controlla i log e i parametri.")
+                       st.stop()
+                  # Controllo se validation è vuoto ma dovrebbe esserci
+                  val_set_size = 0
+                  if X_v is not None: val_set_size = len(X_v)
+                  if vs_t > 0 and val_set_size == 0:
+                      st.error(f"Errore Preparazione Dati Finale: % Validazione è {vs_t}% ma il set di validazione risulta vuoto (0 sequenze). Dataset troppo piccolo?")
                       st.stop()
-                 # Validazione non è strettamente necessaria qui se vs_t=0, ma il grafico loss non mostrerà val_loss
-                 val_set_size = len(X_v) if X_v is not None and X_v.size > 0 else 0
-                 st.success(f"Dati pronti per training finale: {len(X_tr)} train, {val_set_size} validation.")
-                 input_size_train = X_tr.shape[2]
-                 output_size_train = y_tr.shape[2]
+                  st.success(f"Dati pronti per training finale: {len(X_tr)} train, {val_set_size} validation.")
 
              st.subheader("⏳ Addestramento Finale in corso...")
-             trained_model_final = None
+             input_size_train = len(selected_features_train)
+             output_size_train = len(selected_targets_train)
+             trained_model = None
              train_start_time = time.time()
              try:
-                 # --- Chiamata a train_model per il training FINALE ---
-                 # Usa i parametri FINALI dai widget (lr_t, hs_t, nl_t, dr_t, bs_t, ep_t)
-                 trained_model_final, train_losses_final, val_losses_final = train_model(
-                     X_tr, y_tr, X_v, y_v, # Dati preparati per il finale
-                     input_size=input_size_train,
-                     output_size=output_size_train,
-                     output_window=ow_t, # Dalla config finale
-                     # Iperparametri dai widget finali
-                     hidden_size=hs_t,
-                     num_layers=nl_t,
-                     epochs=ep_t, # Epoche finali
-                     batch_size=bs_t,
-                     learning_rate=lr_t,
-                     dropout=dr_t,
-                     # Flag = False per training normale
-                     is_optimization_trial=False
+                 # Chiama train_model in modalità NON ottimizzazione (default)
+                 # Usa i parametri dai widget (hs_t, nl_t, ep_t, bs_t, lr_t, dr_t)
+                 trained_model, train_losses, val_losses = train_model(
+                     X_tr, y_tr, X_v, y_v,
+                     input_size_train, output_size_train, ow_t,
+                     hs_t, nl_t, ep_t, bs_t, lr_t, dr_t,
+                     is_optimization_trial=False # Esplicito per chiarezza
                  )
                  train_end_time = time.time()
                  st.info(f"Tempo di addestramento finale: {train_end_time - train_start_time:.2f} secondi.")
@@ -2729,41 +2747,83 @@ elif page == 'Allenamento Modello':
              except Exception as e_train_run:
                  st.error(f"Errore durante l'addestramento finale: {e_train_run}")
                  st.error(traceback.format_exc())
-                 trained_model_final = None
+                 trained_model = None
 
-             # --- Salvataggio Risultati (Codice Esistente) ---
-             if trained_model_final:
+             if trained_model:
                  st.success("Addestramento finale completato con successo!")
                  st.subheader("💾 Salvataggio Risultati Modello")
-                 # ... (codice di salvataggio .pth, .json, .joblib invariato) ...
-                 # Assicurati che il dizionario config_save usi i parametri finali (iw_t, ow_t, hs_t, nl_t, etc.)
+                 os.makedirs(MODELS_DIR, exist_ok=True)
+                 base_path = os.path.join(MODELS_DIR, save_name)
+                 m_path = f"{base_path}.pth"
+                 c_path = f"{base_path}.json"
+                 sf_path = f"{base_path}_features.joblib"
+                 st_path = f"{base_path}_targets.joblib"
+
+                 final_val_loss = None
+                 if val_losses and vs_t > 0:
+                      valid_val_losses = [v for v in val_losses if v is not None and np.isfinite(v)]
+                      if valid_val_losses: final_val_loss = min(valid_val_losses)
+
+                 # Prepara config da salvare, includendo info HP Opt
                  config_save = {
                      "input_window": iw_t, "output_window": ow_t, "hidden_size": hs_t,
                      "num_layers": nl_t, "dropout": dr_t,
                      "feature_columns": selected_features_train,
                      "target_columns": selected_targets_train,
                      "training_date": datetime.now(italy_tz).isoformat(),
-                     # Recupera la validation loss finale se disponibile
-                     "final_val_loss": min([v for v in val_losses_final if v is not None and np.isfinite(v)]) if any(v is not None and np.isfinite(v) for v in val_losses_final) else 'N/A',
+                     "final_val_loss": final_val_loss if final_val_loss is not None else 'N/A',
                      "epochs_run": ep_t, "batch_size": bs_t, "val_split_percent": vs_t,
                      "learning_rate": lr_t,
                      "display_name": save_name,
                      "source_data_info": data_source_info,
-                     # Aggiungi info se l'HP opt è stato usato
-                     "hp_optimization_used": optimize_hp,
-                     "best_hp_params_if_used": best_hp_params_found if optimize_hp and best_hp_params_found else None
+                     # --- NUOVO: Info Ottimizzazione HP ---
+                     "hp_optimization_enabled": st.session_state.get('hp_optimize_enabled', False),
+                     "hp_optimization_best_params_found": st.session_state.get('best_hp_params', None) if st.session_state.get('hp_optimize_enabled', False) else None,
+                     "hp_optimization_num_trials": st.session_state.get('hp_n_trials') if st.session_state.get('hp_optimize_enabled', False) else None,
+                     "hp_optimization_epochs_per_trial": st.session_state.get('hp_epochs_per_trial') if st.session_state.get('hp_optimize_enabled', False) else None,
+                     # ------------------------------------
                  }
-                 # ... (salvataggio file con torch.save, json.dump, joblib.dump) ...
-                 # ... (link download file) ...
-                 # ... (pulsante ricarica app) ...
 
-             elif not train_button: # Caso in cui il bottone non è stato premuto (nessuna azione)
-                 pass
-             else: # Caso in cui training è fallito
+                 try:
+                     torch.save(trained_model.state_dict(), m_path)
+                     with open(c_path, 'w', encoding='utf-8') as f:
+                         json.dump(config_save, f, indent=4, ensure_ascii=False)
+                     joblib.dump(sc_f_tr, sf_path)
+                     joblib.dump(sc_t_tr, st_path)
+
+                     st.success(f"Modello '{save_name}' e file associati salvati in '{MODELS_DIR}/'")
+                     st.subheader("⬇️ Download File Modello Addestrato")
+                     col_dl1, col_dl2, col_dl3, col_dl4 = st.columns(4)
+                     with col_dl1: st.markdown(get_download_link_for_file(m_path, "Modello (.pth)"), unsafe_allow_html=True)
+                     with col_dl2: st.markdown(get_download_link_for_file(c_path, "Config (.json)"), unsafe_allow_html=True)
+                     with col_dl3: st.markdown(get_download_link_for_file(sf_path, "Scaler Feat (.joblib)"), unsafe_allow_html=True)
+                     with col_dl4: st.markdown(get_download_link_for_file(st_path, "Scaler Targ (.joblib)"), unsafe_allow_html=True)
+
+                     st.info("Dopo il download, potresti voler ricaricare l'app per vedere il nuovo modello nella lista.")
+                     if st.button("Pulisci Cache Modelli e Ricarica App", key="train_reload_app"):
+                         find_available_models.clear() # Pulisce cache modelli
+                         # Resetta stato attivo per forzare ricaricamento
+                         st.session_state.pop('active_model_name', None)
+                         st.session_state.pop('active_config', None)
+                         st.session_state.pop('active_model', None)
+                         st.session_state.pop('active_device', None)
+                         st.session_state.pop('active_scaler_features', None)
+                         st.session_state.pop('active_scaler_targets', None)
+                         # Resetta anche HP params per evitare che influenzino il prossimo training se non si riesegue HP Opt
+                         st.session_state.pop('best_hp_params', None)
+                         st.session_state.hp_optimize_enabled = False # Disabilita checkbox HP opt
+                         st.success("Cache modelli pulita. Ricaricamento...")
+                         time.sleep(1)
+                         st.rerun()
+
+                 except Exception as e_save_files:
+                     st.error(f"Errore durante il salvataggio dei file del modello: {e_save_files}")
+                     st.error(traceback.format_exc())
+
+             elif not train_button:
+                 pass # L'utente non ha cliccato il bottone
+             else: # train_button era True ma trained_model è None
                  st.error("Addestramento finale fallito o interrotto. Impossibile salvare il modello.")
-
-
-# ... (codice footer) ...
 
 
 # --- Footer (invariato) ---
