@@ -2837,8 +2837,8 @@ elif page == 'Allenamento Modello':
         if not selected_targets_train: st.warning("Seleziona almeno un target di output (Livello).")
         else: st.caption(f"{len(selected_targets_train)} target di output selezionati.")
 
-        # ===========================================================
-        # --- Sezione Parametri Principali (MODIFICATA per usare HP Opt results) ---
+                # ===========================================================
+        # --- Sezione Parametri Principali (MODIFICATA per usare HP Opt results e robustezza) ---
         # ===========================================================
         st.markdown("**3. Imposta Parametri Modello e Addestramento Principale:**")
         with st.expander("Parametri Modello e Training", expanded=True):
@@ -2847,48 +2847,89 @@ elif page == 'Allenamento Modello':
              # Prendi i parametri migliori trovati (se ci sono), altrimenti usa i default del modello attivo o globali
              best_hp = st.session_state.get('best_hp_params', {})
 
-             # Valori di fallback (dal modello attivo o globali)
-             fallback_iw = active_config.get("input_window", 24) if active_config else 24
-             fallback_ow = active_config.get("output_window", 12) if active_config else 12
-             fallback_hs = active_config.get("hidden_size", 128) if active_config else 128
-             fallback_nl = active_config.get("num_layers", 2) if active_config else 2
-             fallback_dr = active_config.get("dropout", 0.2) if active_config else 0.2
-             fallback_bs = active_config.get("batch_size", 32) if active_config else 32
-             fallback_vs = active_config.get("val_split_percent", 20) if active_config else 20
-             fallback_lr = active_config.get("learning_rate", 0.001) if active_config else 0.001
-             fallback_ep = 50 # Default epoche training finale (non prese da modello attivo o HP opt)
+             # --- Funzione helper per recupero robusto dei valori ---
+             def get_safe_param(param_name, hp_results, active_cfg, default_value, target_type=int):
+                 # 1. Prova da HP results
+                 value_raw = hp_results.get(param_name)
+                 # 2. Se non da HP, prova da config attivo
+                 if value_raw is None and active_cfg:
+                     value_raw = active_cfg.get(param_name)
+                 # 3. Se ancora None, usa il default globale
+                 if value_raw is None:
+                     value_raw = default_value
 
-             # --- Widget Parametri ---
-             # Finestre NON sono ottimizzate
-             iw_t = c1t.number_input("Finestra Input (n. rilevazioni)", 6, 168, fallback_iw, 6, key="t_param_in_win")
-             ow_t = c1t.number_input("Finestra Output (n. rilevazioni)", 1, 72, fallback_ow, 1, key="t_param_out_win")
-             # Split Validazione NON è ottimizzato, MA è importante per HP opt
-             vs_t = c1t.slider("% Dati per Validazione", 0, 50, fallback_vs, 1, key="t_param_val_split", help="0% = nessun set di validazione. Richiesto > 0 per Ottimizzazione HP.")
+                 # 4. Tenta la conversione al tipo target
+                 try:
+                     if target_type == int:
+                         # Gestisci float prima di int
+                         return int(float(value_raw))
+                     elif target_type == float:
+                         return float(value_raw)
+                     else: # Per tipi come stringhe o bool (non usati qui)
+                         return target_type(value_raw)
+                 except (ValueError, TypeError, Exception) as e:
+                     st.warning(f"Valore non valido '{value_raw}' per '{param_name}'. Uso default '{default_value}'. Errore: {e}")
+                     # Tenta conversione del default (dovrebbe funzionare)
+                     try:
+                          return target_type(default_value)
+                     except:
+                          # Fallback estremo se anche il default è problematico
+                          if target_type == int: return 0
+                          if target_type == float: return 0.0
+                          return None # O solleva errore
 
-             # Usa i valori da best_hp se presenti, altrimenti usa i fallback
+             # --- Definizione Fallback Globali ---
+             fallback_iw_global = 24
+             fallback_ow_global = 12
+             fallback_hs_global = 128
+             fallback_nl_global = 2
+             fallback_dr_global = 0.2
+             fallback_bs_global = 32
+             fallback_vs_global = 20
+             fallback_lr_global = 0.001
+             fallback_ep_global = 50
+
+             # --- Widget Parametri con Recupero Sicuro ---
+             # Finestre NON sono ottimizzate, usa config attivo o default globale
+             iw_t = c1t.number_input("Finestra Input (n. rilevazioni)", 6, 168,
+                                     value=get_safe_param("input_window", {}, active_config, fallback_iw_global, int),
+                                     step=6, key="t_param_in_win")
+             ow_t = c1t.number_input("Finestra Output (n. rilevazioni)", 1, 72,
+                                     value=get_safe_param("output_window", {}, active_config, fallback_ow_global, int),
+                                     step=1, key="t_param_out_win")
+             # Split Validazione NON ottimizzato
+             vs_t = c1t.slider("% Dati per Validazione", 0, 50,
+                               value=get_safe_param("val_split_percent", {}, active_config, fallback_vs_global, int),
+                               step=1, key="t_param_val_split", help="0% = nessun set di validazione. Richiesto > 0 per Ottimizzazione HP.")
+
+             # Parametri potenzialmente ottimizzati
              hs_t = c2t.number_input("Neuroni Nascosti (Hidden Size)", 16, 1024,
-                                     value=int(best_hp.get("hidden_size", fallback_hs)), # Usa best_hp o fallback, cast a int
+                                     value=get_safe_param("hidden_size", best_hp, active_config, fallback_hs_global, int),
                                      step=16, key="t_param_hidden")
              nl_t = c2t.number_input("Numero Livelli LSTM (Layers)", 1, 8,
-                                     value=int(best_hp.get("num_layers", fallback_nl)), # Usa best_hp o fallback, cast a int
+                                     value=get_safe_param("num_layers", best_hp, active_config, fallback_nl_global, int),
                                      step=1, key="t_param_layers")
              dr_t = c2t.slider("Dropout", 0.0, 0.7,
-                               value=float(best_hp.get("dropout", fallback_dr)), # Usa best_hp o fallback, cast a float
+                               value=get_safe_param("dropout", best_hp, active_config, fallback_dr_global, float),
                                step=0.05, key="t_param_dropout")
 
              lr_t = c3t.number_input("Learning Rate", 1e-5, 1e-2,
-                                     value=float(best_hp.get("learning_rate", fallback_lr)), # Usa best_hp o fallback, cast a float
+                                     value=get_safe_param("learning_rate", best_hp, active_config, fallback_lr_global, float),
                                      format="%.5f", step=1e-4, key="t_param_lr")
              bs_options = [8, 16, 32, 64, 128, 256] # Opzioni batch size
-             bs_val = best_hp.get("batch_size", fallback_bs) # Usa best_hp o fallback
-             # Assicura che il valore sia tra le opzioni, altrimenti usa fallback
-             if bs_val not in bs_options: bs_val = fallback_bs
+             bs_val = get_safe_param("batch_size", best_hp, active_config, fallback_bs_global, int)
+             # Assicura che il valore sia tra le opzioni
+             if bs_val not in bs_options:
+                 # Trova l'opzione più vicina o usa il default globale
+                 bs_val = min(bs_options, key=lambda x:abs(x-bs_val)) if bs_options else fallback_bs_global
+                 if bs_val not in bs_options: bs_val = fallback_bs_global # Fallback finale
+
              bs_t = c3t.select_slider("Batch Size", options=bs_options,
-                                      value=int(bs_val), # Cast a int
+                                      value=bs_val,
                                       key="t_param_batch")
-             # Epoche: usa il default, non quelle dei trial HP
-             ep_t = c3t.number_input("Numero Epoche (Training Finale)", 5, 1000, # Aumentato max epoche finale
-                                     value=fallback_ep,
+             # Epoche: usa il default globale, non da HP opt o config attivo
+             ep_t = c3t.number_input("Numero Epoche (Training Finale)", 5, 1000,
+                                     value=fallback_ep_global, # Usa sempre il default per le epoche finali
                                      step=5, key="t_param_epochs")
 
         # ===========================================================
