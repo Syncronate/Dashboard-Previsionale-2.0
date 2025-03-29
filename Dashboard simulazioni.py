@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import streamlit as st
 import torch
 import pandas as pd
@@ -1658,9 +1657,12 @@ with st.sidebar.expander("Modifica Soglie di Allerta", expanded=False):
             label_short = get_station_label(col, short=True)
             is_level = 'Livello' in col or '(m)' in col or '(mt)' in col
             is_humidity = 'Umidit' in col # Check Umidità
-            step = 0.1 if is_level else (1.0 if is_humidity else 5.0) # Step pioggia 5? Mettiamo 1.0
-            step = 1.0 if is_humidity else (0.1 if is_level else 1.0)
-            fmt = "%.1f" if is_level or is_humidity else "%.0f" # Formato per umidità
+            # BUG FIX: Originale aveva logica step/format invertita
+            # Correggo: step 1.0 per umidità e pioggia, 0.1 per livelli
+            step = 0.1 if is_level else 1.0
+            # Correggo: format %.1f per tutti tranne livelli (che vogliono %.2f o simile?)
+            # Usiamo %.1f per Pioggia/Umidità, %.2f per Livello
+            fmt = "%.2f" if is_level else "%.1f"
             min_v = 0.0
             current_threshold = st.session_state.dashboard_thresholds.get(col, DEFAULT_THRESHOLDS.get(col, 0.0))
             new_threshold = st.number_input(
@@ -1751,7 +1753,7 @@ df_current_csv = st.session_state.get('df', None) # Dati CSV
 date_col_name_csv = st.session_state.date_col_name_csv
 
 
-# --- PAGINA DASHBOARD (Logica interna invariata, usa fetch_gsheet_dashboard_data) ---
+# --- PAGINA DASHBOARD ---
 if page == 'Dashboard':
     st.header(f'📊 Dashboard Monitoraggio Idrologico')
     if "GOOGLE_CREDENTIALS" not in st.secrets:
@@ -1819,7 +1821,6 @@ if page == 'Dashboard':
         st.divider()
         # --- Tabella Valori Attuali e Soglie ---
         st.subheader("Tabella Valori Attuali")
-        # ... (Logica creazione tabella con alert e stile highlight_threshold invariata) ...
         cols_to_monitor = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
         table_rows = []; current_alerts = []
         for col_name in cols_to_monitor:
@@ -1832,8 +1833,15 @@ if page == 'Dashboard':
 
             if pd.notna(current_value) and isinstance(current_value, (int, float, np.number)):
                  value_numeric = float(current_value)
-                 fmt = "%.1f" if unit in ['(mm)', '(%)'] else "%.2f"
-                 value_display = f"{value_numeric:{fmt}} {unit}".strip()
+                 # --- CORREZIONE APPLICATA QUI ---
+                 fmt_spec = ".1f" if unit in ['(mm)', '(%)'] else ".2f"  # Usa .1f per mm/%, .2f per livelli (o altro)
+                 try:
+                     # Usa la specifica di formato corretta nella f-string
+                     value_display = f"{value_numeric:{fmt_spec}} {unit}".strip()
+                 except ValueError as e:
+                     st.error(f"Errore formattazione valore {value_numeric} con spec '{fmt_spec}' per colonna '{col_name}': {e}", icon="⚠️")
+                     value_display = f"{value_numeric} {unit}".strip() # Fallback
+                 # --- FINE CORREZIONE ---
                  if threshold is not None and isinstance(threshold, (int, float, np.number)) and value_numeric >= float(threshold):
                       alert_active = True; current_alerts.append((col_name, value_numeric, threshold))
             elif pd.notna(current_value): value_display = f"{current_value} (?)" # Valore non numerico
@@ -1902,6 +1910,7 @@ if page == 'Dashboard':
                  label_alert = get_station_label(col, short=False); sensor_type_alert = STATION_COORDS.get(col, {}).get('type', '')
                  type_str = f" ({sensor_type_alert})" if sensor_type_alert else ""
                  unit = '(mm)' if 'Pioggia' in col else ('(m)' if 'Livello' in col else ('(%)' if 'Umidit' in col else ''))
+                 # Usa già la sintassi corretta f-string qui
                  val_fmt = f"{val:.1f}" if unit in ['(mm)', '(%)'] else f"{val:.2f}"
                  thr_fmt = f"{float(thr):.1f}" if isinstance(thr, (int, float, np.number)) else str(thr)
                  alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit}** >= Soglia **{thr_fmt}{unit}**\n"
