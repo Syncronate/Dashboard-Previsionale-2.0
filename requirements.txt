@@ -12,4 +12,3 @@ gspread
 streamlit-js-eval
 oauth2client
 google-generativeai
-pytz
