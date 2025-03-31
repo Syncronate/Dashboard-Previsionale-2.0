@@ -1600,7 +1600,7 @@ with st.sidebar:
         col_idx_thresh = 0
         for col in monitorable_cols_thresh:
             with cols_thresh_ui[col_idx_thresh % 2]:
-                label_short = get_station_label(col, short=True)
+                label_short = get_station_label(col, short=False)
                 is_level = 'Livello' in col or '(m)' in col or '(mt)' in col
                 is_humidity = 'Umidit' in col
                 step = 0.1 if is_level else 1.0
@@ -2246,7 +2246,7 @@ elif page == 'Simulazione':
                                    x=x_axis_comb,
                                    y=predictions_s2s[:, i],
                                    mode='lines+markers',
-                                   name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
+                                   name=get_station_label(sensor, short=False) # Usa etichetta breve per leggenda
                                ))
 
                            fig_combined_s2s.update_layout(
