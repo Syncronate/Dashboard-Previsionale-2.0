@@ -2151,7 +2151,7 @@ elif page == 'Simulazione':
                  use_container_width=True,
                  column_config={ # Configurazione dinamica colonne forecast
                      col: st.column_config.NumberColumn(
-                         label=get_station_label(col, short=True), # Etichetta breve
+                         label=get_station_label(col, short=False), # Etichetta breve
                          help=f"Valore previsto per {col}",
                          min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else None,
                          max_value=100.0 if 'umidit' in col.lower() else None,
@@ -2209,7 +2209,7 @@ elif page == 'Simulazione':
                            rename_dict = {'Ora Prevista': 'Ora Prevista'}
                            for col in target_columns_model:
                                unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""
-                               new_name = f"{get_station_label(col, short=True)} {unit_str}".strip()
+                               new_name = f"{get_station_label(col, short=False)} {unit_str}".strip()
                                count = 1; final_name = new_name
                                while final_name in rename_dict.values(): count += 1; final_name = f"{new_name}_{count}"
                                rename_dict[col] = final_name
