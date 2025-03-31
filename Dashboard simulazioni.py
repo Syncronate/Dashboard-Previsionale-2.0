@@ -52,8 +52,8 @@ DEFAULT_THRESHOLDS = {
 }
 
 # --- NUOVE COSTANTI PER LA FRASE DI ATTRIBUZIONE ---
-ATTRIBUTION_PHRASE = "Previsione progettata e elaborata da Alberto Bussaglia, per maggiori info contattare il sottoscritto"
-ATTRIBUTION_PHRASE_FILENAME_SUFFIX = "_by_Alberto_Bussaglia" # Versione sicura per nomi file
+ATTRIBUTION_PHRASE = "Previsione progettata ed elaborata da Alberto Bussaglia (Area 6 Protezione Civile). La previsione è di tipo probabilistico e non rappresenta una certezza. Per maggiori informazioni, o per ottenere il consenso all'utilizzo/pubblicazione, contattare l'autore."
+ATTRIBUTION_PHRASE_FILENAME_SUFFIX = "_da_Alberto_Bussaglia_Area_PC" # Versione sicura per nomi file
 # --- FINE NUOVE COSTANTI ---
 
 italy_tz = pytz.timezone('Europe/Rome')
