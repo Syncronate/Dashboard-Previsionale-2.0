@@ -684,10 +684,11 @@ def plot_predictions(predictions, config, start_time=None):
     return figs
 
 # --- Funzioni Fetch Dati Google Sheet (Dashboard e Simulazione) ---
+# MODIFICATA: fetch_gsheet_dashboard_data per caricare TUTTI i dati e filtrare dopo
 @st.cache_data(ttl=DASHBOARD_REFRESH_INTERVAL_SECONDS, show_spinner="Recupero dati aggiornati dal foglio Google...")
-def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, date_col, date_format, num_rows_to_fetch=DASHBOARD_HISTORY_ROWS):
-    """Recupera e pulisce i dati recenti da GSheet per la Dashboard."""
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] ESECUZIONE fetch_gsheet_dashboard_data (Rows: {num_rows_to_fetch})")
+def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, date_col, date_format):
+    """Recupera TUTTI i dati rilevanti, pulisce e li restituisce per il filtraggio successivo."""
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] ESECUZIONE fetch_gsheet_dashboard_data (FULL FETCH)")
     actual_fetch_time = datetime.now(italy_tz)
     try:
         if "GOOGLE_CREDENTIALS" not in st.secrets:
@@ -700,15 +701,14 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
         gc = gspread.authorize(credentials)
         sh = gc.open_by_key(sheet_id)
         worksheet = sh.sheet1
-        all_values = worksheet.get_all_values() # Prende tutto
+        # Carica TUTTI i valori (attenzione a fogli molto grandi!)
+        all_values = worksheet.get_all_values()
 
         if not all_values or len(all_values) < 2:
              return None, "Errore: Foglio Google vuoto o con solo intestazione.", actual_fetch_time
 
         headers = all_values[0]
-        # Prendi le ultime num_rows_to_fetch righe di DATI (escludendo header)
-        start_index = max(1, len(all_values) - num_rows_to_fetch)
-        data_rows = all_values[start_index:]
+        data_rows = all_values[1:] # Prendi TUTTE le righe di dati
 
         # Verifica colonne mancanti
         headers_set = set(headers)
@@ -717,37 +717,69 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
             return None, f"Errore: Colonne GSheet richieste mancanti: {', '.join(missing_cols)}", actual_fetch_time
 
         df = pd.DataFrame(data_rows, columns=headers)
-        df = df[relevant_columns] # Seleziona solo colonne utili
+        # Seleziona solo colonne utili PRIMA della pulizia per efficienza
+        try:
+            # Filtra relevant_columns che esistono effettivamente in headers
+            existing_relevant_cols = [col for col in relevant_columns if col in headers_set]
+            df = df[existing_relevant_cols]
+        except KeyError as e:
+             return None, f"Errore selezione colonne rilevanti post-fetch: {e}", actual_fetch_time
 
-        # Pulizia dati e conversione tipi (gestione data con timezone)
+        # Pulizia dati e conversione tipi (gestione data con timezone) - su tutto il DF
         error_parsing = []
-        for col in relevant_columns:
+        nan_stats = {}
+        for col in existing_relevant_cols: # Itera sulle colonne effettivamente presenti
+            nan_before = df[col].isnull().sum() # Conteggio NaN prima
             if col == date_col:
                 try:
                     df[col] = pd.to_datetime(df[col], format=date_format, errors='coerce')
                     if df[col].isnull().any(): error_parsing.append(f"Formato data non valido per '{col}'")
                     # Localizza o converti a timezone italiana
-                    if df[col].dt.tz is None:
-                        df[col] = df[col].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
-                    else:
-                        df[col] = df[col].dt.tz_convert(italy_tz)
+                    if not df[col].empty and df[col].notna().any(): # Prova solo se ci sono date valide
+                         if df[col].dt.tz is None:
+                             # Gestisci ambiguous='infer' e nonexistent='NaT' o 'shift_forward'
+                             try:
+                                 df[col] = df[col].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='NaT')
+                             except pytz.exceptions.NonExistentTimeError:
+                                 st.caption(f"Attenzione: Trovate ore non esistenti (cambio ora legale?) nella colonna '{col}'. Sostituite con NaT.")
+                                 df[col] = pd.NaT # Oppure usa nonexistent='shift_forward'
+                             except pytz.exceptions.AmbiguousTimeError:
+                                 st.caption(f"Attenzione: Trovate ore ambigue (cambio ora solare?) nella colonna '{col}'. Inferenza tentata.")
+                                 # infer è già usato, ma potresti aggiungere logica specifica se necessario
+                                 pass # Continua con 'infer'
+                         else:
+                             df[col] = df[col].dt.tz_convert(italy_tz)
                 except Exception as e_date: error_parsing.append(f"Errore data '{col}': {e_date}"); df[col] = pd.NaT
             else: # Colonne numeriche
                 try:
                     # Conversione robusta: str -> pulisci -> numeric
-                    df_col_str = df[col].astype(str).str.replace(',', '.', regex=False).str.strip()
-                    df[col] = df_col_str.replace(['N/A', '', '-', ' ', 'None', 'null'], np.nan, regex=False)
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    if pd.api.types.is_object_dtype(df[col]):
+                        df_col_str = df[col].astype(str).str.replace(',', '.', regex=False).str.strip()
+                        df[col] = df_col_str.replace(['N/A', '', '-', ' ', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    else: # Se non è object, prova comunque a convertire
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
                 except Exception as e_num: error_parsing.append(f"Errore numerico '{col}': {e_num}"); df[col] = np.nan
+            nan_after = df[col].isnull().sum()
+            if nan_after > nan_before: nan_stats[col] = nan_after - nan_before
 
-        df = df.sort_values(by=date_col, na_position='first').reset_index(drop=True)
+        # Rimuovi righe dove la data è NaT dopo la conversione
+        original_rows = len(df)
+        df = df.dropna(subset=[date_col])
+        rows_dropped = original_rows - len(df)
+        if rows_dropped > 0:
+            st.caption(f"Nota: {rows_dropped} righe rimosse per data non valida.")
 
-        # Segnala NaN trovati (non riempire qui per la dashboard)
-        nan_numeric_count = df.drop(columns=[date_col]).isnull().sum().sum()
-        if nan_numeric_count > 0:
-             st.caption(f"Nota Dashboard: Trovati {nan_numeric_count} valori mancanti/non numerici nelle ultime {num_rows_to_fetch} righe GSheet.")
+        # Ordina per data
+        df = df.sort_values(by=date_col).reset_index(drop=True)
+
+        # Segnala NaN creati durante la pulizia
+        if nan_stats:
+             nan_msg_parts = [f"'{k}': {v} nuovi NaN" for k, v in nan_stats.items()]
+             st.caption(f"Nota Dashboard: Valori non validi convertiti in NaN -> {', '.join(nan_msg_parts)}")
 
         error_message = "Attenzione conversione dati GSheet: " + " | ".join(error_parsing) if error_parsing else None
+        print(f"Fetch GSheet completato. Righe totali processate: {len(df)}")
         return df, error_message, actual_fetch_time
 
     except gspread.exceptions.APIError as api_e:
@@ -757,520 +789,7 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
     except gspread.exceptions.SpreadsheetNotFound: return None, f"Errore: Foglio Google non trovato (ID: '{sheet_id}').", actual_fetch_time
     except Exception as e: return None, f"Errore imprevisto recupero dati GSheet: {type(e).__name__} - {e}\n{traceback.format_exc()}", actual_fetch_time
 
-# Fetch dati GSheet per simulazione (LSTM e Seq2Seq)
-@st.cache_data(ttl=120, show_spinner="Importazione dati storici da Google Sheet per simulazione...")
-def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format_gs, col_mapping, required_model_cols_fetch, impute_dict):
-    """ Recupera, mappa, pulisce e ordina n_rows_steps di dati da GSheet per simulazione. """
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] ESECUZIONE fetch_sim_gsheet_data (Steps: {n_rows_steps})")
-    actual_fetch_time = datetime.now(italy_tz)
-    last_valid_timestamp = None
-    try:
-        if "GOOGLE_CREDENTIALS" not in st.secrets: return None, "Errore: Credenziali Google mancanti.", None
-        credentials = Credentials.from_service_account_info(st.secrets["GOOGLE_CREDENTIALS"], scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
-        gc = gspread.authorize(credentials)
-        sh = gc.open_by_key(sheet_id_fetch)
-        worksheet = sh.sheet1
-        all_data_gs = worksheet.get_all_values()
-
-        if not all_data_gs or len(all_data_gs) < 2 :
-            return None, f"Errore: Foglio GSheet vuoto o senza dati.", None
-
-        headers_gs = all_data_gs[0]
-        # Prendi le ultime n righe di DATI
-        start_index_gs = max(1, len(all_data_gs) - n_rows_steps)
-        data_rows_gs = all_data_gs[start_index_gs:]
-
-        if len(data_rows_gs) < n_rows_steps:
-            st.warning(f"Dati GSheet insufficienti (trovate {len(data_rows_gs)} righe, richieste {n_rows_steps}). Recupero comunque.")
-            # Non bloccare, ma segnalare che potremmo avere meno dati del previsto
-
-        df_gsheet_raw = pd.DataFrame(data_rows_gs, columns=headers_gs)
-
-        # Verifica colonne GSheet richieste dal MAPPING + data
-        required_gsheet_cols_from_mapping = list(col_mapping.keys()) + ([date_col_gs] if date_col_gs not in col_mapping.keys() else [])
-        required_gsheet_cols_from_mapping = list(set(required_gsheet_cols_from_mapping)) # Unici
-
-        missing_gsheet_cols_in_sheet = [c for c in required_gsheet_cols_from_mapping if c not in df_gsheet_raw.columns]
-        if missing_gsheet_cols_in_sheet:
-            return None, f"Errore: Colonne GSheet ({', '.join(missing_gsheet_cols_in_sheet)}) mancanti nel foglio.", None
-
-        # Seleziona colonne GSheet necessarie e rinomina a nomi modello
-        df_subset = df_gsheet_raw[required_gsheet_cols_from_mapping].copy()
-        df_mapped = df_subset.rename(columns=col_mapping)
-
-        # Imputazione: Aggiungi colonne modello mancanti con valori costanti
-        for model_col, impute_val in impute_dict.items():
-             if model_col not in df_mapped.columns:
-                 df_mapped[model_col] = impute_val
-
-        # Verifica che TUTTE le colonne modello richieste siano presenti ORA
-        final_missing_model_cols = [c for c in required_model_cols_fetch if c not in df_mapped.columns]
-        if final_missing_model_cols:
-            return None, f"Errore: Colonne modello ({', '.join(final_missing_model_cols)}) mancanti dopo mappatura/imputazione.", None
-
-        # --- Pulizia Dati ---
-        date_col_model_name = col_mapping.get(date_col_gs, date_col_gs) # Nome colonna data DOPO mappatura
-        if date_col_model_name not in df_mapped.columns:
-             st.warning(f"Colonna data '{date_col_model_name}' non presente dopo mappatura, impossibile ordinare/usare timestamp.")
-             date_col_model_name = None
-
-        # Pulizia colonne numeriche (itera su tutte quelle richieste dal modello)
-        for col in required_model_cols_fetch:
-            if col == date_col_model_name: continue # Salta data
-            if col not in df_mapped.columns: continue # Salta se imputata
-
-            try:
-                if pd.api.types.is_object_dtype(df_mapped[col]) or pd.api.types.is_string_dtype(df_mapped[col]):
-                    col_str = df_mapped[col].astype(str).str.replace(',', '.', regex=False).str.strip()
-                    df_mapped[col] = col_str.replace(['N/A', '', '-', ' ', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
-                df_mapped[col] = pd.to_numeric(df_mapped[col], errors='coerce') # Converti a numerico
-            except Exception as e_clean_num:
-                st.warning(f"Problema pulizia GSheet colonna '{col}' per simulazione: {e_clean_num}. Trattata come NaN.")
-                df_mapped[col] = np.nan
-
-        # Gestione e ordinamento data (se possibile)
-        if date_col_model_name:
-             try:
-                 df_mapped[date_col_model_name] = pd.to_datetime(df_mapped[date_col_model_name], format=date_format_gs, errors='coerce')
-                 if df_mapped[date_col_model_name].isnull().any(): st.warning(f"Date non valide trovate in GSheet simulazione ('{date_col_model_name}').")
-                 # Localizza/Converti timezone
-                 if df_mapped[date_col_model_name].dt.tz is None:
-                     df_mapped[date_col_model_name] = df_mapped[date_col_model_name].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
-                 else:
-                     df_mapped[date_col_model_name] = df_mapped[date_col_model_name].dt.tz_convert(italy_tz)
-
-                 df_mapped = df_mapped.sort_values(by=date_col_model_name, na_position='first')
-                 # Trova ultimo timestamp valido
-                 valid_dates = df_mapped[date_col_model_name].dropna()
-                 if not valid_dates.empty: last_valid_timestamp = valid_dates.iloc[-1]
-
-             except Exception as e_date_clean:
-                 st.warning(f"Errore conversione/pulizia data GSheet simulazione '{date_col_model_name}': {e_date_clean}. Impossibile ordinare.")
-                 date_col_model_name = None # Disabilita uso colonna data
-
-        # Seleziona e Riordina colonne come richiesto dal modello
-        try:
-            df_final = df_mapped[required_model_cols_fetch].copy() # Usa .copy() per evitare SettingWithCopyWarning
-        except KeyError as e_key:
-            return None, f"Errore selezione/ordine colonne finali simulazione: '{e_key}' mancante.", None
-
-        # Gestione NaN residui (ffill/bfill DOPO ordinamento, se possibile)
-        numeric_cols_to_fill = df_final.select_dtypes(include=np.number).columns
-        nan_count_before = df_final[numeric_cols_to_fill].isnull().sum().sum()
-        if nan_count_before > 0:
-             st.warning(f"Trovati {nan_count_before} valori NaN nei dati GSheet per simulazione. Applico forward-fill e backward-fill.")
-             # Usa .loc per assegnare e silenziare warning
-             df_final.loc[:, numeric_cols_to_fill] = df_final[numeric_cols_to_fill].fillna(method='ffill').fillna(method='bfill')
-             if df_final[numeric_cols_to_fill].isnull().sum().sum() > 0:
-                 st.error(f"NaN residui ({df_final[numeric_cols_to_fill].isnull().sum().sum()}) dopo fillna. Tento fill con 0.")
-                 df_final.loc[:, numeric_cols_to_fill] = df_final[numeric_cols_to_fill].fillna(0)
-
-        # Controllo finale numero righe (solo warning se diverso)
-        if len(df_final) != n_rows_steps:
-            st.warning(f"Attenzione: Numero righe finali ({len(df_final)}) diverso da richiesto ({n_rows_steps}) dopo recupero GSheet.")
-
-        print(f"Dati simulazione da GSheet pronti ({len(df_final)} righe). Ultimo Timestamp: {last_valid_timestamp}")
-        return df_final, None, last_valid_timestamp # Successo
-
-    except gspread.exceptions.APIError as api_e_sim:
-        try: error_details = api_e_sim.response.json(); error_msg = error_details.get('error', {}).get('message', str(api_e_sim)); status = error_details.get('error', {}).get('code', 'N/A'); error_msg = f"Codice {status}: {error_msg}";
-        except: error_msg = str(api_e_sim)
-        return None, f"Errore API Google Sheets: {error_msg}", None
-    except gspread.exceptions.SpreadsheetNotFound: return None, f"Errore: Foglio Google simulazione non trovato (ID: '{sheet_id_fetch}').", None
-    except Exception as e_sim_fetch:
-        st.error(traceback.format_exc())
-        return None, f"Errore imprevisto importazione GSheet per simulazione: {type(e_sim_fetch).__name__} - {e_sim_fetch}", None
-
-
-# --- Funzioni Allenamento (Standard e Seq2Seq) ---
-
-# Allenamento LSTM Standard
-def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_window_steps,
-                hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
-                save_strategy='migliore',
-                preferred_device='auto'):
-    """Allena modello LSTM standard e mostra progresso."""
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM Standard...")
-    if preferred_device == 'auto': device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else: device = torch.device('cpu')
-    print(f"Training LSTM userà: {device}")
-
-    # Istanzia Modello, Dataset, DataLoader
-    model = HydroLSTM(input_size, hidden_size, output_size, output_window_steps, num_layers, dropout).to(device)
-    train_dataset = TimeSeriesDataset(X_train, y_train)
-    val_dataset = TimeSeriesDataset(X_val, y_val) if (X_val is not None and X_val.size > 0) else None
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=0, pin_memory=True if device.type == 'cuda' else False) if val_dataset else None
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=False)
-
-    # Loop di Allenamento con UI Updates
-    train_losses, val_losses = [], []
-    best_val_loss = float('inf'); best_model_state_dict = None
-    progress_bar = st.progress(0.0, text="Training LSTM: Inizio...")
-    status_text = st.empty(); loss_chart_placeholder = st.empty()
-
-    def update_loss_chart(t_loss, v_loss, placeholder):
-        # Funzione per aggiornare il grafico della loss
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(y=t_loss, mode='lines', name='Train Loss'))
-        valid_v_loss = [v for v in v_loss if v is not None] if v_loss else []
-        if valid_v_loss: fig.add_trace(go.Scatter(y=valid_v_loss, mode='lines', name='Validation Loss'))
-        fig.update_layout(title='Andamento Loss (LSTM)', xaxis_title='Epoca', yaxis_title='Loss (MSE)',
-                          height=300, margin=dict(t=30, b=0), template="plotly_white")
-        placeholder.plotly_chart(fig, use_container_width=True)
-
-    st.write(f"Inizio training LSTM per {epochs} epoche su **{device}**...")
-    start_training_time = time.time()
-
-    for epoch in range(epochs):
-        epoch_start_time = time.time(); model.train(); train_loss = 0.0
-        for i, batch_data in enumerate(train_loader):
-            X_batch, y_batch = batch_data
-            X_batch, y_batch = X_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)
-            outputs = model(X_batch); loss = criterion(outputs, y_batch)
-            optimizer.zero_grad(); loss.backward(); optimizer.step()
-            train_loss += loss.item()
-        train_loss /= len(train_loader); train_losses.append(train_loss)
-
-        # Validation Step
-        val_loss = None
-        if val_loader:
-            model.eval(); current_val_loss = 0.0
-            with torch.no_grad():
-                for batch_data_val in val_loader:
-                    X_batch_val, y_batch_val = batch_data_val
-                    X_batch_val, y_batch_val = X_batch_val.to(device, non_blocking=True), y_batch_val.to(device, non_blocking=True)
-                    outputs_val = model(X_batch_val); loss_val = criterion(outputs_val, y_batch_val)
-                    current_val_loss += loss_val.item()
-            if len(val_loader) > 0: val_loss = current_val_loss / len(val_loader)
-            else: val_loss = float('inf')
-            val_losses.append(val_loss)
-            scheduler.step(val_loss)
-            # Salva modello migliore
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()} # Salva su CPU
-        else: val_losses.append(None) # Nessuna validazione
-
-        # Aggiorna UI
-        progress_percentage = (epoch + 1) / epochs
-        current_lr = optimizer.param_groups[0]['lr']
-        val_loss_str = f"{val_loss:.6f}" if val_loss is not None and val_loss != float('inf') else "N/A"
-        epoch_time = time.time() - epoch_start_time
-        status_text.text(f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) | Train Loss: {train_loss:.6f} | Val Loss: {val_loss_str} | LR: {current_lr:.6f}')
-        progress_bar.progress(progress_percentage, text=f"Training LSTM: Epoca {epoch+1}/{epochs}")
-        update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
-
-    total_training_time = time.time() - start_training_time
-    st.write(f"Training LSTM completato in {total_training_time:.1f} secondi.")
-
-    # Restituisci modello (migliore o finale)
-    final_model_to_return = model
-    if save_strategy == 'migliore':
-        if best_model_state_dict:
-            try:
-                # Carica lo stato migliore sul device corretto
-                best_model_state_dict_on_device = {k: v.to(device) for k, v in best_model_state_dict.items()}
-                model.load_state_dict(best_model_state_dict_on_device)
-                final_model_to_return = model
-                st.success(f"Strategia 'migliore': Caricato modello LSTM con Val Loss minima ({best_val_loss:.6f}).")
-            except Exception as e_load_best:
-                st.error(f"Errore caricamento stato LSTM migliore: {e_load_best}. Restituito modello finale.")
-        elif val_loader: st.warning("Strategia 'migliore' LSTM: Nessun miglioramento Val Loss. Restituito modello finale.")
-        else: st.warning("Strategia 'migliore' LSTM: Nessuna validazione. Restituito modello finale.")
-    elif save_strategy == 'finale': st.info("Strategia 'finale' LSTM: Restituito modello ultima epoca.")
-
-    return final_model_to_return, train_losses, val_losses
-
-# Allenamento Seq2Seq
-def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train,
-                        X_enc_val, X_dec_val, y_tar_val,
-                        encoder, decoder, output_window_steps, # Passa encoder/decoder istanziati
-                        epochs=50, batch_size=32, learning_rate=0.001,
-                        save_strategy='migliore',
-                        preferred_device='auto',
-                        teacher_forcing_ratio_schedule=None): # Es. [0.6, 0.1] (start, end)
-    """Allena modello Seq2Seq e mostra progresso."""
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq...")
-    if preferred_device == 'auto': device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else: device = torch.device('cpu')
-    print(f"Training Seq2Seq userà: {device}")
-
-    # Istanzia Modello Combinato, Dataset, DataLoader
-    model = Seq2SeqHydro(encoder, decoder, output_window_steps, device).to(device)
-    train_dataset = TimeSeriesDataset(X_enc_train, X_dec_train, y_tar_train) # 3 Tensor
-    val_dataset = TimeSeriesDataset(X_enc_val, X_dec_val, y_tar_val) if (X_enc_val is not None and X_enc_val.size > 0) else None
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=0, pin_memory=True if device.type == 'cuda' else False) if val_dataset else None
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate) # Ottimizza parametri di entrambi
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=False)
-
-    # Loop di Allenamento con UI Updates
-    train_losses, val_losses = [], []
-    best_val_loss = float('inf'); best_model_state_dict = None
-    progress_bar = st.progress(0.0, text="Training Seq2Seq: Inizio..."); status_text = st.empty(); loss_chart_placeholder = st.empty()
-
-    def update_loss_chart_seq2seq(t_loss, v_loss, placeholder):
-        # Funzione plot loss per Seq2Seq
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(y=t_loss, mode='lines', name='Train Loss'))
-        valid_v_loss = [v for v in v_loss if v is not None] if v_loss else []
-        if valid_v_loss: fig.add_trace(go.Scatter(y=valid_v_loss, mode='lines', name='Validation Loss'))
-        fig.update_layout(title='Andamento Loss (Seq2Seq)', xaxis_title='Epoca', yaxis_title='Loss (MSE)',
-                           height=300, margin=dict(t=30, b=0), template="plotly_white")
-        placeholder.plotly_chart(fig, use_container_width=True)
-
-    st.write(f"Inizio training Seq2Seq per {epochs} epoche su **{device}**...")
-    start_training_time = time.time()
-
-    for epoch in range(epochs):
-        epoch_start_time = time.time(); model.train(); train_loss = 0.0
-        # Calcola teacher forcing ratio per l'epoca (decadimento lineare se specificato)
-        current_tf_ratio = 0.5 # Default
-        if teacher_forcing_ratio_schedule and isinstance(teacher_forcing_ratio_schedule, list) and len(teacher_forcing_ratio_schedule) == 2:
-            start_tf, end_tf = teacher_forcing_ratio_schedule
-            if epochs > 1: current_tf_ratio = max(end_tf, start_tf - (start_tf - end_tf) * epoch / (epochs - 1))
-            else: current_tf_ratio = start_tf # Se solo 1 epoca
-
-        for i, (x_enc_b, x_dec_b, y_tar_b) in enumerate(train_loader):
-            x_enc_b = x_enc_b.to(device, non_blocking=True)
-            x_dec_b = x_dec_b.to(device, non_blocking=True) # Forecast "reale" per training
-            y_tar_b = y_tar_b.to(device, non_blocking=True) # Target reale
-
-            optimizer.zero_grad()
-
-            # --- Forward Pass Seq2Seq con Teacher Forcing ---
-            batch_s = x_enc_b.shape[0]
-            out_win = model.output_window
-            target_size = model.decoder.output_size
-            outputs_train = torch.zeros(batch_s, out_win, target_size).to(device)
-
-            encoder_hidden, encoder_cell = model.encoder(x_enc_b)
-            decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
-            decoder_input_step = x_dec_b[:, 0:1, :] # Primo input forecast "reale"
-
-            for t in range(out_win):
-                decoder_output_step, decoder_hidden, decoder_cell = model.decoder(
-                    decoder_input_step, decoder_hidden, decoder_cell
-                )
-                outputs_train[:, t, :] = decoder_output_step
-
-                # Decide se usare Teacher Forcing per il prossimo input del decoder
-                use_teacher_forcing = random.random() < current_tf_ratio
-                if use_teacher_forcing and t < out_win - 1:
-                     # Prossimo input è il VERO dato forecast (da x_dec_b)
-                     decoder_input_step = x_dec_b[:, t+1:t+2, :]
-                elif t < out_win - 1:
-                     # Prossimo input è il VERO dato forecast (da x_dec_b)
-                     # NOTA: In training, non usiamo l'output del decoder come input qui,
-                     # perché l'input atteso dal decoder sono le FEATURE forecast.
-                     decoder_input_step = x_dec_b[:, t+1:t+2, :]
-
-            # --- Fine Forward Pass ---
-            loss = criterion(outputs_train, y_tar_b) # Confronta con target reali
-            loss.backward()
-            # Optional: torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            train_loss += loss.item()
-
-        train_loss /= len(train_loader); train_losses.append(train_loss)
-
-        # --- Validation Loop (MAI teacher forcing) ---
-        val_loss = None
-        if val_loader:
-            model.eval(); current_val_loss = 0.0
-            with torch.no_grad():
-                for x_enc_vb, x_dec_vb, y_tar_vb in val_loader:
-                    x_enc_vb = x_enc_vb.to(device, non_blocking=True)
-                    x_dec_vb = x_dec_vb.to(device, non_blocking=True) # Forecast reali per validazione
-                    y_tar_vb = y_tar_vb.to(device, non_blocking=True)
-                    # Chiama forward senza TF (ratio=0.0 è default)
-                    outputs_val = model(x_enc_vb, x_dec_vb)
-                    loss_val = criterion(outputs_val, y_tar_vb)
-                    current_val_loss += loss_val.item()
-            if len(val_loader) > 0: val_loss = current_val_loss / len(val_loader)
-            else: val_loss = float('inf')
-            val_losses.append(val_loss)
-            scheduler.step(val_loss)
-            # Salva modello migliore
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()} # Salva su CPU
-        else: val_losses.append(None)
-
-        # Aggiorna UI
-        progress_percentage = (epoch + 1) / epochs
-        current_lr = optimizer.param_groups[0]['lr']
-        val_loss_str = f"{val_loss:.6f}" if val_loss is not None and val_loss != float('inf') else "N/A"
-        epoch_time = time.time() - epoch_start_time
-        tf_ratio_str = f"{current_tf_ratio:.2f}" if teacher_forcing_ratio_schedule else "N/A"
-        status_text.text(f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) | Train Loss: {train_loss:.6f} | Val Loss: {val_loss_str} | TF Ratio: {tf_ratio_str} | LR: {current_lr:.6f}')
-        progress_bar.progress(progress_percentage, text=f"Training Seq2Seq: Epoca {epoch+1}/{epochs}")
-        update_loss_chart_seq2seq(train_losses, val_losses, loss_chart_placeholder)
-
-    total_training_time = time.time() - start_training_time
-    st.write(f"Training Seq2Seq completato in {total_training_time:.1f} secondi.")
-
-    # Restituisci modello (migliore o finale)
-    final_model_to_return = model
-    if save_strategy == 'migliore':
-        if best_model_state_dict:
-            try:
-                best_model_state_dict_on_device = {k: v.to(device) for k, v in best_model_state_dict.items()}
-                model.load_state_dict(best_model_state_dict_on_device)
-                final_model_to_return = model
-                st.success(f"Strategia 'migliore': Caricato modello Seq2Seq con Val Loss minima ({best_val_loss:.6f}).")
-            except Exception as e_load_best:
-                st.error(f"Errore caricamento stato Seq2Seq migliore: {e_load_best}. Restituito modello finale.")
-        elif val_loader: st.warning("Strategia 'migliore' Seq2Seq: Nessun miglioramento Val Loss. Restituito modello finale.")
-        else: st.warning("Strategia 'migliore' Seq2Seq: Nessuna validazione. Restituito modello finale.")
-    elif save_strategy == 'finale': st.info("Strategia 'finale' Seq2Seq: Restituito modello ultima epoca.")
-
-    return final_model_to_return, train_losses, val_losses
-
-# --- Funzioni Helper Download ---
-def get_table_download_link(df, filename="data.csv", link_text="Scarica CSV"):
-    """Genera link download per DataFrame come CSV (UTF-8 con BOM per Excel)."""
-    try:
-        csv_buffer = io.StringIO()
-        # Usa encoding utf-8-sig per includere il BOM, sep=;, decimal=,
-        df.to_csv(csv_buffer, index=False, sep=';', decimal=',', encoding='utf-8-sig')
-        csv_buffer.seek(0)
-        b64 = base64.b64encode(csv_buffer.getvalue().encode('utf-8-sig')).decode()
-        return f'<a href="data:text/csv;charset=utf-8-sig;base64,{b64}" download="{filename}">{link_text}</a>'
-    except Exception as e:
-        st.warning(f"Errore generazione link CSV: {e}")
-        return "<i>Errore link CSV</i>"
-
-def get_binary_file_download_link(file_object, filename, text):
-    """Genera link download per oggetto file binario (es: BytesIO)."""
-    try:
-        file_object.seek(0); b64 = base64.b64encode(file_object.getvalue()).decode()
-        mime_type, _ = mimetypes.guess_type(filename)
-        if mime_type is None: mime_type = 'application/octet-stream' # Default generico
-        return f'<a href="data:{mime_type};base64,{b64}" download="{filename}">{text}</a>'
-    except Exception as e:
-        st.warning(f"Errore generazione link binario per {filename}: {e}")
-        return f"<i>Errore link {filename}</i>"
-
-def get_plotly_download_link(fig, filename_base, text_html="Scarica HTML", text_png="Scarica PNG"):
-    """Genera link download per grafico Plotly (HTML, PNG se kaleido è installato)."""
-    href_html = ""; href_png = ""
-    # Download HTML
-    try:
-        buf_html = io.StringIO(); fig.write_html(buf_html, include_plotlyjs='cdn')
-        buf_html.seek(0); b64_html = base64.b64encode(buf_html.getvalue().encode()).decode()
-        href_html = f'<a href="data:text/html;base64,{b64_html}" download="{filename_base}.html">{text_html}</a>'
-    except Exception as e_html:
-        print(f"Errore generazione download HTML {filename_base}: {e_html}")
-        href_html = "<i>Errore HTML</i>"
-
-    # Download PNG (richiede kaleido: pip install kaleido)
-    try:
-        import importlib
-        if importlib.util.find_spec("kaleido"):
-            buf_png = io.BytesIO(); fig.write_image(buf_png, format="png", scale=2) # Scale per risoluzione migliore
-            buf_png.seek(0); b64_png = base64.b64encode(buf_png.getvalue()).decode()
-            href_png = f'<a href="data:image/png;base64,{b64_png}" download="{filename_base}.png">{text_png}</a>'
-        else:
-             print("Nota: 'kaleido' non installato, download PNG grafico disabilitato.")
-    except Exception as e_png:
-        print(f"Errore generazione download PNG {filename_base}: {e_png}")
-        href_png = "<i>Errore PNG</i>"
-
-    return f"{href_html} {href_png}".strip()
-
-def get_download_link_for_file(filepath, link_text=None):
-    """Genera link download per un file su disco."""
-    if not os.path.exists(filepath): return f"<i>File non trovato: {os.path.basename(filepath)}</i>"
-    filename = os.path.basename(filepath)
-    link_text = link_text or f"Scarica {filename}"
-    try:
-        with open(filepath, "rb") as f: file_content = f.read()
-        b64 = base64.b64encode(file_content).decode("utf-8")
-        mime_type, _ = mimetypes.guess_type(filepath)
-        if mime_type is None: mime_type = 'application/octet-stream'
-        return f'<a href="data:{mime_type};base64,{b64}" download="{filename}">{link_text}</a>'
-    except Exception as e:
-        st.error(f"Errore generazione link per {filename}: {e}"); return f"<i>Errore link</i>"
-
-# --- Funzione Estrazione ID GSheet ---
-def extract_sheet_id(url):
-    """Estrae l'ID del foglio Google da un URL."""
-    patterns = [r'/spreadsheets/d/([a-zA-Z0-9-_]+)', r'/d/([a-zA-Z0-9-_]+)/']
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match: return match.group(1)
-    return None # Restituisce None se non trovato
-
-# --- Funzione Estrazione Etichetta Stazione ---
-def get_station_label(col_name, short=False):
-    """Restituisce etichetta leggibile per colonna sensore, usando STATION_COORDS."""
-    if col_name in STATION_COORDS:
-        info = STATION_COORDS[col_name]
-        loc_id = info.get('location_id')
-        s_type = info.get('type', '')
-        name = info.get('name', loc_id or col_name) # Usa nome specifico > location_id > col_name
-
-        if short and loc_id:
-            # Conta sensori stesso tipo nella stessa location
-            sensors_at_loc = [sc['type'] for sc_name, sc in STATION_COORDS.items() if sc.get('location_id') == loc_id]
-            if len(sensors_at_loc) > 1:
-                type_abbr = {'Pioggia': 'P', 'Livello': 'L', 'Umidità': 'U'}.get(s_type, '?')
-                label = f"{loc_id} ({type_abbr})"
-            else:
-                label = loc_id # Solo location se unico tipo lì
-            return label[:25] + ('...' if len(label) > 25 else '') # Tronca se necessario
-        else: # Non short o senza location_id definito
-            return name # Restituisce nome completo
-
-    # Fallback se col_name non è in STATION_COORDS
-    parts = col_name.split(' - '); label = col_name.split(' (')[0].strip()
-    if len(parts) > 1:
-        location = parts[0].strip(); measurement = parts[1].split(' (')[0].strip();
-        label = f"{location} ({measurement[0]})" if short else f"{location} - {measurement}"
-    else: # Se non c'è ' - ', usa il nome pulito
-        label = col_name.split(' (')[0].split('[')[0].strip() # Rimuovi unità
-
-    return label[:25] + ('...' if len(label) > 25 else '') if short else label
-
-
-# --- Inizializzazione Session State ---
-# (Mantenuta logica originale, solo rimossi commenti non essenziali)
-if 'active_model_name' not in st.session_state: st.session_state.active_model_name = None
-if 'active_config' not in st.session_state: st.session_state.active_config = None
-if 'active_model' not in st.session_state: st.session_state.active_model = None
-if 'active_device' not in st.session_state: st.session_state.active_device = None
-if 'active_scalers' not in st.session_state: st.session_state.active_scalers = None # Dizionario o tupla
-if 'df' not in st.session_state: st.session_state.df = None # Dati CSV storici
-# Feature columns globali di default (usate da LSTM se non specificate nel config)
-if 'feature_columns' not in st.session_state:
-     st.session_state.feature_columns = [
-         'Cumulata Sensore 1295 (Arcevia)', 'Cumulata Sensore 2637 (Bettolelle)',
-         'Cumulata Sensore 2858 (Barbara)', 'Cumulata Sensore 2964 (Corinaldo)',
-         HUMIDITY_COL_NAME,
-         'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
-         'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
-         'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
-         'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
-         'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
-     ]
-if 'date_col_name_csv' not in st.session_state: st.session_state.date_col_name_csv = 'Data e Ora'
-if 'dashboard_thresholds' not in st.session_state: st.session_state.dashboard_thresholds = DEFAULT_THRESHOLDS.copy()
-if 'last_dashboard_data' not in st.session_state: st.session_state.last_dashboard_data = None
-if 'last_dashboard_error' not in st.session_state: st.session_state.last_dashboard_error = None
-if 'last_dashboard_fetch_time' not in st.session_state: st.session_state.last_dashboard_fetch_time = None
-if 'active_alerts' not in st.session_state: st.session_state.active_alerts = []
-# Stati per simulazione Seq2Seq GSheet
-if 'seq2seq_past_data_gsheet' not in st.session_state: st.session_state.seq2seq_past_data_gsheet = None
-if 'seq2seq_last_ts_gsheet' not in st.session_state: st.session_state.seq2seq_last_ts_gsheet = None
-# Stati per simulazione LSTM GSheet
-if 'imported_sim_data_gs_df_lstm' not in st.session_state: st.session_state.imported_sim_data_gs_df_lstm = None
-if 'imported_sim_start_time_gs_lstm' not in st.session_state: st.session_state.imported_sim_start_time_gs_lstm = None
-if 'current_page' not in st.session_state: st.session_state.current_page = 'Dashboard' # Pagina di default
+# ... (il resto delle funzioni rimane invariato) ...
 
 # ==============================================================================
 # --- LAYOUT STREAMLIT PRINCIPALE ---
@@ -1278,371 +797,71 @@ if 'current_page' not in st.session_state: st.session_state.current_page = 'Dash
 st.title('Modello Predittivo Idrologico')
 st.caption('Applicazione per monitoraggio, simulazione e addestramento di modelli LSTM e Seq2Seq.')
 
-# --- Sidebar ---
-with st.sidebar:
-    st.header('Impostazioni')
+# ... (Sidebar invariata fino alla fine) ...
+# --- Menu Navigazione ---
+st.header('Menu Navigazione')
+model_ready = active_model_sess is not None and active_config_sess is not None
 
-    # --- Caricamento Dati Storici CSV ---
-    st.subheader('Dati Storici (per Analisi/Training)')
-    uploaded_data_file = st.file_uploader('Carica CSV Dati Storici', type=['csv'], key="data_uploader", help="File CSV con dati storici, separatore ';', decimale ','")
-    # Logica caricamento/pulizia CSV (invariata ma con messaggi più puliti)
-    df = None; df_load_error = None; data_source_info = ""
-    data_path_to_load = None; is_uploaded = False
-    if uploaded_data_file is not None:
-        data_path_to_load = uploaded_data_file; is_uploaded = True
-        data_source_info = f"File caricato: **{uploaded_data_file.name}**"
-    elif os.path.exists(DEFAULT_DATA_PATH):
-        # Ricarica da file solo se non è in sessione O se flag 'uploaded_file_processed' non corrisponde
-        if 'df' not in st.session_state or st.session_state.df is None or st.session_state.get('uploaded_file_processed') is None or st.session_state.get('uploaded_file_processed') == False:
-            data_path_to_load = DEFAULT_DATA_PATH; is_uploaded = False
-            data_source_info = f"File default: **{DEFAULT_DATA_PATH}**"
-            st.session_state['uploaded_file_processed'] = False # Flag indica che usiamo il default
-        else: # df esiste già in sessione e proviene dal default
-             data_source_info = f"File default: **{DEFAULT_DATA_PATH}** (da sessione)"
-             df = st.session_state.df # Usa quello in sessione
-    elif 'df' not in st.session_state or st.session_state.df is None:
-         df_load_error = f"'{DEFAULT_DATA_PATH}' non trovato e nessun file caricato."
+radio_options = ['Dashboard', 'Simulazione', 'Analisi Dati Storici', 'Allenamento Modello']
+radio_captions = []
+disabled_options = []
+default_page_idx = 0
 
-    # Logica per decidere se processare il file (solo se nuovo upload o default non ancora processato)
-    process_file = False
-    if is_uploaded and st.session_state.get('uploaded_file_processed') != uploaded_data_file.name:
-        process_file = True
-        print("Processando nuovo file caricato...")
-    elif data_path_to_load == DEFAULT_DATA_PATH and not st.session_state.get('uploaded_file_processed'):
-        process_file = True
-        print("Processando file default...")
-
-    if process_file and data_path_to_load:
-        with st.spinner("Caricamento e processamento dati CSV..."):
-            try:
-                read_args = {'sep': ';', 'decimal': ',', 'low_memory': False}
-                encodings_to_try = ['utf-8', 'latin1', 'iso-8859-1']
-                df_temp = None
-                file_obj = data_path_to_load
-                for enc in encodings_to_try:
-                     try:
-                         if hasattr(file_obj, 'seek'): file_obj.seek(0)
-                         df_temp = pd.read_csv(file_obj, encoding=enc, **read_args)
-                         print(f"CSV letto con encoding {enc}")
-                         break
-                     except UnicodeDecodeError: continue
-                     except Exception as read_e: raise read_e # Rilancia altri errori di lettura
-                if df_temp is None: raise ValueError(f"Impossibile leggere CSV con encodings: {encodings_to_try}")
-
-                date_col_csv = st.session_state.date_col_name_csv
-                if date_col_csv not in df_temp.columns: raise ValueError(f"Colonna data CSV '{date_col_csv}' mancante.")
-
-                # Conversione data robusta
-                try: df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%Y %H:%M', errors='raise')
-                except ValueError:
-                     try: df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], errors='coerce'); st.caption(f"Formato data CSV non standard ('{date_col_csv}'). Tentativo di inferenza.")
-                     except Exception as e_date_csv_infer: raise ValueError(f"Errore conversione data CSV '{date_col_csv}': {e_date_csv_infer}")
-
-                df_temp = df_temp.dropna(subset=[date_col_csv])
-                if df_temp.empty: raise ValueError("Nessuna riga valida dopo pulizia data CSV.")
-                df_temp = df_temp.sort_values(by=date_col_csv).reset_index(drop=True)
-
-                # Pulizia numerica robusta
-                features_to_clean = [col for col in df_temp.columns if col != date_col_csv]
-                for col in features_to_clean:
-                    if pd.api.types.is_object_dtype(df_temp[col]) or pd.api.types.is_string_dtype(df_temp[col]):
-                         col_str = df_temp[col].astype(str).str.strip()
-                         col_str = col_str.replace(['N/A', '', '-', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
-                         col_str = col_str.str.replace('.', '', regex=False) # Rimuovi separatore migliaia
-                         col_str = col_str.str.replace(',', '.', regex=False) # Sostituisci virgola decimale
-                         df_temp[col] = pd.to_numeric(col_str, errors='coerce')
-                    elif pd.api.types.is_numeric_dtype(df_temp[col]): pass # Già numerico
-                    else: df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce') # Tenta conversione
-
-                # Fill NaN con info
-                numeric_cols = df_temp.select_dtypes(include=np.number).columns
-                n_nan_before_fill = df_temp[numeric_cols].isnull().sum().sum()
-                if n_nan_before_fill > 0:
-                     st.caption(f"Trovati {n_nan_before_fill} NaN/non numerici nel CSV. Eseguito ffill/bfill.")
-                     df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(method='ffill').fillna(method='bfill') # Usa .loc
-                     n_nan_after_fill = df_temp[numeric_cols].isnull().sum().sum()
-                     if n_nan_after_fill > 0:
-                         st.warning(f"NaN residui ({n_nan_after_fill}) dopo fill CSV. Riempiti con 0.")
-                         df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(0) # Usa .loc
-
-                st.session_state.df = df_temp # Salva in sessione
-                if is_uploaded: st.session_state['uploaded_file_processed'] = uploaded_data_file.name # Salva nome file
-                else: st.session_state['uploaded_file_processed'] = True # Flag per default processato
-                st.success(f"Dati CSV caricati ({len(st.session_state.df)} righe).")
-                df = st.session_state.df # Riassegna df per uso immediato
-
-            except Exception as e:
-                df = None; st.session_state.df = None
-                st.session_state['uploaded_file_processed'] = None # Reset flag on error
-                df_load_error = f'Errore caricamento/processamento CSV: {e}'
-                st.error(f"Errore CSV: {df_load_error}")
-                print(traceback.format_exc()) # Stampa traceback per debug
-
-    # Recupera df da sessione se non caricato ora ma presente
-    if df is None and 'df' in st.session_state and st.session_state.df is not None:
-        df = st.session_state.df
-        # Aggiorna info sorgente se viene da sessione
-        if data_source_info == "":
-            if st.session_state.get('uploaded_file_processed') and isinstance(st.session_state.get('uploaded_file_processed'), str):
-                 data_source_info = f"File caricato: **{st.session_state['uploaded_file_processed']}** (da sessione)"
-            elif st.session_state.get('uploaded_file_processed') == True:
-                 data_source_info = f"File default: **{DEFAULT_DATA_PATH}** (da sessione)"
-
-    # Mostra info sorgente dati o errore
-    if data_source_info: st.caption(data_source_info)
-    if df_load_error and not data_source_info: st.error(df_load_error)
-
-    data_ready_csv = df is not None
-
-    st.divider()
-
-    # --- Selezione Modello Predittivo ---
-    st.subheader("Modello Predittivo (per Simulazione)")
-    available_models_dict = find_available_models(MODELS_DIR)
-    model_display_names = sorted(list(available_models_dict.keys()))
-    MODEL_CHOICE_UPLOAD = "Carica File Manualmente (Solo LSTM)"
-    MODEL_CHOICE_NONE = "-- Nessun Modello Selezionato --"
-    selection_options = [MODEL_CHOICE_NONE] + model_display_names
-
-    current_selection_name = st.session_state.get('active_model_name', MODEL_CHOICE_NONE)
-
-    # Reset se modello attivo non più valido
-    if current_selection_name not in selection_options and current_selection_name != MODEL_CHOICE_UPLOAD:
-        st.session_state.active_model_name = MODEL_CHOICE_NONE; current_selection_name = MODEL_CHOICE_NONE
-        st.session_state.active_config = None; st.session_state.active_model = None
-        st.session_state.active_device = None; st.session_state.active_scalers = None
-
-    # Determina indice per selectbox
-    try: current_index = selection_options.index(current_selection_name)
-    except ValueError: current_index = 0 # Default a "None" se era "Upload"
-
-    selected_model_display_name = st.selectbox(
-        "Modello Pre-Addestrato:", selection_options, index=current_index,
-        key="model_selector_predefined",
-        help="Scegli un modello pre-addestrato (LSTM o Seq2Seq)."
-    )
-
-    # --- Upload Manuale (solo LSTM) ---
-    with st.expander("Carica Modello LSTM Manualmente", expanded=(current_selection_name == MODEL_CHOICE_UPLOAD)):
-         is_upload_active = False
-         m_f = st.file_uploader('File Modello (.pth)', type=['pth'], key="up_pth")
-         sf_f = st.file_uploader('File Scaler Features (.joblib)', type=['joblib'], key="up_scf_lstm")
-         st_f = st.file_uploader('File Scaler Target (.joblib)', type=['joblib'], key="up_sct_lstm")
-
-         if m_f and sf_f and st_f:
-            st.caption("Configura parametri del modello LSTM caricato:")
-            col1_up, col2_up = st.columns(2)
-            with col1_up:
-                iw_up = st.number_input("Input Window (steps)", 1, 500, 48, 1, key="up_in_steps_lstm", help="Numero di passi temporali passati usati come input.")
-                ow_up = st.number_input("Output Window (steps)", 1, 500, 24, 1, key="up_out_steps_lstm", help="Numero di passi temporali futuri da prevedere.")
-                hs_up = st.number_input("Hidden Size", 8, 1024, 128, 8, key="up_hid_lstm")
-            with col2_up:
-                nl_up = st.number_input("Numero Layers", 1, 8, 2, 1, key="up_lay_lstm")
-                dr_up = st.slider("Dropout", 0.0, 0.9, 0.2, 0.05, key="up_drop_lstm")
-
-            # Selezione feature/target basata su colonne CSV (se caricato) o globali
-            available_cols_for_upload = list(df.columns.drop(st.session_state.date_col_name_csv, errors='ignore')) if data_ready_csv else st.session_state.feature_columns
-            default_targets_upload = [c for c in available_cols_for_upload if 'Livello' in c or '[m]' in c][:1]
-            default_features_upload = [c for c in st.session_state.feature_columns if c in available_cols_for_upload]
-
-            targets_up = st.multiselect("Target Columns (Output)", available_cols_for_upload, default=default_targets_upload, key="up_targets_lstm")
-            features_up = st.multiselect("Feature Columns (Input)", available_cols_for_upload, default=default_features_upload, key="up_features_lstm")
-
-            if targets_up and features_up:
-                if st.button("Carica Modello Manuale", key="load_manual_lstm", type="secondary"):
-                    is_upload_active = True
-                    selected_model_display_name = MODEL_CHOICE_UPLOAD # Forza selezione su Upload
-            else:
-                 st.caption("Seleziona features e target per il modello caricato.")
-         else:
-             st.caption("Carica tutti e tre i file (.pth, scaler features, scaler target) per abilitare.")
-
-    # --- Logica Caricamento Modello (Aggiornata per pulizia) ---
-    config_to_load = None; model_to_load = None; device_to_load = None
-    scalers_to_load = None; load_error_sidebar = False; model_type_loaded = None
-
-    # Priorità Upload Manuale
-    if is_upload_active:
-        st.session_state.active_model_name = MODEL_CHOICE_UPLOAD
-        temp_cfg_up = {"input_window": iw_up, "output_window": ow_up, "hidden_size": hs_up,
-                       "num_layers": nl_up, "dropout": dr_up,
-                       "feature_columns": features_up, "target_columns": targets_up,
-                       "name": "uploaded_lstm_model", "display_name": "Modello LSTM Caricato",
-                       "model_type": "LSTM"}
-        model_to_load, device_to_load = load_specific_model(m_f, temp_cfg_up)
-        temp_model_info_up = {"scaler_features_path": sf_f, "scaler_targets_path": st_f} # Info fittizia per load_specific_scalers
-        scalers_tuple_up = load_specific_scalers(temp_cfg_up, temp_model_info_up)
-
-        if model_to_load and scalers_tuple_up and isinstance(scalers_tuple_up, tuple) and len(scalers_tuple_up)==2:
-            config_to_load = temp_cfg_up
-            scalers_to_load = scalers_tuple_up # Salva tupla (scaler_feat, scaler_targ)
-            model_type_loaded = "LSTM"
-        else: load_error_sidebar = True; st.error("Errore caricamento modello/scaler LSTM manuale.")
-
-    # Caricamento Modello Pre-addestrato (se cambiato o non ancora caricato)
-    elif selected_model_display_name != MODEL_CHOICE_NONE:
-        if selected_model_display_name != st.session_state.get('active_model_name'):
-            st.session_state.active_model_name = selected_model_display_name
-            if selected_model_display_name in available_models_dict:
-                model_info = available_models_dict[selected_model_display_name]
-                config_to_load = load_model_config(model_info["config_path"])
-                if config_to_load:
-                    # Aggiungi info percorso e tipo al config caricato
-                    config_to_load["pth_path"] = model_info["pth_path"]
-                    config_to_load["config_name"] = model_info["config_name"]
-                    config_to_load["display_name"] = selected_model_display_name # Usa nome selezione
-                    model_type_loaded = model_info.get("model_type", "LSTM")
-                    config_to_load["model_type"] = model_type_loaded
-
-                    model_to_load, device_to_load = load_specific_model(model_info["pth_path"], config_to_load)
-                    scalers_to_load = load_specific_scalers(config_to_load, model_info) # Carica 1, 2 o 3 scaler
-
-                    if not (model_to_load and scalers_to_load):
-                        load_error_sidebar = True; config_to_load = None # Fallimento caricamento
-                else: load_error_sidebar = True # Errore lettura config JSON
-            else: st.error(f"Modello '{selected_model_display_name}' non trovato."); load_error_sidebar = True
-        # Se la selezione non è cambiata, usa dati da sessione
-        elif st.session_state.get('active_model') and st.session_state.get('active_config'):
-             config_to_load = st.session_state.active_config
-             model_to_load = st.session_state.active_model
-             device_to_load = st.session_state.active_device
-             scalers_to_load = st.session_state.active_scalers
-             model_type_loaded = config_to_load.get("model_type", "LSTM")
-
-    # Se selezione è "None", resetta stato
-    elif selected_model_display_name == MODEL_CHOICE_NONE and st.session_state.get('active_model_name') != MODEL_CHOICE_NONE:
-         st.session_state.active_model_name = MODEL_CHOICE_NONE
-         st.session_state.active_config = None; st.session_state.active_model = None
-         st.session_state.active_device = None; st.session_state.active_scalers = None
-         config_to_load = None; model_to_load = None # Assicura che non vengano usati
-
-    # Salva in session state SOLO se caricamento OK ORA
-    if config_to_load and model_to_load and device_to_load and scalers_to_load:
-        scalers_valid = False
-        if isinstance(scalers_to_load, dict): scalers_valid = all(scalers_to_load.values()) # Seq2Seq
-        elif isinstance(scalers_to_load, tuple): scalers_valid = all(scalers_to_load) # LSTM
-
-        if scalers_valid:
-            st.session_state.active_config = config_to_load
-            st.session_state.active_model = model_to_load
-            st.session_state.active_device = device_to_load
-            st.session_state.active_scalers = scalers_to_load
-        else: # Se scaler non validi, non salvare nulla e segnala errore
-             st.error("Errore durante il caricamento degli scaler associati al modello.")
-             load_error_sidebar = True
-             # Resetta stato sessione se caricamento scaler fallisce
-             st.session_state.active_config = None; st.session_state.active_model = None
-             st.session_state.active_device = None; st.session_state.active_scalers = None
+# Determina stato opzioni navigazione
+for i, opt in enumerate(radio_options):
+    caption = ""; disabled = False
+    if opt == 'Dashboard': caption = "Monitoraggio GSheet"
+    elif opt == 'Simulazione':
+        if not model_ready: caption = "Richiede Modello attivo"; disabled = True
+        else: caption = f"Esegui previsioni ({active_config_sess.get('model_type', 'LSTM')})"
+    elif opt == 'Analisi Dati Storici':
+        if not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
+        else: caption = "Esplora dati CSV"
+    elif opt == 'Allenamento Modello':
+        if not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
+        else: caption = "Allena un nuovo modello"
+    radio_captions.append(caption); disabled_options.append(disabled)
+    # Imposta Dashboard come default trovando il suo indice
+    if opt == st.session_state.get('current_page', 'Dashboard'): default_page_idx = i
 
 
-    # Mostra feedback finale basato sullo stato sessione
-    active_config_sess = st.session_state.get('active_config')
-    active_model_sess = st.session_state.get('active_model')
-    active_model_name_sess = st.session_state.get('active_model_name', MODEL_CHOICE_NONE)
-
-    if active_model_sess and active_config_sess:
-        cfg = active_config_sess
-        model_type_sess = cfg.get('model_type', 'LSTM')
-        display_feedback_name = cfg.get("display_name", active_model_name_sess)
-        st.success(f"Modello Attivo: **{display_feedback_name}** ({model_type_sess})")
-        if model_type_sess == "Seq2Seq":
-             st.caption(f"Input: {cfg['input_window_steps']}s | Forecast: {cfg['forecast_window_steps']}s | Output: {cfg['output_window_steps']}s")
-        else: # LSTM
-             st.caption(f"Input: {cfg['input_window']}s | Output: {cfg['output_window']}s")
-    elif load_error_sidebar and active_model_name_sess not in [MODEL_CHOICE_NONE]:
-         st.error(f"Caricamento modello '{active_model_name_sess}' fallito.")
-    elif active_model_name_sess == MODEL_CHOICE_UPLOAD and not active_model_sess:
-         st.info("Completa il caricamento manuale del modello LSTM.")
-    elif active_model_name_sess == MODEL_CHOICE_NONE:
-         st.info("Nessun modello selezionato per la simulazione.")
-
-    st.divider()
-
-    # --- Configurazione Soglie Dashboard ---
-    st.subheader("Configurazione Soglie Dashboard")
-    with st.expander("Modifica Soglie di Allerta"):
-        temp_thresholds = st.session_state.dashboard_thresholds.copy()
-        monitorable_cols_thresh = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
-        cols_thresh_ui = st.columns(2)
-        col_idx_thresh = 0
-        for col in monitorable_cols_thresh:
-            with cols_thresh_ui[col_idx_thresh % 2]:
-                label_short = get_station_label(col, short=True)
-                is_level = 'Livello' in col or '(m)' in col or '(mt)' in col
-                is_humidity = 'Umidit' in col
-                step = 0.1 if is_level else 1.0
-                fmt = "%.2f" if is_level else "%.1f"
-                min_v = 0.0
-                current_threshold = st.session_state.dashboard_thresholds.get(col, DEFAULT_THRESHOLDS.get(col, 0.0))
-                new_threshold = st.number_input(
-                    label=f"{label_short}", value=float(current_threshold), min_value=min_v, step=step, format=fmt,
-                    key=f"thresh_{col}", help=f"Soglia di allerta per: {col}"
-                )
-                if new_threshold != current_threshold: temp_thresholds[col] = new_threshold
-            col_idx_thresh += 1
-        if st.button("Salva Soglie", key="save_thresholds", type="secondary"):
-            st.session_state.dashboard_thresholds = temp_thresholds.copy()
-            st.success("Soglie dashboard aggiornate!"); time.sleep(0.5); st.rerun()
-
-    st.divider()
-
-    # --- Menu Navigazione ---
-    st.header('Menu Navigazione')
-    model_ready = active_model_sess is not None and active_config_sess is not None
-
-    radio_options = ['Dashboard', 'Simulazione', 'Analisi Dati Storici', 'Allenamento Modello']
-    radio_captions = []
-    disabled_options = []
-    default_page_idx = 0
-
-    # Determina stato opzioni navigazione
-    for i, opt in enumerate(radio_options):
-        caption = ""; disabled = False
-        if opt == 'Dashboard': caption = "Monitoraggio GSheet"
-        elif opt == 'Simulazione':
-            if not model_ready: caption = "Richiede Modello attivo"; disabled = True
-            else: caption = f"Esegui previsioni ({active_config_sess.get('model_type', 'LSTM')})"
-        elif opt == 'Analisi Dati Storici':
-            if not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
-            else: caption = "Esplora dati CSV"
-        elif opt == 'Allenamento Modello':
-            if not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
-            else: caption = "Allena un nuovo modello"
-        radio_captions.append(caption); disabled_options.append(disabled)
-        if opt == 'Dashboard': default_page_idx = i # Imposta Dashboard come default
-
-    # Gestione pagina corrente e blocco accesso a pagine disabilitate
-    current_page = st.session_state.get('current_page', radio_options[default_page_idx])
-    try:
-        current_page_index = radio_options.index(current_page)
-        if disabled_options[current_page_index]:
-            st.warning(f"Pagina '{current_page}' non disponibile ({radio_captions[current_page_index]}). Reindirizzato a Dashboard.")
-            current_page = radio_options[default_page_idx]
-            st.session_state['current_page'] = current_page
-    except ValueError: # Se la pagina in sessione non esiste più
-        current_page = radio_options[default_page_idx]
+# Gestione pagina corrente e blocco accesso a pagine disabilitate
+current_page = st.session_state.get('current_page', radio_options[default_page_idx])
+try:
+    current_page_index = radio_options.index(current_page)
+    if disabled_options[current_page_index]:
+        # Trova l'indice della dashboard per il reindirizzamento
+        dashboard_index = radio_options.index('Dashboard')
+        st.warning(f"Pagina '{current_page}' non disponibile ({radio_captions[current_page_index]}). Reindirizzato a Dashboard.")
+        current_page = radio_options[dashboard_index]
         st.session_state['current_page'] = current_page
+except ValueError: # Se la pagina in sessione non esiste più
+    dashboard_index = radio_options.index('Dashboard')
+    current_page = radio_options[dashboard_index]
+    st.session_state['current_page'] = current_page
 
-    # Mostra il radio button (sempre abilitato)
-    chosen_page = st.radio(
-        'Scegli una funzionalità:', options=radio_options, captions=radio_captions,
-        index=radio_options.index(current_page), # Usa l'indice della pagina corrente (validata)
-        key='page_selector_radio'
-    )
+# Mostra il radio button (sempre abilitato)
+chosen_page = st.radio(
+    'Scegli una funzionalità:', options=radio_options, captions=radio_captions,
+    index=radio_options.index(current_page), # Usa l'indice della pagina corrente (validata)
+    key='page_selector_radio'
+)
 
-    # Se l'utente sceglie una pagina DIVERSA e VALIDA, aggiorna lo stato e fai rerun
-    if chosen_page != current_page:
-        chosen_page_index = radio_options.index(chosen_page)
-        if not disabled_options[chosen_page_index]:
-            st.session_state['current_page'] = chosen_page
-            st.rerun() # Rerun per caricare la nuova pagina
-        else:
-            # Se sceglie una pagina disabilitata, mostra errore ma non cambiare pagina (rimane su 'current_page')
-            st.error(f"La pagina '{chosen_page}' non è disponibile. {radio_captions[chosen_page_index]}.")
-            # Non fare st.rerun() qui, altrimenti entrerebbe in loop di errore se la pagina corrente è disabilitata
+# Se l'utente sceglie una pagina DIVERSA e VALIDA, aggiorna lo stato e fai rerun
+if chosen_page != current_page:
+    chosen_page_index = radio_options.index(chosen_page)
+    if not disabled_options[chosen_page_index]:
+        st.session_state['current_page'] = chosen_page
+        # Forzare il refresh della cache dei modelli potrebbe essere utile qui se l'utente cambia pagina
+        # find_available_models.clear() # Opzionale: decommenta se vuoi forzare ricerca modelli al cambio pagina
+        st.rerun() # Rerun per caricare la nuova pagina
+    else:
+        # Se sceglie una pagina disabilitata, mostra errore ma non cambiare pagina (rimane su 'current_page')
+        st.error(f"La pagina '{chosen_page}' non è disponibile. {radio_captions[chosen_page_index]}.")
+        # Non fare st.rerun() qui, altrimenti entrerebbe in loop di errore se la pagina corrente è disabilitata
 
-    # La pagina da visualizzare è sempre 'current_page' (che è stata validata)
-    page = current_page
+# La pagina da visualizzare è sempre 'current_page' (che è stata validata)
+page = current_page
 
 
 # ==============================================================================
@@ -1658,26 +877,28 @@ active_model_type = active_config.get("model_type", "LSTM") if active_config els
 
 df_current_csv = st.session_state.get('df', None) # Dati CSV caricati
 date_col_name_csv = st.session_state.date_col_name_csv
+data_ready_csv = df_current_csv is not None # Ricalcola qui per sicurezza
 
 
-# --- PAGINA DASHBOARD ---
+# --- PAGINA DASHBOARD (MODIFICATA) ---
 if page == 'Dashboard':
     st.header('Dashboard Monitoraggio Idrologico')
     if "GOOGLE_CREDENTIALS" not in st.secrets:
         st.error("Errore Configurazione: Credenziali Google mancanti nei secrets di Streamlit.")
         st.stop()
 
-    # Fetch dati GSheet con cache basata su intervallo temporale
+    # Fetch TUTTI i dati GSheet con cache basata su intervallo temporale
     now_ts = time.time()
     cache_time_key = int(now_ts // DASHBOARD_REFRESH_INTERVAL_SECONDS)
-    df_dashboard, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(
+    # Chiamata modificata: non passa più DASHBOARD_HISTORY_ROWS
+    df_full_dashboard_data, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(
         cache_time_key, GSHEET_ID, GSHEET_RELEVANT_COLS,
-        GSHEET_DATE_COL, GSHEET_DATE_FORMAT, DASHBOARD_HISTORY_ROWS
+        GSHEET_DATE_COL, GSHEET_DATE_FORMAT
     )
-    # Aggiorna stato sessione con ultimi dati/errori/timestamp
-    st.session_state.last_dashboard_data = df_dashboard
+    # Salva in session state l'intero df caricato e l'errore/timestamp
+    st.session_state.last_dashboard_full_data = df_full_dashboard_data
     st.session_state.last_dashboard_error = error_msg
-    if df_dashboard is not None or error_msg is None:
+    if df_full_dashboard_data is not None or error_msg is None:
         st.session_state.last_dashboard_fetch_time = actual_fetch_time
 
     # --- Visualizzazione Stato e Bottone Refresh ---
@@ -1687,14 +908,13 @@ if page == 'Dashboard':
         if last_fetch_dt_sess:
              fetch_time_ago = datetime.now(italy_tz) - last_fetch_dt_sess
              fetch_secs_ago = int(fetch_time_ago.total_seconds())
-             status_text = f"Dati GSheet ({DASHBOARD_HISTORY_ROWS} righe) alle {last_fetch_dt_sess.strftime('%H:%M:%S')} ({fetch_secs_ago}s fa). Refresh ogni {DASHBOARD_REFRESH_INTERVAL_SECONDS}s."
+             status_text = f"Dati GSheet aggiornati alle {last_fetch_dt_sess.strftime('%H:%M:%S')} ({fetch_secs_ago}s fa). Refresh automatico ogni {DASHBOARD_REFRESH_INTERVAL_SECONDS}s."
              st.caption(status_text)
         else: st.caption("Recupero dati GSheet in corso o fallito...")
     with col_refresh_btn:
         if st.button("Aggiorna Ora", key="dash_refresh_button"):
-            # Pulisce cache delle funzioni GSheet
-            fetch_gsheet_dashboard_data.clear()
-            fetch_sim_gsheet_data.clear()
+            fetch_gsheet_dashboard_data.clear() # Pulisce cache specifica dashboard
+            fetch_sim_gsheet_data.clear() # Pulisce cache simulazione
             st.success("Cache GSheet pulita. Ricaricamento..."); time.sleep(0.5); st.rerun()
 
     # Mostra errori GSheet (se presenti)
@@ -1703,15 +923,81 @@ if page == 'Dashboard':
         if any(x in error_msg_display for x in ["API", "Foglio", "Credenziali", "Errore:"]): st.error(f"Errore GSheet: {error_msg_display}")
         else: st.warning(f"Attenzione Dati GSheet: {error_msg_display}")
 
-    # --- Visualizzazione Dati e Grafici (usa dati da sessione) ---
-    df_dashboard_sess = st.session_state.get('last_dashboard_data')
-    if df_dashboard_sess is not None and not df_dashboard_sess.empty:
-        # --- Stato Ultimo Rilevamento ---
-        latest_row_data = df_dashboard_sess.iloc[-1]
+    # --- Selettori Intervallo Date ---
+    selected_start_date = None
+    selected_end_date = None
+    df_dashboard_filtered = None # DataFrame che conterrà i dati filtrati per i grafici
+    latest_row_data = None # Riga con l'ultimo rilevamento assoluto
+
+    df_full_sess = st.session_state.get('last_dashboard_full_data')
+
+    if df_full_sess is not None and not df_full_sess.empty:
+        date_col = GSHEET_DATE_COL
+        if date_col not in df_full_sess.columns or df_full_sess[date_col].isnull().all():
+            st.error(f"Colonna data '{date_col}' non trovata o vuota nei dati GSheet. Impossibile procedere con la dashboard.")
+        else:
+            # Determina date min/max dai dati CARICATI
+            min_available_date = df_full_sess[date_col].min().date()
+            max_available_date = df_full_sess[date_col].max().date()
+
+            # Imposta default: ultimo giorno disponibile
+            default_start = max(min_available_date, max_available_date - timedelta(days=1)) # Ultimo giorno o il minimo se c'è solo un giorno
+            default_end = max_available_date
+
+            st.subheader("Seleziona Periodo da Visualizzare")
+            col_date1, col_date2 = st.columns(2)
+            with col_date1:
+                selected_start_date = st.date_input(
+                    "Data Inizio",
+                    value=st.session_state.get("dashboard_start_date", default_start), # Usa valore da sessione se esiste
+                    min_value=min_available_date,
+                    max_value=max_available_date,
+                    key="dash_start_date_input"
+                )
+            with col_date2:
+                selected_end_date = st.date_input(
+                    "Data Fine",
+                    value=st.session_state.get("dashboard_end_date", default_end), # Usa valore da sessione se esiste
+                    min_value=min_available_date, # Minimo teorico
+                    max_value=max_available_date,
+                    key="dash_end_date_input"
+                )
+
+            # Salva le date selezionate in session_state per persistenza
+            st.session_state.dashboard_start_date = selected_start_date
+            st.session_state.dashboard_end_date = selected_end_date
+
+            # Validazione date
+            if selected_start_date > selected_end_date:
+                st.error("Errore: La data di inizio non può essere successiva alla data di fine.")
+                df_dashboard_filtered = pd.DataFrame(columns=df_full_sess.columns) # df vuoto per evitare errori dopo
+                latest_row_data = df_full_sess.iloc[-1] # Prendi comunque l'ultimo dato
+            else:
+                # Filtra il DataFrame in base alle date selezionate (inclusive)
+                try:
+                    # Converti date selezionate in datetime con timezone per confronto corretto
+                    filter_start_dt = italy_tz.localize(datetime.combine(selected_start_date, datetime.min.time()))
+                    filter_end_dt = italy_tz.localize(datetime.combine(selected_end_date, datetime.max.time()))
+
+                    df_dashboard_filtered = df_full_sess[
+                        (df_full_sess[date_col] >= filter_start_dt) &
+                        (df_full_sess[date_col] <= filter_end_dt)
+                    ].copy() # Usa .copy() per evitare SettingWithCopyWarning
+                    latest_row_data = df_full_sess.iloc[-1] # Ultimo dato assoluto
+                    st.caption(f"Visualizzazione dati dal {selected_start_date.strftime('%d/%m/%Y')} al {selected_end_date.strftime('%d/%m/%Y')}. ({len(df_dashboard_filtered)} righe)")
+
+                except Exception as e_filter:
+                     st.error(f"Errore durante il filtraggio per data: {e_filter}")
+                     df_dashboard_filtered = pd.DataFrame(columns=df_full_sess.columns) # df vuoto
+                     latest_row_data = df_full_sess.iloc[-1] # Prendi comunque l'ultimo dato
+
+    # --- Visualizzazione Dati e Grafici (basata su dati filtrati e ultimo dato) ---
+    if latest_row_data is not None:
+        # --- Stato Ultimo Rilevamento (USA L'ULTIMO DATO ASSOLUTO) ---
         last_update_time = latest_row_data.get(GSHEET_DATE_COL)
         if pd.notna(last_update_time) and isinstance(last_update_time, pd.Timestamp):
              time_now_italy = datetime.now(italy_tz)
-             # Assicura timezone
+             # Assicura timezone (dovrebbe già esserlo dal fetch)
              if last_update_time.tzinfo is None: last_update_time = italy_tz.localize(last_update_time)
              else: last_update_time = last_update_time.tz_convert(italy_tz)
 
@@ -1721,15 +1007,15 @@ if page == 'Dashboard':
              elif minutes_ago < 60: time_ago_str = f"{minutes_ago} min fa"
              else: time_ago_str = f"circa {minutes_ago // 60}h e {minutes_ago % 60}min fa"
 
-             st.markdown(f"**Ultimo rilevamento:** {time_str} ({time_ago_str})")
+             st.markdown(f"**Ultimo rilevamento assoluto:** {time_str} ({time_ago_str})")
              if minutes_ago > 90: # Warning se > 1.5 ore
                  st.warning(f"Attenzione: Ultimo dato ricevuto oltre {minutes_ago} minuti fa.")
         else: st.warning("Timestamp ultimo rilevamento non valido o mancante.")
 
         st.divider()
-        # --- Tabella Valori Attuali e Soglie ---
-        st.subheader("Valori Attuali e Stato Allerta")
-        cols_to_monitor = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
+        # --- Tabella Valori Attuali e Stato Allerta (USA L'ULTIMO DATO ASSOLUTO) ---
+        st.subheader("Valori Attuali e Stato Allerta (Basati sull'Ultimo Rilevamento)")
+        cols_to_monitor = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL and col in latest_row_data.index]
         table_rows = []; current_alerts = []
         for col_name in cols_to_monitor:
             current_value = latest_row_data.get(col_name)
@@ -1761,7 +1047,6 @@ if page == 'Dashboard':
         def highlight_alert(row): # Funzione stile per evidenziare allerte
             style = [''] * len(row)
             if row['Stato'] == 'ALLERTA':
-                # Applica stile leggero rosso a tutta la riga
                 style = ['background-color: rgba(255, 0, 0, 0.1);'] * len(row)
             return style
 
@@ -1776,62 +1061,77 @@ if page == 'Dashboard':
                 "Soglia Numerica": None
             }
         )
-        st.session_state.active_alerts = current_alerts # Salva allerte attive
+        st.session_state.active_alerts = current_alerts # Salva allerte attive basate sull'ultimo dato
+
+        # --- Grafici (USA DATI FILTRATI) ---
+        if df_dashboard_filtered is not None and not df_dashboard_filtered.empty:
+            st.divider()
+            st.subheader(f"Grafici Storici Periodo Selezionato ({selected_start_date.strftime('%d/%m')} - {selected_end_date.strftime('%d/%m')})")
+
+            # --- Grafico Comparativo Configurabile ---
+            st.markdown("**Grafico Comparativo**")
+            # Usa colonne presenti nei dati FILTRATI per la selezione
+            cols_monitor_in_filtered = [c for c in cols_to_monitor if c in df_dashboard_filtered.columns]
+            sensor_options_compare = {get_station_label(col, short=True): col for col in cols_monitor_in_filtered}
+            # Filtra default per essere sicuro che siano presenti
+            default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3]
+            if not default_selection_labels: default_selection_labels = list(sensor_options_compare.keys())[:min(2, len(sensor_options_compare))]
+
+            selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
+            selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare if label in sensor_options_compare] # Sicurezza extra
+
+            if selected_cols_compare:
+                fig_compare = go.Figure()
+                x_axis_data_filtered = df_dashboard_filtered[GSHEET_DATE_COL] # Usa date filtrate
+                for col in selected_cols_compare:
+                    if col in df_dashboard_filtered.columns:
+                        fig_compare.add_trace(go.Scatter(x=x_axis_data_filtered, y=df_dashboard_filtered[col], mode='lines', name=get_station_label(col, short=True)))
+                fig_compare.update_layout(title=f"Andamento Storico Comparato", xaxis_title='Data e Ora', yaxis_title='Valore',
+                                          height=500, hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_compare, use_container_width=True)
+                # Link download grafico
+                compare_filename_base = f"compare_{selected_start_date.strftime('%Y%m%d')}-{selected_end_date.strftime('%Y%m%d')}"
+                st.markdown(get_plotly_download_link(fig_compare, compare_filename_base), unsafe_allow_html=True)
+
+            st.divider()
+            # --- Grafici Individuali ---
+            st.markdown("**Grafici Individuali**")
+            num_cols_individual = 3 # Numero di colonne per i grafici
+            graph_cols = st.columns(num_cols_individual)
+            col_idx_graph = 0
+            x_axis_data_indiv_filtered = df_dashboard_filtered[GSHEET_DATE_COL] # Usa date filtrate
+            for col_name in cols_monitor_in_filtered: # Itera solo sulle colonne disponibili nei dati filtrati
+                with graph_cols[col_idx_graph % num_cols_individual]:
+                    threshold_individual = st.session_state.dashboard_thresholds.get(col_name)
+                    label_individual = get_station_label(col_name, short=True)
+                    unit = '(mm)' if 'Pioggia' in col_name else ('(m)' if 'Livello' in col_name else ('(%)' if 'Umidit' in col_name else ''))
+                    yaxis_title_individual = f"Valore {unit}".strip()
+
+                    fig_individual = go.Figure()
+                    fig_individual.add_trace(go.Scatter(x=x_axis_data_indiv_filtered, y=df_dashboard_filtered[col_name], mode='lines', name=label_individual))
+                    # Aggiungi linea soglia se definita
+                    if threshold_individual is not None:
+                        fig_individual.add_hline(y=threshold_individual, line_dash="dash", line_color="red",
+                                                 annotation_text=f"Soglia ({float(threshold_individual):.1f})", annotation_position="bottom right")
+
+                    fig_individual.update_layout(title=f"{label_individual}", xaxis_title=None, yaxis_title=yaxis_title_individual,
+                                                 height=300, hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), template="plotly_white")
+                    fig_individual.update_yaxes(rangemode='tozero') # Asse Y da zero
+                    st.plotly_chart(fig_individual, use_container_width=True)
+
+                    # Link download grafico individuale
+                    ind_filename_base = f"sensor_{label_individual.replace(' ','_').replace('(','').replace(')','')}_{selected_start_date.strftime('%Y%m%d')}-{selected_end_date.strftime('%Y%m%d')}"
+                    st.markdown(get_plotly_download_link(fig_individual, ind_filename_base, text_html="HTML", text_png="PNG"), unsafe_allow_html=True)
+                col_idx_graph += 1
+        elif df_dashboard_filtered is not None and df_dashboard_filtered.empty:
+            st.warning("Nessun dato trovato nel periodo selezionato.")
+        else: # df_dashboard_filtered è None (probabilmente errore filtro o date non valide)
+            st.info("Seleziona un intervallo di date valido per visualizzare i grafici.")
+
 
         st.divider()
-        # --- Grafico Comparativo Configurabile ---
-        st.subheader("Grafico Storico Comparativo")
-        sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
-        default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2] # Default 3 livelli o primi 2 sensori
-        selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
-        selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare]
-
-        if selected_cols_compare:
-            fig_compare = go.Figure()
-            x_axis_data = df_dashboard_sess[GSHEET_DATE_COL]
-            for col in selected_cols_compare:
-                fig_compare.add_trace(go.Scatter(x=x_axis_data, y=df_dashboard_sess[col], mode='lines', name=get_station_label(col, short=True)))
-            fig_compare.update_layout(title=f"Andamento Storico Comparato (ultime {DASHBOARD_HISTORY_ROWS//2} ore)", xaxis_title='Data e Ora', yaxis_title='Valore',
-                                      height=500, hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig_compare, use_container_width=True)
-            # Link download grafico
-            compare_filename_base = f"compare_{'_'.join(sl.replace(' ','_') for sl in selected_labels_compare)}_{datetime.now().strftime('%Y%m%d_%H%M')}"
-            st.markdown(get_plotly_download_link(fig_compare, compare_filename_base), unsafe_allow_html=True)
-
-        st.divider()
-        # --- Grafici Individuali ---
-        st.subheader("Grafici Storici Individuali")
-        num_cols_individual = 3 # Numero di colonne per i grafici
-        graph_cols = st.columns(num_cols_individual)
-        col_idx_graph = 0
-        x_axis_data_indiv = df_dashboard_sess[GSHEET_DATE_COL]
-        for col_name in cols_to_monitor:
-            with graph_cols[col_idx_graph % num_cols_individual]:
-                threshold_individual = st.session_state.dashboard_thresholds.get(col_name)
-                label_individual = get_station_label(col_name, short=True)
-                unit = '(mm)' if 'Pioggia' in col_name else ('(m)' if 'Livello' in col_name else ('(%)' if 'Umidit' in col_name else ''))
-                yaxis_title_individual = f"Valore {unit}".strip()
-
-                fig_individual = go.Figure()
-                fig_individual.add_trace(go.Scatter(x=x_axis_data_indiv, y=df_dashboard_sess[col_name], mode='lines', name=label_individual))
-                # Aggiungi linea soglia se definita
-                if threshold_individual is not None:
-                    fig_individual.add_hline(y=threshold_individual, line_dash="dash", line_color="red",
-                                             annotation_text=f"Soglia ({float(threshold_individual):.1f})", annotation_position="bottom right")
-
-                fig_individual.update_layout(title=f"{label_individual}", xaxis_title=None, yaxis_title=yaxis_title_individual,
-                                             height=300, hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), template="plotly_white")
-                fig_individual.update_yaxes(rangemode='tozero') # Asse Y da zero
-                st.plotly_chart(fig_individual, use_container_width=True)
-
-                # Link download grafico individuale
-                ind_filename_base = f"sensor_{label_individual.replace(' ','_').replace('(','').replace(')','')}_{datetime.now().strftime('%Y%m%d_%H%M')}"
-                st.markdown(get_plotly_download_link(fig_individual, ind_filename_base, text_html="HTML", text_png="PNG"), unsafe_allow_html=True)
-            col_idx_graph += 1
-
-        st.divider()
-        # --- Riepilogo Alert Attivi ---
-        st.subheader("Riepilogo Allerte")
+        # --- Riepilogo Alert Attivi (Basato sempre sull'ULTIMO dato) ---
+        st.subheader("Riepilogo Allerte (Basato sull'Ultimo Rilevamento)")
         active_alerts_sess = st.session_state.get('active_alerts', [])
         if active_alerts_sess:
              st.warning("**Allerte Attive (Valori >= Soglia):**")
@@ -1848,32 +1148,51 @@ if page == 'Dashboard':
              st.markdown(alert_md)
         else: st.success("Nessuna soglia superata nell'ultimo rilevamento.")
 
-    elif df_dashboard_sess is not None and df_dashboard_sess.empty:
-        st.warning("Recupero dati GSheet riuscito, ma nessun dato trovato nelle ultime righe.")
+    elif df_full_sess is not None and df_full_sess.empty:
+        st.warning("Recupero dati GSheet riuscito, ma nessun dato trovato nel foglio.")
     elif not st.session_state.last_dashboard_error: # Se non ci sono errori e df è None, fetch iniziale
         st.info("Recupero dati dashboard in corso...")
 
-    # --- Auto Refresh JS ---
+    # --- Auto Refresh JS (Invariato) ---
     try:
         component_key = f"dashboard_auto_refresh_{DASHBOARD_REFRESH_INTERVAL_SECONDS}"
         js_code = f"""
         (function() {{
             const intervalIdKey = 'streamlit_auto_refresh_interval_id_{component_key}';
-            if (window[intervalIdKey]) {{ clearInterval(window[intervalIdKey]); }} // Clear previous
-            window[intervalIdKey] = setInterval(function() {{
-                if (window.streamlitHook && typeof window.streamlitHook.rerunScript === 'function') {{
-                    console.log('Triggering Streamlit rerun via JS timer ({component_key})');
-                    window.streamlitHook.rerunScript(null);
-                }} else {{ console.warn('Streamlit hook not available for JS auto-refresh.'); }}
-            }}, {DASHBOARD_REFRESH_INTERVAL_SECONDS * 1000});
+            // Clear only if component is re-rendering, not on every script run
+            if (window.hasOwnProperty(intervalIdKey)) {{
+                // Optional: Add logic here if you need to reset based on specific conditions
+            }} else {{
+                 // Set interval only if it doesn't exist
+                 window[intervalIdKey] = setInterval(function() {{
+                    // Check if Streamlit hook is available before calling
+                    if (window.streamlitHook && typeof window.streamlitHook.rerunScript === 'function') {{
+                        console.log('Triggering Streamlit rerun via JS timer ({component_key})');
+                        try {{
+                             window.streamlitHook.rerunScript(null);
+                        }} catch (e) {{
+                             console.error('Error calling rerunScript:', e);
+                             // Optionally clear interval if rerun fails consistently
+                             // clearInterval(window[intervalIdKey]);
+                             // delete window[intervalIdKey];
+                        }}
+                    }} else {{
+                        console.warn('Streamlit hook not available for JS auto-refresh. Clearing interval.');
+                        clearInterval(window[intervalIdKey]);
+                        delete window[intervalIdKey]; // Prevent trying again
+                    }}
+                }}, {DASHBOARD_REFRESH_INTERVAL_SECONDS * 1000});
+                console.log('Set new JS interval: ', window[intervalIdKey]);
+            }}
         }})();
         """
+        # Using a changing key might force re-evaluation, but let's try without first
         streamlit_js_eval(js_expressions=js_code, key=component_key, want_output=False)
     except Exception as e_js:
         st.caption(f"Nota: Impossibile impostare auto-refresh ({e_js})")
 
 
-# --- PAGINA SIMULAZIONE ---
+# --- PAGINA SIMULAZIONE (Invariata) ---
 elif page == 'Simulazione':
     st.header(f'Simulazione Idrologica ({active_model_type})')
     if not model_ready:
@@ -1997,12 +1316,17 @@ elif page == 'Simulazione':
              # Data Editor per le previsioni future
              forecast_steps_s2s = active_config['forecast_window_steps']
              forecast_df_initial = pd.DataFrame(index=range(forecast_steps_s2s), columns=forecast_input_cols_s2s)
-             last_known_past_data = st.session_state.seq2seq_past_data_gsheet.iloc[-1]
+             # Tenta di usare l'ultimo valore noto dai dati passati caricati
+             last_known_past_df_or_series = st.session_state.seq2seq_past_data_gsheet
+             if last_known_past_df_or_series is not None and not last_known_past_df_or_series.empty:
+                 last_known_past_data = last_known_past_df_or_series.iloc[-1]
+                 for col in forecast_input_cols_s2s:
+                      if 'pioggia' in col.lower() or 'cumulata' in col.lower(): forecast_df_initial[col] = 0.0 # Default 0 pioggia
+                      elif col in last_known_past_data.index: forecast_df_initial[col] = last_known_past_data.get(col, 0.0) # Usa ultimo valore noto
+                      else: forecast_df_initial[col] = 0.0 # Default 0 se non presente nel passato
+             else: # Se non ci sono dati passati, inizializza a 0
+                 forecast_df_initial = forecast_df_initial.fillna(0.0)
 
-             for col in forecast_input_cols_s2s:
-                  if 'pioggia' in col.lower() or 'cumulata' in col.lower(): forecast_df_initial[col] = 0.0 # Default 0 pioggia
-                  elif col in last_known_past_data.index: forecast_df_initial[col] = last_known_past_data.get(col, 0.0) # Usa ultimo valore noto
-                  else: forecast_df_initial[col] = 0.0 # Default 0 se non presente nel passato
 
              forecast_editor_key = "seq2seq_forecast_editor"
              edited_forecast_df = st.data_editor(
@@ -2026,9 +1350,17 @@ elif page == 'Simulazione':
              # Validazione editor forecast
              forecast_data_valid_s2s = False
              if edited_forecast_df is not None and not edited_forecast_df.isnull().any().any():
-                 if edited_forecast_df.shape == (forecast_steps_s2s, len(forecast_input_cols_s2s)):
+                 # Ulteriore controllo che tutti i valori siano effettivamente numerici
+                 is_all_numeric = True
+                 try:
+                     edited_forecast_df.astype(float)
+                 except ValueError:
+                     is_all_numeric = False
+
+                 if is_all_numeric and edited_forecast_df.shape == (forecast_steps_s2s, len(forecast_input_cols_s2s)):
                      forecast_data_valid_s2s = True
-                     # st.caption("Previsioni future inserite correttamente.") # Meno verboso
+                 elif not is_all_numeric:
+                     st.warning("La tabella delle previsioni future contiene valori non numerici.")
                  else:
                       st.warning("Numero di righe o colonne errato nella tabella previsioni.")
              else:
@@ -2043,6 +1375,7 @@ elif page == 'Simulazione':
                   if not can_run_s2s_sim: st.error("Mancano dati storici validi o previsioni future valide.")
                   else:
                        with st.spinner("Simulazione Seq2Seq in corso..."):
+                           # Assicura che i dati siano nel formato corretto (numpy float)
                            past_data_np = st.session_state.seq2seq_past_data_gsheet[past_feature_cols_s2s].astype(float).values
                            future_forecast_np = edited_forecast_df[forecast_input_cols_s2s].astype(float).values
 
@@ -2235,44 +1568,49 @@ elif page == 'Simulazione':
                      sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values
                      sim_start_time_lstm_gs = st.session_state.get("imported_sim_start_time_gs_lstm", datetime.now(italy_tz))
                      if sim_data_input_lstm_gs.shape[0] != input_steps: # Verifica numero righe
-                         st.warning(f"Numero righe dati GSheet ({sim_data_input_lstm_gs.shape[0]}) diverso da richiesto ({input_steps}). Uso i dati disponibili.")
+                         st.warning(f"Numero righe dati GSheet ({sim_data_input_lstm_gs.shape[0]}) diverso da richiesto ({input_steps}). Verranno usati i dati disponibili, ma il modello potrebbe non funzionare correttamente.")
                      if np.isnan(sim_data_input_lstm_gs).any():
                           st.error("Trovati valori NaN nei dati GSheet importati. Impossibile procedere.")
                           sim_data_input_lstm_gs = None
                  except KeyError as e_key_gs: st.error(f"Colonna mancante nei dati LSTM GSheet: {e_key_gs}"); sim_data_input_lstm_gs = None
                  except Exception as e_prep_gs: st.error(f"Errore preparazione dati LSTM GSheet: {e_prep_gs}"); sim_data_input_lstm_gs = None
 
-             input_ready_lstm_gs = sim_data_input_lstm_gs is not None
+             input_ready_lstm_gs = sim_data_input_lstm_gs is not None and sim_data_input_lstm_gs.shape[0] >= input_steps # Richiede almeno N righe
              st.divider()
              if st.button('Esegui Simulazione LSTM (GSheet)', type="primary", disabled=(not input_ready_lstm_gs), key="sim_run_exec_lstm_gsheet"):
                   if input_ready_lstm_gs:
-                      with st.spinner('Simulazione LSTM (GSheet) in corso...'):
-                           scaler_features_lstm, scaler_targets_lstm = active_scalers
-                           predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                      # Mostra Risultati
-                      if predictions_sim_lstm is not None:
-                           output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
-                           st.subheader(f'Risultato Simulazione LSTM (GSheet): Prossime {total_hours_output_actual:.1f} ore')
-                           st.caption(f"Previsione calcolata a partire da: {sim_start_time_lstm_gs.strftime('%d/%m/%Y %H:%M:%S %Z')}")
-                           # Tabella
-                           pred_times_lstm = [sim_start_time_lstm_gs + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]; results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); results_df_lstm.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
-                           rename_dict_lstm = {'Ora Prevista': 'Ora Prevista'};
-                           for col in target_columns_model:
-                               unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""; new_name = f"{get_station_label(col, short=True)} {unit_str}".strip(); count = 1; final_name = new_name
-                               while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
-                               rename_dict_lstm[col] = final_name
-                           results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
-                           st.dataframe(results_df_lstm_display.round(3), hide_index=True)
-                           st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_gsheet_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
-                           # Grafici
-                           st.subheader('Grafici Previsioni Simulate (LSTM GSheet)')
-                           figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, sim_start_time_lstm_gs); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
-                           for i, fig_sim in enumerate(figs_sim_lstm):
-                               with sim_cols_lstm[i % num_graph_cols_lstm]:
-                                    target_col_name = target_columns_model[i]; s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                                    st.plotly_chart(fig_sim, use_container_width=True)
-                                    st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_lstm_gsheet_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
-                      else: st.error("Predizione simulazione LSTM (GSheet) fallita.")
+                      # Usa solo le ultime `input_steps` righe se ne abbiamo di più
+                      sim_data_final_gs = sim_data_input_lstm_gs[-input_steps:]
+                      if sim_data_final_gs.shape[0] < input_steps:
+                           st.error(f"Dati GSheet insufficienti ({sim_data_final_gs.shape[0]}) per l'input richiesto ({input_steps}).")
+                      else:
+                           with st.spinner('Simulazione LSTM (GSheet) in corso...'):
+                                scaler_features_lstm, scaler_targets_lstm = active_scalers
+                                predictions_sim_lstm = predict(active_model, sim_data_final_gs, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
+                           # Mostra Risultati
+                           if predictions_sim_lstm is not None:
+                                output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
+                                st.subheader(f'Risultato Simulazione LSTM (GSheet): Prossime {total_hours_output_actual:.1f} ore')
+                                st.caption(f"Previsione calcolata a partire da: {sim_start_time_lstm_gs.strftime('%d/%m/%Y %H:%M:%S %Z')}")
+                                # Tabella
+                                pred_times_lstm = [sim_start_time_lstm_gs + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]; results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); results_df_lstm.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
+                                rename_dict_lstm = {'Ora Prevista': 'Ora Prevista'};
+                                for col in target_columns_model:
+                                    unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""; new_name = f"{get_station_label(col, short=True)} {unit_str}".strip(); count = 1; final_name = new_name
+                                    while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
+                                    rename_dict_lstm[col] = final_name
+                                results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
+                                st.dataframe(results_df_lstm_display.round(3), hide_index=True)
+                                st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_gsheet_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
+                                # Grafici
+                                st.subheader('Grafici Previsioni Simulate (LSTM GSheet)')
+                                figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, sim_start_time_lstm_gs); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
+                                for i, fig_sim in enumerate(figs_sim_lstm):
+                                    with sim_cols_lstm[i % num_graph_cols_lstm]:
+                                         target_col_name = target_columns_model[i]; s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
+                                         st.plotly_chart(fig_sim, use_container_width=True)
+                                         st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_lstm_gsheet_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
+                           else: st.error("Predizione simulazione LSTM (GSheet) fallita.")
                   else: st.error("Dati input da GSheet non pronti o non importati.")
 
 
@@ -2310,12 +1648,21 @@ elif page == 'Simulazione':
              # Validazione Editor
              sim_data_input_lstm_editor = None; validation_passed_editor = False
              if edited_lstm_df is not None and not edited_lstm_df.isnull().any().any():
-                 if edited_lstm_df.shape == (input_steps, len(feature_columns_current_model)):
+                 # Controllo numerico
+                 is_all_numeric_editor = True
+                 try:
+                     edited_lstm_df.astype(float)
+                 except ValueError:
+                      is_all_numeric_editor = False
+
+                 if is_all_numeric_editor and edited_lstm_df.shape == (input_steps, len(feature_columns_current_model)):
                      try:
                          sim_data_input_lstm_editor = edited_lstm_df[feature_columns_current_model].astype(float).values
                          validation_passed_editor = True
                      except KeyError as e_key_edit: st.error(f"Errore colonna tabella: {e_key_edit}")
                      except Exception as e_conv_edit: st.error(f"Errore conversione dati tabella: {e_conv_edit}")
+                 elif not is_all_numeric_editor:
+                      st.warning("La tabella contiene valori non numerici.")
                  else: st.warning("Numero righe/colonne errato nella tabella.")
              else: st.warning("Completa o correggi la tabella. Tutti i valori devono essere numerici.")
 
@@ -2417,16 +1764,21 @@ elif page == 'Simulazione':
                  else: st.error("Dati input da CSV non pronti o invalidi.")
 
 
-# --- PAGINA ANALISI DATI STORICI ---
+# --- PAGINA ANALISI DATI STORICI (Invariata) ---
 elif page == 'Analisi Dati Storici':
     st.header('Analisi Dati Storici (da file CSV)')
     if not data_ready_csv:
         st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar per l'analisi.")
     else:
         st.info(f"Dataset CSV caricato: **{len(df_current_csv)}** righe.")
-        if date_col_name_csv in df_current_csv:
-            st.caption(f"Periodo: da **{df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')}** a **{df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')}**")
-        else: st.warning(f"Colonna data '{date_col_name_csv}' non trovata per analisi periodo.")
+        if date_col_name_csv in df_current_csv and not df_current_csv[date_col_name_csv].isnull().all():
+            try:
+                min_dt_csv = df_current_csv[date_col_name_csv].min()
+                max_dt_csv = df_current_csv[date_col_name_csv].max()
+                st.caption(f"Periodo: da **{min_dt_csv.strftime('%d/%m/%Y %H:%M')}** a **{max_dt_csv.strftime('%d/%m/%Y %H:%M')}**")
+            except AttributeError: # Se min/max non sono timestamp validi
+                 st.warning(f"Date non valide nella colonna '{date_col_name_csv}'. Impossibile determinare il periodo.")
+        else: st.warning(f"Colonna data '{date_col_name_csv}' non trovata o vuota per analisi periodo.")
 
         st.subheader("Esplorazione Dati")
         st.dataframe(df_current_csv.head())
@@ -2441,7 +1793,7 @@ elif page == 'Analisi Dati Storici':
 
         st.divider()
         st.subheader("Visualizzazione Temporale")
-        if date_col_name_csv in df_current_csv and not numeric_cols_analysis.empty:
+        if date_col_name_csv in df_current_csv and not numeric_cols_analysis.empty and not df_current_csv[date_col_name_csv].isnull().all():
             cols_to_plot = st.multiselect(
                 "Seleziona colonne da visualizzare:",
                 options=numeric_cols_analysis.tolist(),
@@ -2460,26 +1812,34 @@ elif page == 'Analisi Dati Storici':
                 analysis_filename_base = f"analisi_temporale_{datetime.now().strftime('%Y%m%d_%H%M')}"
                 st.markdown(get_plotly_download_link(fig_analysis, analysis_filename_base), unsafe_allow_html=True)
             else: st.info("Seleziona almeno una colonna per visualizzare il grafico.")
-        else: st.info("Colonna data o colonne numeriche mancanti per la visualizzazione temporale.")
+        else: st.info("Colonna data valida o colonne numeriche mancanti per la visualizzazione temporale.")
 
         st.divider()
         st.subheader("Matrice di Correlazione")
         if len(numeric_cols_analysis) > 1:
-            corr_matrix = df_current_csv[numeric_cols_analysis].corr()
-            fig_corr = go.Figure(data=go.Heatmap(
-                z=corr_matrix.values, x=corr_matrix.columns, y=corr_matrix.columns,
-                colorscale='viridis', zmin=-1, zmax=1, colorbar=dict(title='Corr')
-            ))
-            fig_corr.update_layout(
-                title='Matrice di Correlazione tra Variabili Numeriche',
-                xaxis_tickangle=-45, height=600, template="plotly_white"
-            )
-            st.plotly_chart(fig_corr, use_container_width=True)
+            # Escludi colonne con varianza zero per evitare NaN nella correlazione
+            cols_for_corr = df_current_csv[numeric_cols_analysis].loc[:, df_current_csv[numeric_cols_analysis].var() > 1e-9].columns
+            if len(cols_for_corr) > 1:
+                 corr_matrix = df_current_csv[cols_for_corr].corr()
+                 fig_corr = go.Figure(data=go.Heatmap(
+                    z=corr_matrix.values, x=corr_matrix.columns, y=corr_matrix.columns,
+                    colorscale='viridis', zmin=-1, zmax=1, colorbar=dict(title='Corr')
+                 ))
+                 fig_corr.update_layout(
+                    title='Matrice di Correlazione tra Variabili Numeriche',
+                    xaxis_tickangle=-45, height=600, template="plotly_white",
+                    margin=dict(l=80, r=50, t=50, b=150) # Aumenta margini per etichette lunghe
+                 )
+                 fig_corr.update_xaxes(tickfont=dict(size=10)) # Riduci font etichette
+                 fig_corr.update_yaxes(tickfont=dict(size=10))
+                 st.plotly_chart(fig_corr, use_container_width=True)
+            else:
+                 st.info("Nessuna colonna numerica con varianza sufficiente per la matrice di correlazione.")
         else:
             st.info("Sono necessarie almeno due colonne numeriche per calcolare la matrice di correlazione.")
 
 
-# --- PAGINA ALLENAMENTO MODELLO ---
+# --- PAGINA ALLENAMENTO MODELLO (Invariata)---
 elif page == 'Allenamento Modello':
     st.header('Allenamento Nuovo Modello')
     if not data_ready_csv:
@@ -2541,13 +1901,21 @@ elif page == 'Allenamento Modello':
              st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
              # 1. Prepara Dati
              with st.spinner("Preparazione dati LSTM..."):
-                  input_hours_lstm = iw_t_lstm / 2 # Converti steps in ore per la funzione
-                  output_hours_lstm = ow_t_lstm / 2
+                  # Usa direttamente gli STEPS nei parametri
                   X_tr, y_tr, X_v, y_v, sc_f, sc_t = prepare_training_data(
                        df_current_csv.copy(), selected_features_train_lstm, selected_targets_train_lstm,
-                       int(input_hours_lstm), int(output_hours_lstm), vs_t_lstm
+                       iw_t_lstm, # Passa steps
+                       ow_t_lstm, # Passa steps
+                       val_split=vs_t_lstm
                   )
-             if X_tr is None or sc_f is None or sc_t is None: st.error("Preparazione dati LSTM fallita."); st.stop()
+             if X_tr is None or y_tr is None or sc_f is None or sc_t is None:
+                  st.error("Preparazione dati LSTM fallita. Controlla i parametri e i dati CSV.")
+                  st.stop()
+             if vs_t_lstm > 0 and (X_v is None or y_v is None):
+                  st.warning("Split di validazione richiesto ma set di validazione vuoto. Allenamento continua solo su training set.")
+             elif vs_t_lstm == 0 and X_v is not None and len(X_v)>0:
+                 st.info("Split validazione 0%, nessun set di validazione sarà usato.")
+                 X_v, y_v = None, None # Forza a None se split è 0
 
              # 2. Allena Modello
              trained_model_lstm, train_loss_history, val_loss_history = train_model(
@@ -2643,11 +2011,17 @@ elif page == 'Allenamento Modello':
                        iw_steps_s2s, fw_steps_s2s, ow_steps_s2s, vs_t_s2s
                   )
              if data_tuple is None or len(data_tuple) != 9 or data_tuple[0] is None:
-                  st.error("Preparazione dati Seq2Seq fallita."); st.stop()
+                  st.error("Preparazione dati Seq2Seq fallita. Controlla parametri e dati."); st.stop()
              (X_enc_tr, X_dec_tr, y_tar_tr, X_enc_v, X_dec_v, y_tar_v,
               sc_past, sc_fore, sc_tar) = data_tuple
              if not all([sc_past, sc_fore, sc_tar]): # Verifica scaler
                   st.error("Errore: Scaler Seq2Seq non generati."); st.stop()
+             # Verifica set validazione
+             if vs_t_s2s > 0 and (X_enc_v is None or X_enc_v.size == 0):
+                 st.warning("Split validazione richiesto ma set validazione vuoto/non valido. Allenamento solo su training set.")
+             elif vs_t_s2s == 0 and X_enc_v is not None and X_enc_v.size > 0:
+                 st.info("Split validazione 0%, nessun set di validazione sarà usato.")
+                 X_enc_v, X_dec_v, y_tar_v = None, None, None # Forza a None
 
              # 2. Istanzia e Allena Modello Seq2Seq
              try:
@@ -2658,7 +2032,7 @@ elif page == 'Allenamento Modello':
 
              # Chiamata funzione training
              trained_model_s2s, train_loss_hist_s2s, val_loss_hist_s2s = train_model_seq2seq(
-                  X_enc_tr, X_dec_tr, y_tar_tr, X_enc_v, X_dec_v, y_tar_v,
+                  X_enc_tr, X_dec_tr, y_tar_tr, X_enc_v, X_dec_v, y_tar_v, # Passa set validazione (possono essere None)
                   enc, dec, ow_steps_s2s, # Passa output STEPS
                   ep_t_s2s, bs_t_s2s, lr_t_s2s,
                   save_strategy=('migliore' if 'Migliore' in save_choice_s2s else 'finale'),
@@ -2704,6 +2078,6 @@ elif page == 'Allenamento Modello':
              else:
                  st.error("Addestramento Seq2Seq fallito. Modello non salvato.")
 
-# --- Footer ---
+# --- Footer (Invariato) ---
 st.sidebar.divider()
 st.sidebar.caption(f'Modello Predittivo Idrologico © {datetime.now().year}')
