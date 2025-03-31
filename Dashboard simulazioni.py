@@ -43,13 +43,39 @@ GSHEET_RELEVANT_COLS = [
 ]
 DASHBOARD_REFRESH_INTERVAL_SECONDS = 300
 DASHBOARD_HISTORY_ROWS = 48 # 24 ore (48 step da 30 min) - Usato per vista default
-DEFAULT_THRESHOLDS = {
+DEFAULT_THRESHOLDS = { # Soglie USATE NELLA DASHBOARD
     'Arcevia - Pioggia Ora (mm)': 10.0, 'Barbara - Pioggia Ora (mm)': 10.0, 'Corinaldo - Pioggia Ora (mm)': 10.0,
     'Misa - Pioggia Ora (mm)': 10.0, 'Umidita\' Sensore 3452 (Montemurello)': 95.0,
     'Serra dei Conti - Livello Misa (mt)': 2.5, 'Pianello di Ostra - Livello Misa (m)': 3.0,
     'Nevola - Livello Nevola (mt)': 2.0, 'Misa - Livello Misa (mt)': 2.8,
     'Ponte Garibaldi - Livello Misa 2 (mt)': 4.0
 }
+
+# --- NUOVE COSTANTI PER SOGLIE SIMULAZIONE (ATTENZIONE/ALLERTA) ---
+# Le chiavi DEVONO corrispondere ESATTAMENTE ai nomi delle colonne TARGET
+# usati nei file di configurazione (.json) dei modelli.
+# Aggiungere qui le soglie per TUTTI i potenziali target idrometrici.
+SIMULATION_THRESHOLDS = {
+    # Livelli GSheet Style (usati in alcuni modelli/config)
+    'Serra dei Conti - Livello Misa (mt)': {'attenzione': 2.0, 'allerta': 2.5},
+    'Pianello di Ostra - Livello Misa (m)': {'attenzione': 2.4, 'allerta': 3.0},
+    'Nevola - Livello Nevola (mt)': {'attenzione': 1.8, 'allerta': 2.0},
+    'Misa - Livello Misa (mt)': {'attenzione': 2.5, 'allerta': 3.0},
+    'Ponte Garibaldi - Livello Misa 2 (mt)': {'attenzione': 2.0, 'allerta': 3.0},
+
+    # Livelli CSV/Internal Style (usati in altri modelli/config)
+    # Assicurati che i valori siano consistenti con quelli sopra se il sensore è lo stesso
+    'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)': {'attenzione': 2.0, 'allerta': 2.5},
+    'Livello Idrometrico Sensore 1112 [m] (Bettolelle)': {'attenzione': 2.2, 'allerta': 2.8}, # Corrisponde a 'Misa - Livello Misa (mt)'
+    'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'attenzione': 1.6, 'allerta': 2.0}, # Corrisponde a 'Nevola - Livello Nevola (mt)'
+    'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'attenzione': 2.4, 'allerta': 3.0}, # Corrisponde a 'Pianello di Ostra - Livello Misa (m)'
+    'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'attenzione': 3.2, 'allerta': 4.0}  # Corrisponde a 'Ponte Garibaldi - Livello Misa 2 (mt)'
+
+    # Aggiungi qui ALTRE colonne target (es. piogge, umidità) se vuoi visualizzare soglie anche per quelle
+    # 'Nome_Colonna_Target_Pioggia': {'attenzione': 5.0, 'allerta': 10.0},
+}
+# --- FINE NUOVE COSTANTI ---
+
 
 # --- NUOVE COSTANTI PER LA FRASE DI ATTRIBUZIONE ---
 ATTRIBUTION_PHRASE = "Previsione progettata ed elaborata da Alberto Bussaglia (Area 6 Protezione Civile). La previsione è di tipo probabilistico e non rappresenta una certezza. Per maggiori informazioni, o per ottenere il consenso all'utilizzo/pubblicazione, contattare l'autore."
@@ -70,11 +96,17 @@ STATION_COORDS = {
     'Serra dei Conti - Livello Misa (mt)': {'lat': 43.5427, 'lon': 13.0389, 'name': 'Serra de\' Conti (Livello)', 'type': 'Livello', 'location_id': 'Serra de Conti'},
     'Pianello di Ostra - Livello Misa (m)': {'lat': 43.660, 'lon': 13.135, 'name': 'Pianello di Ostra (Livello)', 'type': 'Livello', 'location_id': 'Pianello Ostra'},
     'Ponte Garibaldi - Livello Misa 2 (mt)': {'lat': 43.7176, 'lon': 13.2189, 'name': 'Ponte Garibaldi (Senigallia)', 'type': 'Livello', 'location_id': 'Ponte Garibaldi'},
-    HUMIDITY_COL_NAME: {'lat': 43.6, 'lon': 13.0, 'name': 'Montemurello (Umidità)', 'type': 'Umidità', 'location_id': 'Montemurello'}
+    HUMIDITY_COL_NAME: {'lat': 43.6, 'lon': 13.0, 'name': 'Montemurello (Umidità)', 'type': 'Umidità', 'location_id': 'Montemurello'},
+    # Aggiunta corrispondenze per nomi CSV/interni (se diversi e usati come target)
+     'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)': {'lat': 43.5427, 'lon': 13.0389, 'name': 'Serra de\' Conti (Livello)', 'type': 'Livello', 'location_id': 'Serra de Conti'},
+     'Livello Idrometrico Sensore 1112 [m] (Bettolelle)': {'lat': 43.690, 'lon': 13.165, 'name': 'Bettolelle (Livello Misa)', 'type': 'Livello', 'location_id': 'Bettolelle'},
+     'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'lat': 43.6491, 'lon': 13.0476, 'name': 'Corinaldo (Livello Nevola)', 'type': 'Livello', 'location_id': 'Corinaldo'},
+     'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'lat': 43.660, 'lon': 13.135, 'name': 'Pianello di Ostra (Livello)', 'type': 'Livello', 'location_id': 'Pianello Ostra'},
+     'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'lat': 43.7176, 'lon': 13.2189, 'name': 'Ponte Garibaldi (Senigallia)', 'type': 'Livello', 'location_id': 'Ponte Garibaldi'}
 }
 
 # --- Definizioni Classi Modello (Dataset, LSTM, Encoder, Decoder, Seq2Seq) ---
-
+# (Nessuna modifica necessaria qui)
 # Dataset modificato per Seq2Seq (gestisce 1 o 3 tensor)
 class TimeSeriesDataset(Dataset):
     def __init__(self, *tensors):
@@ -177,7 +209,7 @@ class Seq2SeqHydro(nn.Module):
         return outputs
 
 # --- Funzioni Utilità Modello/Dati ---
-
+# (Nessuna modifica necessaria qui)
 # Funzione preparazione dati LSTM standard
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, val_split=20):
     """Prepara i dati per l'allenamento del modello LSTM standard."""
@@ -367,9 +399,8 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
             X_enc_val, X_dec_val, y_tar_val,
             scaler_past_features, scaler_forecast_features, scaler_targets)
 
-
 # --- Funzioni Caricamento Modello/Scaler (Aggiornate) ---
-
+# (Nessuna modifica necessaria qui)
 @st.cache_data(show_spinner="Ricerca modelli disponibili...")
 def find_available_models(models_dir=MODELS_DIR):
     """ Trova modelli validi (pth, json, scalers) e determina il tipo (LSTM/Seq2Seq). """
@@ -389,7 +420,7 @@ def find_available_models(models_dir=MODELS_DIR):
         valid_model = False
 
         try:
-            with open(cfg_path, 'r') as f: config_data = json.load(f)
+            with open(cfg_path, 'r', encoding='utf-8') as f: config_data = json.load(f) # Aggiunto encoding
             name = config_data.get("display_name", base) # Usa display_name se esiste
             model_type = config_data.get("model_type", "LSTM") # Legge tipo da config
 
@@ -433,14 +464,13 @@ def find_available_models(models_dir=MODELS_DIR):
         else:
             print(f"Modello '{base}' ignorato: file associati mancanti o config JSON incompleta per tipo '{model_type}'.")
 
-
     return available
 
 @st.cache_data
 def load_model_config(_config_path):
     """Carica config e valida chiavi base."""
     try:
-        with open(_config_path, 'r') as f: config = json.load(f)
+        with open(_config_path, 'r', encoding='utf-8') as f: config = json.load(f) # Aggiunto encoding
         return config
     except Exception as e:
         st.error(f"Errore caricamento config '{_config_path}': {e}"); return None
@@ -542,7 +572,7 @@ def load_specific_scalers(config, model_info):
         else: return None, None # Due None per LSTM
 
 # --- Funzioni Predict (Standard e Seq2Seq) ---
-
+# (Nessuna modifica necessaria qui)
 # Predict LSTM Standard
 def predict(model, input_data, scaler_features, scaler_targets, config, device):
     """Esegue predizione per modello LSTM standard."""
@@ -578,7 +608,15 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
 
         expected_targets = getattr(scaler_targets, 'n_features_in_', None)
         if expected_targets is None or expected_targets != len(target_cols):
-             st.error(f"Predict LSTM: Problema scaler targets (attese {len(target_cols)}, trovate {expected_targets})."); return None
+             # Tenta recupero dal numero di target nella config come fallback
+             expected_targets = len(target_cols)
+             st.warning("Attributo n_features_in_ mancante nello scaler target LSTM. Uso numero target da config.")
+             # st.error(f"Predict LSTM: Problema scaler targets (attese {len(target_cols)}, trovate {expected_targets})."); return None
+
+        # Verifica che out_np abbia il numero corretto di colonne prima di inverse_transform
+        if out_np.shape[1] != expected_targets:
+            st.error(f"Predict LSTM: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets}).")
+            return None
 
         preds = scaler_targets.inverse_transform(out_np)
         return preds # Shape (output_steps, num_targets)
@@ -612,9 +650,9 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
 
     # Verifica shape input
     if past_data.shape != (input_steps, len(past_cols)):
-        st.error(f"Predict Seq2Seq: Shape dati passati {past_data.shape} errata."); return None
+        st.error(f"Predict Seq2Seq: Shape dati passati {past_data.shape} errata (attesa ({input_steps}, {len(past_cols)}))."); return None
     if future_forecast_data.shape != (forecast_steps, len(forecast_cols)):
-        st.error(f"Predict Seq2Seq: Shape dati forecast {future_forecast_data.shape} errata."); return None
+        st.error(f"Predict Seq2Seq: Shape dati forecast {future_forecast_data.shape} errata (attesa ({forecast_steps}, {len(forecast_cols)}))."); return None
     if forecast_steps < output_steps:
          st.warning(f"Predict Seq2Seq: Finestra forecast ({forecast_steps}) < finestra output ({output_steps}). Modello userà padding.")
 
@@ -629,13 +667,18 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
             output = model(past_tens, future_tens) # Shape (1, output_steps, num_targets)
 
         if output.shape != (1, output_steps, len(target_cols)):
-             st.error(f"Predict Seq2Seq: Shape output modello {output.shape} inattesa."); return None
+             st.error(f"Predict Seq2Seq: Shape output modello {output.shape} inattesa (attesa (1, {output_steps}, {len(target_cols)}))."); return None
 
         out_np = output.cpu().numpy().squeeze(0) # (output_steps, num_targets)
 
         expected_targets = getattr(scaler_targets, 'n_features_in_', None)
-        if expected_targets is None or expected_targets != len(target_cols):
-             st.error(f"Predict Seq2Seq: Problema scaler targets."); return None
+        if expected_targets is None:
+             expected_targets = len(target_cols) # Fallback
+             st.warning("Attributo n_features_in_ mancante nello scaler target Seq2Seq. Uso numero target da config.")
+        if expected_targets != len(target_cols):
+            st.error(f"Predict Seq2Seq: Target scaler n_features_in ({expected_targets}) non corrisponde a config ({len(target_cols)})."); return None
+        if out_np.shape[1] != expected_targets:
+             st.error(f"Predict Seq2Seq: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets})."); return None
 
         preds = scaler_targets.inverse_transform(out_np)
         return preds # Shape (output_steps, num_targets)
@@ -644,19 +687,20 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-
-# --- Funzione Grafici Previsioni ---
+# --- Funzione Grafici Previsioni (MODIFICATA) ---
 def plot_predictions(predictions, config, start_time=None):
-    """Genera grafici Plotly INDIVIDUALI per le previsioni (LSTM o Seq2Seq)."""
+    """
+    Genera grafici Plotly INDIVIDUALI per le previsioni (LSTM o Seq2Seq).
+    Aggiunge linee orizzontali per le soglie di attenzione/allerta definite
+    nella costante globale SIMULATION_THRESHOLDS.
+    """
     if config is None or predictions is None: return []
 
     model_type = config.get("model_type", "LSTM")
     target_cols = config["target_columns"]
     output_steps = predictions.shape[0] # Steps previsti
-    total_hours_predicted = output_steps * 0.5
 
-    # Testo da aggiungere al titolo - USA LA COSTANTE GLOBALE
-    attribution_text = ATTRIBUTION_PHRASE
+    attribution_text = ATTRIBUTION_PHRASE # Usa costante globale
 
     figs = []
     for i, sensor in enumerate(target_cols):
@@ -671,20 +715,49 @@ def plot_predictions(predictions, config, start_time=None):
 
         station_name_graph = get_station_label(sensor, short=False) # Etichetta completa
 
+        # Aggiungi traccia previsione
         fig.add_trace(go.Scatter(x=x_axis, y=predictions[:, i], mode='lines+markers', name=f'Previsto'))
 
-        # Estrai unità di misura per asse Y
-        unit_match = re.search(r'\((.*?)\)', sensor)
-        y_axis_unit = unit_match.group(1).strip() if unit_match else "Valore"
+        # --- AGGIUNTA SOGLIE ATTENZIONE/ALLERTA ---
+        threshold_info = SIMULATION_THRESHOLDS.get(sensor, {}) # Cerca soglie per questo specifico sensore
+        soglia_attenzione = threshold_info.get('attenzione')
+        soglia_allerta = threshold_info.get('allerta')
 
-        # --- MODIFICA TITOLO (USA LA COSTANTE) ---
+        # Aggiungi linea Attenzione (giallo/arancio) se definita
+        if soglia_attenzione is not None and isinstance(soglia_attenzione, (int, float)):
+            fig.add_hline(
+                y=soglia_attenzione,
+                line_dash="dash",
+                line_color="orange", # Giallo può essere poco visibile
+                annotation_text=f"Attenzione ({soglia_attenzione:.2f})",
+                annotation_position="bottom right"
+            )
+
+        # Aggiungi linea Allerta (rosso) se definita
+        if soglia_allerta is not None and isinstance(soglia_allerta, (int, float)):
+            fig.add_hline(
+                y=soglia_allerta,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"Allerta ({soglia_allerta:.2f})",
+                annotation_position="top right" # Posizione diversa per evitare sovrapposizioni
+            )
+        # --- FINE AGGIUNTA SOGLIE ---
+
+        # Estrai unità di misura per asse Y
+        unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', sensor) # Cerca parentesi tonde o quadre
+        y_axis_unit = ""
+        if unit_match:
+            # Prendi il gruppo non nullo (o il primo se entrambi esistono, improbabile)
+            unit_content = unit_match.group(1) or unit_match.group(2)
+            if unit_content: y_axis_unit = unit_content.strip()
+
         plot_title = f'Previsione {model_type} - {station_name_graph}<br><span style="font-size:10px;">{attribution_text}</span>'
-        # --- FINE MODIFICA TITOLO ---
 
         fig.update_layout(
-            title=plot_title, # Usa il nuovo titolo
+            title=plot_title,
             xaxis_title=x_title,
-            yaxis_title=y_axis_unit,
+            yaxis_title=y_axis_unit if y_axis_unit else "Valore Previsto", # Usa unità o default
             height=400,
             margin=dict(l=60, r=20, t=70, b=50), # Aumentato margine top per titolo lungo
             hovermode="x unified",
@@ -692,11 +765,12 @@ def plot_predictions(predictions, config, start_time=None):
         )
         if start_time:
             fig.update_xaxes(tickformat="%d/%m %H:%M") # Formato data/ora
-        fig.update_yaxes(rangemode='tozero') # Asse Y parte da zero
+        fig.update_yaxes(rangemode='tozero') # Asse Y parte da zero (mantiene hline visibili)
         figs.append(fig)
     return figs
 
 # --- Funzioni Fetch Dati Google Sheet (Dashboard e Simulazione) ---
+# (Nessuna modifica necessaria qui)
 @st.cache_data(ttl=DASHBOARD_REFRESH_INTERVAL_SECONDS, show_spinner="Recupero dati aggiornati dal foglio Google...")
 def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, date_col, date_format,
                                 fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS):
@@ -746,7 +820,13 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
         df = pd.DataFrame(data_rows, columns=headers)
         # Seleziona solo colonne utili DOPO aver creato il DataFrame con tutti gli headers
         try:
-             df = df[relevant_columns]
+             # Assicurati che TUTTE le colonne rilevanti esistano PRIMA di selezionare
+             cols_to_select = [c for c in relevant_columns if c in df.columns]
+             missing_in_df_after_create = [c for c in relevant_columns if c not in df.columns]
+             if missing_in_df_after_create:
+                 st.warning(f"Colonne GSheet '{missing_in_df_after_create}' non trovate nel DF creato, verranno ignorate.")
+             df = df[cols_to_select]
+
         except KeyError as e:
              missing_in_df = [c for c in relevant_columns if c not in df.columns]
              return None, f"Errore interno: Colonne ({missing_in_df}) non trovate nel DataFrame GSheet dopo la lettura.", actual_fetch_time
@@ -754,7 +834,7 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
 
         # Pulizia dati e conversione tipi (gestione data con timezone)
         error_parsing = []
-        for col in relevant_columns:
+        for col in df.columns: # Itera sulle colonne PRESENTI nel df selezionato
             if col == date_col:
                 try:
                     # Tentativo più robusto con infer_datetime_format
@@ -774,15 +854,20 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
                         df_col_str = df[col].astype(str).str.replace(',', '.', regex=False).str.strip()
                         df[col] = df_col_str.replace(['N/A', '', '-', ' ', 'None', 'null'], np.nan, regex=False)
                         df[col] = pd.to_numeric(df[col], errors='coerce')
-                    else: # Colonna potrebbe mancare se relevant_cols non allineato con headers
-                         error_parsing.append(f"Colonna numerica '{col}' non presente nel DataFrame letto."); df[col] = np.nan
+                    # Non serve else, stiamo iterando su df.columns
                 except Exception as e_num: error_parsing.append(f"Errore numerico '{col}': {e_num}"); df[col] = np.nan
 
         # Ordina per data e resetta indice (IMPORTANTE prima di filtrare/selezionare)
-        df = df.sort_values(by=date_col, na_position='first').reset_index(drop=True)
+        if date_col in df.columns:
+             df = df.sort_values(by=date_col, na_position='first').reset_index(drop=True)
+        else:
+             st.warning("Colonna data GSheet non trovata per ordinamento.")
+
 
         # Segnala NaN trovati (non riempire qui per la dashboard)
-        nan_numeric_count = df.drop(columns=[date_col], errors='ignore').isnull().sum().sum()
+        numeric_cols_in_df = df.select_dtypes(include=np.number).columns
+        nan_numeric_count = df[numeric_cols_in_df].isnull().sum().sum()
+
         if nan_numeric_count > 0:
              st.caption(f"Nota Dashboard: Trovati {nan_numeric_count} valori mancanti/non numerici in GSheet.")
 
@@ -834,7 +919,8 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
             return None, f"Errore: Colonne GSheet ({', '.join(missing_gsheet_cols_in_sheet)}) mancanti nel foglio.", None
 
         # Seleziona colonne GSheet necessarie e rinomina a nomi modello
-        df_subset = df_gsheet_raw[required_gsheet_cols_from_mapping].copy()
+        cols_to_select_gsheet = [c for c in required_gsheet_cols_from_mapping if c in df_gsheet_raw.columns]
+        df_subset = df_gsheet_raw[cols_to_select_gsheet].copy()
         df_mapped = df_subset.rename(columns=col_mapping)
 
         # Imputazione: Aggiungi colonne modello mancanti con valori costanti
@@ -853,9 +939,9 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
              st.warning(f"Colonna data '{date_col_model_name}' non presente dopo mappatura, impossibile ordinare/usare timestamp.")
              date_col_model_name = None
 
-        # Pulizia colonne numeriche (itera su tutte quelle richieste dal modello)
-        for col in required_model_cols_fetch:
-            if col == date_col_model_name: continue # Salta data
+        # Pulizia colonne numeriche (itera su tutte quelle richieste dal modello, escludendo data)
+        numeric_model_cols = [c for c in required_model_cols_fetch if c != date_col_model_name]
+        for col in numeric_model_cols:
             if col not in df_mapped.columns: continue # Salta se imputata
 
             try:
@@ -870,7 +956,7 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
         # Gestione e ordinamento data (se possibile)
         if date_col_model_name:
              try:
-                 df_mapped[date_col_model_name] = pd.to_datetime(df_mapped[date_col_model_name], format=date_format_gs, errors='coerce')
+                 df_mapped[date_col_model_name] = pd.to_datetime(df_mapped[date_col_model_name], format=date_format_gs, errors='coerce', infer_datetime_format=True)
                  if df_mapped[date_col_model_name].isnull().any(): st.warning(f"Date non valide trovate in GSheet simulazione ('{date_col_model_name}').")
                  # Localizza/Converti timezone
                  if not df_mapped[date_col_model_name].empty and df_mapped[date_col_model_name].notna().any():
@@ -890,7 +976,9 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
 
         # Seleziona e Riordina colonne come richiesto dal modello
         try:
-            df_final = df_mapped[required_model_cols_fetch].copy() # Usa .copy() per evitare SettingWithCopyWarning
+            # Assicurati che tutte le required_model_cols_fetch siano nel df PRIMA di selezionare
+            cols_present_final = [c for c in required_model_cols_fetch if c in df_mapped.columns]
+            df_final = df_mapped[cols_present_final].copy() # Usa .copy() per evitare SettingWithCopyWarning
         except KeyError as e_key:
             return None, f"Errore selezione/ordine colonne finali simulazione: '{e_key}' mancante.", None
 
@@ -910,6 +998,13 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
             st.warning(f"Attenzione: Numero righe finali ({len(df_final)}) diverso da richiesto ({n_rows_steps}) dopo recupero GSheet.")
 
         print(f"Dati simulazione da GSheet pronti ({len(df_final)} righe). Ultimo Timestamp: {last_valid_timestamp}")
+        # Assicura ordine colonne finale come richiesto da 'required_model_cols_fetch'
+        try:
+            df_final = df_final[required_model_cols_fetch]
+        except KeyError as e_final_order:
+            missing_final = [c for c in required_model_cols_fetch if c not in df_final.columns]
+            return None, f"Errore: Colonne modello ({missing_final}) mancanti prima del return finale.", None
+
         return df_final, None, last_valid_timestamp # Successo
 
     except gspread.exceptions.APIError as api_e_sim:
@@ -921,9 +1016,8 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
         st.error(traceback.format_exc())
         return None, f"Errore imprevisto importazione GSheet per simulazione: {type(e_sim_fetch).__name__} - {e_sim_fetch}", None
 
-
 # --- Funzioni Allenamento (Standard e Seq2Seq) ---
-
+# (Nessuna modifica necessaria qui)
 # Allenamento LSTM Standard
 def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_window_steps,
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
@@ -1172,6 +1266,7 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train,
     return final_model_to_return, train_losses, val_losses
 
 # --- Funzioni Helper Download ---
+# (Nessuna modifica necessaria qui)
 def get_table_download_link(df, filename="data.csv", link_text="Scarica CSV"):
     """Genera link download per DataFrame come CSV (UTF-8 con BOM per Excel)."""
     try:
@@ -1244,6 +1339,7 @@ def get_download_link_for_file(filepath, link_text=None):
         st.error(f"Errore generazione link per {filename}: {e}"); return f"<i>Errore link</i>"
 
 # --- Funzione Estrazione ID GSheet ---
+# (Nessuna modifica necessaria qui)
 def extract_sheet_id(url):
     """Estrae l'ID del foglio Google da un URL."""
     patterns = [r'/spreadsheets/d/([a-zA-Z0-9-_]+)', r'/d/([a-zA-Z0-9-_]+)/']
@@ -1253,6 +1349,7 @@ def extract_sheet_id(url):
     return None # Restituisce None se non trovato
 
 # --- Funzione Estrazione Etichetta Stazione ---
+# (Nessuna modifica necessaria qui)
 def get_station_label(col_name, short=False):
     """Restituisce etichetta leggibile per colonna sensore, usando STATION_COORDS."""
     if col_name in STATION_COORDS:
@@ -1276,16 +1373,15 @@ def get_station_label(col_name, short=False):
     # Fallback se col_name non è in STATION_COORDS
     parts = col_name.split(' - '); label = col_name.split(' (')[0].strip()
     if len(parts) > 1:
-        location = parts[0].strip(); measurement = parts[1].split(' (')[0].strip();
+        location = parts[0].strip(); measurement = parts[1].split(' (')[0].split('[')[0].strip(); # Pulisce anche [m]
         label = f"{location} ({measurement[0]})" if short else f"{location} - {measurement}"
     else: # Se non c'è ' - ', usa il nome pulito
         label = col_name.split(' (')[0].split('[')[0].strip() # Rimuovi unità
 
     return label[:25] + ('...' if len(label) > 25 else '') if short else label
 
-
 # --- Inizializzazione Session State ---
-# (Mantenuta logica originale, solo rimossi commenti non essenziali)
+# (Nessuna modifica necessaria qui)
 if 'active_model_name' not in st.session_state: st.session_state.active_model_name = None
 if 'active_config' not in st.session_state: st.session_state.active_config = None
 if 'active_model' not in st.session_state: st.session_state.active_model = None
@@ -1400,7 +1496,9 @@ with st.sidebar:
                     if pd.api.types.is_object_dtype(df_temp[col]) or pd.api.types.is_string_dtype(df_temp[col]):
                          col_str = df_temp[col].astype(str).str.strip()
                          col_str = col_str.replace(['N/A', '', '-', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
-                         col_str = col_str.str.replace('.', '', regex=False) # Rimuovi separatore migliaia
+                         # Rimuovi separatore migliaia SOLO se presente '.' e ANCHE ',' (evita problemi con decimali '.')
+                         if '.' in col_str.unique() and ',' in col_str.unique():
+                              col_str = col_str.str.replace('.', '', regex=False)
                          col_str = col_str.str.replace(',', '.', regex=False) # Sostituisci virgola decimale
                          df_temp[col] = pd.to_numeric(col_str, errors='coerce')
                     elif pd.api.types.is_numeric_dtype(df_temp[col]): pass # Già numerico
@@ -1572,7 +1670,7 @@ with st.sidebar:
     if config_to_load and model_to_load and device_to_load and scalers_to_load:
         scalers_valid = False
         if isinstance(scalers_to_load, dict): scalers_valid = all(scalers_to_load.values()) # Seq2Seq
-        elif isinstance(scalers_to_load, tuple): scalers_valid = all(scalers_to_load) # LSTM
+        elif isinstance(scalers_to_load, tuple): scalers_valid = all(s is not None for s in scalers_to_load) # LSTM (check for None)
 
         if scalers_valid:
             st.session_state.active_config = config_to_load
@@ -1612,7 +1710,7 @@ with st.sidebar:
 
     # --- Configurazione Soglie Dashboard ---
     st.subheader("Configurazione Soglie Dashboard")
-    with st.expander("Modifica Soglie di Allerta"):
+    with st.expander("Modifica Soglie di Allerta (per Dashboard)"):
         temp_thresholds = st.session_state.dashboard_thresholds.copy()
         monitorable_cols_thresh = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
         cols_thresh_ui = st.columns(2)
@@ -1622,7 +1720,7 @@ with st.sidebar:
                 label_short = get_station_label(col, short=False)
                 is_level = 'Livello' in col or '(m)' in col or '(mt)' in col
                 is_humidity = 'Umidit' in col
-                step = 0.1 if is_level else 1.0
+                step = 0.1 if is_level else (1.0 if is_humidity else 0.5) # 0.5 per pioggia
                 fmt = "%.2f" if is_level else "%.1f"
                 min_v = 0.0
                 current_threshold = st.session_state.dashboard_thresholds.get(col, DEFAULT_THRESHOLDS.get(col, 0.0))
@@ -1708,8 +1806,10 @@ active_model = st.session_state.get('active_model')
 active_device = st.session_state.get('active_device')
 active_scalers = st.session_state.get('active_scalers') # Può essere tupla (LSTM) o dict (Seq2Seq)
 active_model_type = active_config.get("model_type", "LSTM") if active_config else "LSTM"
+model_ready = active_model is not None and active_config is not None # Ridefinisci per scope globale pagina
 
 df_current_csv = st.session_state.get('df', None) # Dati CSV caricati
+data_ready_csv = df_current_csv is not None # Ridefinisci per scope globale pagina
 date_col_name_csv = st.session_state.date_col_name_csv
 
 
@@ -1766,13 +1866,26 @@ if page == 'Dashboard':
 
             # Filtra i dati completi
             try:
-                df_dashboard = df_dashboard_full[
-                    (df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) &
-                    (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)
-                ].copy() # Usa .copy() per evitare SettingWithCopyWarning
-                data_source_mode = f"Dati da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
-                if df_dashboard.empty:
-                    st.warning(f"Nessun dato trovato nell'intervallo selezionato ({start_date_select.strftime('%d/%m')} - {end_date_select.strftime('%d/%m')}).")
+                # Assicurati che la colonna data sia datetime e tz-aware
+                if GSHEET_DATE_COL in df_dashboard_full.columns:
+                     if not pd.api.types.is_datetime64_any_dtype(df_dashboard_full[GSHEET_DATE_COL]):
+                         df_dashboard_full[GSHEET_DATE_COL] = pd.to_datetime(df_dashboard_full[GSHEET_DATE_COL], errors='coerce')
+                     if df_dashboard_full[GSHEET_DATE_COL].dt.tz is None:
+                         df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                     else:
+                         df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_convert(italy_tz)
+
+                     df_dashboard = df_dashboard_full[
+                         (df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) &
+                         (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)
+                     ].copy() # Usa .copy() per evitare SettingWithCopyWarning
+                     data_source_mode = f"Dati da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
+                     if df_dashboard.empty:
+                         st.warning(f"Nessun dato trovato nell'intervallo selezionato ({start_date_select.strftime('%d/%m')} - {end_date_select.strftime('%d/%m')}).")
+                else:
+                    st.error("Colonna data GSheet mancante per il filtraggio.")
+                    df_dashboard = None
+
             except Exception as e_filter:
                 st.error(f"Errore durante il filtraggio dei dati per data: {e}")
                 df_dashboard = None
@@ -1782,12 +1895,19 @@ if page == 'Dashboard':
             if df_dashboard_full is not None:
                  st.warning("Recupero dati GSheet fallito, utilizzo dati precedentemente caricati.")
                  try:
-                     df_dashboard = df_dashboard_full[
-                         (df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) &
-                         (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)
-                     ].copy()
-                     data_source_mode = f"Dati (da cache) da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
-                 except: pass # Ignora errori filtro su dati cached falliti
+                      if GSHEET_DATE_COL in df_dashboard_full.columns: # Verifica data col anche qui
+                         # Assicura tz
+                         if df_dashboard_full[GSHEET_DATE_COL].dt.tz is None:
+                              df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                         else:
+                              df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_convert(italy_tz)
+
+                         df_dashboard = df_dashboard_full[
+                             (df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) &
+                             (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)
+                         ].copy()
+                         data_source_mode = f"Dati (da cache) da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
+                 except Exception as e_filter_cache: pass # Ignora errori filtro su dati cached falliti
             else:
                  st.error(f"Recupero dati GSheet fallito: {error_msg}")
             st.session_state.last_dashboard_error = error_msg # Salva errore
@@ -1836,38 +1956,45 @@ if page == 'Dashboard':
     # --- Visualizzazione Dati e Grafici (usa df_dashboard calcolato sopra) ---
     if df_dashboard is not None and not df_dashboard.empty:
         # --- Stato Ultimo Rilevamento (nel range visualizzato) ---
-        latest_row_data = df_dashboard.iloc[-1]
-        last_update_time = latest_row_data.get(GSHEET_DATE_COL)
-        if pd.notna(last_update_time) and isinstance(last_update_time, pd.Timestamp):
-             time_now_italy = datetime.now(italy_tz)
-             # Assicura timezone (dovrebbe già esserlo dal fetch)
-             if last_update_time.tzinfo is None: last_update_time = italy_tz.localize(last_update_time)
-             else: last_update_time = last_update_time.tz_convert(italy_tz)
+        if GSHEET_DATE_COL in df_dashboard.columns: # Verifica che colonna data esista
+            latest_row_data = df_dashboard.iloc[-1]
+            last_update_time = latest_row_data.get(GSHEET_DATE_COL)
+            if pd.notna(last_update_time) and isinstance(last_update_time, pd.Timestamp):
+                 time_now_italy = datetime.now(italy_tz)
+                 # Assicura timezone (dovrebbe già esserlo dal fetch)
+                 if last_update_time.tzinfo is None: last_update_time = italy_tz.localize(last_update_time)
+                 else: last_update_time = last_update_time.tz_convert(italy_tz)
 
-             time_delta = time_now_italy - last_update_time; minutes_ago = int(time_delta.total_seconds() // 60)
-             time_str = last_update_time.strftime('%d/%m/%Y %H:%M:%S %Z')
-             if minutes_ago < 2: time_ago_str = "pochi istanti fa"
-             elif minutes_ago < 60: time_ago_str = f"{minutes_ago} min fa"
-             else: time_ago_str = f"circa {minutes_ago // 60}h e {minutes_ago % 60}min fa"
+                 time_delta = time_now_italy - last_update_time; minutes_ago = int(time_delta.total_seconds() // 60)
+                 time_str = last_update_time.strftime('%d/%m/%Y %H:%M:%S %Z')
+                 if minutes_ago < 2: time_ago_str = "pochi istanti fa"
+                 elif minutes_ago < 60: time_ago_str = f"{minutes_ago} min fa"
+                 else: time_ago_str = f"circa {minutes_ago // 60}h e {minutes_ago % 60}min fa"
 
-             st.markdown(f"**Ultimo rilevamento nel periodo visualizzato:** {time_str} ({time_ago_str})")
-             # Mostra warning solo se in modalità "ultime ore" e il dato è vecchio
-             if not st.session_state.dash_custom_range_check and minutes_ago > 90:
-                 st.warning(f"Attenzione: Ultimo dato ricevuto oltre {minutes_ago} minuti fa.")
-        else: st.warning("Timestamp ultimo rilevamento (nel periodo) non valido o mancante.")
+                 st.markdown(f"**Ultimo rilevamento nel periodo visualizzato:** {time_str} ({time_ago_str})")
+                 # Mostra warning solo se in modalità "ultime ore" e il dato è vecchio
+                 if not st.session_state.dash_custom_range_check and minutes_ago > 90:
+                     st.warning(f"Attenzione: Ultimo dato ricevuto oltre {minutes_ago} minuti fa.")
+            else: st.warning("Timestamp ultimo rilevamento (nel periodo) non valido o mancante.")
+        else: st.warning("Colonna data GSheet non trovata per visualizzare l'ultimo rilevamento.")
+
 
         st.divider()
         # --- Tabella Valori Attuali e Soglie ---
         st.subheader("Valori Ultimo Rilevamento e Stato Allerta")
-        cols_to_monitor = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
+        cols_to_monitor = [col for col in df_dashboard.columns if col != GSHEET_DATE_COL] # Usa colonne effettivamente presenti
         table_rows = []; current_alerts = []
         for col_name in cols_to_monitor:
-            current_value = latest_row_data.get(col_name)
+            # Assicurati che latest_row_data sia definito (se la colonna data manca, potrebbe non esserlo)
+            current_value = latest_row_data.get(col_name) if 'latest_row_data' in locals() else None
+
             threshold = st.session_state.dashboard_thresholds.get(col_name)
             alert_active = False; value_numeric = np.nan; value_display = "N/D"; unit = ""
-            if 'Pioggia' in col_name: unit = 'mm'
-            elif 'Livello' in col_name: unit = 'm'
-            elif 'Umidit' in col_name: unit = '%'
+            unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', col_name)
+            if unit_match:
+                unit_content = unit_match.group(1) or unit_match.group(2)
+                if unit_content: unit = unit_content.strip()
+
 
             if pd.notna(current_value) and isinstance(current_value, (int, float, np.number)):
                  value_numeric = float(current_value)
@@ -1910,55 +2037,64 @@ if page == 'Dashboard':
 
         st.divider()
         # --- Grafico Comparativo Configurabile ---
-        st.subheader("Grafico Storico Comparativo (Periodo Selezionato)")
-        sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
-        default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2] # Default 3 livelli o primi 2 sensori
-        selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
-        selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare]
+        if GSHEET_DATE_COL in df_dashboard.columns: # Solo se la colonna data è presente
+            st.subheader("Grafico Storico Comparativo (Periodo Selezionato)")
+            sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
+            default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2] # Default 3 livelli o primi 2 sensori
+            selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
+            selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare]
 
-        if selected_cols_compare:
-            fig_compare = go.Figure()
-            x_axis_data = df_dashboard[GSHEET_DATE_COL] # Usa df_dashboard (filtrato o ultimi N)
-            for col in selected_cols_compare:
-                fig_compare.add_trace(go.Scatter(x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True)))
-            title_compare = f"Andamento Storico Comparato ({data_source_mode})"
-            fig_compare.update_layout(title=title_compare, xaxis_title='Data e Ora', yaxis_title='Valore',
-                                      height=500, hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig_compare, use_container_width=True)
-            # Link download grafico
-            compare_filename_base = f"compare_{'_'.join(sl.replace(' ','_') for sl in selected_labels_compare)}_{datetime.now().strftime('%Y%m%d_%H%M')}"
-            st.markdown(get_plotly_download_link(fig_compare, compare_filename_base), unsafe_allow_html=True)
+            if selected_cols_compare:
+                fig_compare = go.Figure()
+                x_axis_data = df_dashboard[GSHEET_DATE_COL] # Usa df_dashboard (filtrato o ultimi N)
+                for col in selected_cols_compare:
+                    fig_compare.add_trace(go.Scatter(x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True)))
+                title_compare = f"Andamento Storico Comparato ({data_source_mode})"
+                fig_compare.update_layout(title=title_compare, xaxis_title='Data e Ora', yaxis_title='Valore',
+                                          height=500, hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_compare, use_container_width=True)
+                # Link download grafico
+                compare_filename_base = f"compare_{'_'.join(sl.replace(' ','_') for sl in selected_labels_compare)}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+                st.markdown(get_plotly_download_link(fig_compare, compare_filename_base), unsafe_allow_html=True)
 
-        st.divider()
-        # --- Grafici Individuali ---
-        st.subheader("Grafici Storici Individuali (Periodo Selezionato)")
-        num_cols_individual = 3 # Numero di colonne per i grafici
-        graph_cols = st.columns(num_cols_individual)
-        col_idx_graph = 0
-        x_axis_data_indiv = df_dashboard[GSHEET_DATE_COL] # Usa df_dashboard (filtrato o ultimi N)
-        for col_name in cols_to_monitor:
-            with graph_cols[col_idx_graph % num_cols_individual]:
-                threshold_individual = st.session_state.dashboard_thresholds.get(col_name)
-                label_individual = get_station_label(col_name, short=True)
-                unit = '(mm)' if 'Pioggia' in col_name else ('(m)' if 'Livello' in col_name else ('(%)' if 'Umidit' in col_name else ''))
-                yaxis_title_individual = f"Valore {unit}".strip()
+            st.divider()
+            # --- Grafici Individuali ---
+            st.subheader("Grafici Storici Individuali (Periodo Selezionato)")
+            num_cols_individual = 3 # Numero di colonne per i grafici
+            graph_cols = st.columns(num_cols_individual)
+            col_idx_graph = 0
+            x_axis_data_indiv = df_dashboard[GSHEET_DATE_COL] # Usa df_dashboard (filtrato o ultimi N)
+            for col_name in cols_to_monitor:
+                with graph_cols[col_idx_graph % num_cols_individual]:
+                    threshold_individual = st.session_state.dashboard_thresholds.get(col_name)
+                    label_individual = get_station_label(col_name, short=True)
 
-                fig_individual = go.Figure()
-                fig_individual.add_trace(go.Scatter(x=x_axis_data_indiv, y=df_dashboard[col_name], mode='lines', name=label_individual))
-                # Aggiungi linea soglia se definita
-                if threshold_individual is not None:
-                    fig_individual.add_hline(y=threshold_individual, line_dash="dash", line_color="red",
-                                             annotation_text=f"Soglia ({float(threshold_individual):.1f})", annotation_position="bottom right")
+                    unit_match_indiv = re.search(r'\((.*?)\)|\[(.*?)\]', col_name)
+                    unit_indiv = ""
+                    if unit_match_indiv:
+                         unit_content = unit_match_indiv.group(1) or unit_match_indiv.group(2)
+                         if unit_content: unit_indiv = f"({unit_content.strip()})"
 
-                fig_individual.update_layout(title=f"{label_individual}", xaxis_title=None, yaxis_title=yaxis_title_individual,
-                                             height=300, hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), template="plotly_white")
-                fig_individual.update_yaxes(rangemode='tozero') # Asse Y da zero
-                st.plotly_chart(fig_individual, use_container_width=True)
+                    yaxis_title_individual = f"Valore {unit_indiv}".strip()
 
-                # Link download grafico individuale
-                ind_filename_base = f"sensor_{label_individual.replace(' ','_').replace('(','').replace(')','')}_{datetime.now().strftime('%Y%m%d_%H%M')}"
-                st.markdown(get_plotly_download_link(fig_individual, ind_filename_base, text_html="HTML", text_png="PNG"), unsafe_allow_html=True)
-            col_idx_graph += 1
+                    fig_individual = go.Figure()
+                    fig_individual.add_trace(go.Scatter(x=x_axis_data_indiv, y=df_dashboard[col_name], mode='lines', name=label_individual))
+                    # Aggiungi linea soglia se definita
+                    if threshold_individual is not None:
+                        fig_individual.add_hline(y=threshold_individual, line_dash="dash", line_color="red",
+                                                 annotation_text=f"Soglia ({float(threshold_individual):.1f})", annotation_position="bottom right")
+
+                    fig_individual.update_layout(title=f"{label_individual}", xaxis_title=None, yaxis_title=yaxis_title_individual,
+                                                 height=300, hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), template="plotly_white")
+                    fig_individual.update_yaxes(rangemode='tozero') # Asse Y da zero
+                    st.plotly_chart(fig_individual, use_container_width=True)
+
+                    # Link download grafico individuale
+                    ind_filename_base = f"sensor_{label_individual.replace(' ','_').replace('(','').replace(')','')}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+                    st.markdown(get_plotly_download_link(fig_individual, ind_filename_base, text_html="HTML", text_png="PNG"), unsafe_allow_html=True)
+                col_idx_graph += 1
+        else:
+            st.info("Grafici storici non disponibili perché la colonna data GSheet non è stata trovata.")
 
         st.divider()
         # --- Riepilogo Alert Attivi (basato su ultimo valore visualizzato) ---
@@ -1972,10 +2108,16 @@ if page == 'Dashboard':
              for col, val, thr in sorted_alerts:
                  label_alert = get_station_label(col, short=False); sensor_type_alert = STATION_COORDS.get(col, {}).get('type', '')
                  type_str = f" ({sensor_type_alert})" if sensor_type_alert else ""
-                 unit = '(mm)' if 'Pioggia' in col else ('(m)' if 'Livello' in col else ('(%)' if 'Umidit' in col else ''))
-                 val_fmt = f"{val:.1f}" if unit in ['(mm)', '(%)'] else f"{val:.2f}"
+
+                 unit_match_alert = re.search(r'\((.*?)\)|\[(.*?)\]', col)
+                 unit_alert = ""
+                 if unit_match_alert:
+                    unit_content = unit_match_alert.group(1) or unit_match_alert.group(2)
+                    if unit_content: unit_alert = f"({unit_content.strip()})"
+
+                 val_fmt = f"{val:.1f}" if unit_alert in ['(mm)', '(%)'] else f"{val:.2f}"
                  thr_fmt = f"{float(thr):.1f}" if isinstance(thr, (int, float, np.number)) else str(thr)
-                 alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit}** >= Soglia **{thr_fmt}{unit}**\n"
+                 alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit_alert}** >= Soglia **{thr_fmt}{unit_alert}**\n"
              st.markdown(alert_md)
         else: st.success("Nessuna soglia superata nell'ultimo rilevamento del periodo visualizzato.")
 
@@ -1996,13 +2138,8 @@ if page == 'Dashboard':
                 const intervalIdKey = 'streamlit_auto_refresh_interval_id_{component_key}';
                 if (window[intervalIdKey]) {{ clearInterval(window[intervalIdKey]); }} // Clear previous
                 window[intervalIdKey] = setInterval(function() {{
-                    // Check if the dashboard page is still active (optional, but good practice)
-                    // This requires knowing how Streamlit internally identifies the active page,
-                    // which might be complex or unstable. For simplicity, we'll always rerun.
                     if (window.streamlitHook && typeof window.streamlitHook.rerunScript === 'function') {{
                         console.log('Triggering Streamlit rerun via JS timer ({component_key})');
-                        // Rerun only if custom range is NOT checked (check again client-side is hard)
-                        // We rely on the Python logic disabling this section if custom range is on.
                          window.streamlitHook.rerunScript(null);
                     }} else {{ console.warn('Streamlit hook not available for JS auto-refresh.'); }}
                 }}, {DASHBOARD_REFRESH_INTERVAL_SECONDS * 1000});
@@ -2074,6 +2211,10 @@ elif page == 'Simulazione':
 
          # Mappatura colonne GSheet -> Feature Passate Modello Seq2Seq
          past_feature_cols_s2s = active_config["all_past_feature_columns"]
+         # Aggiungere la colonna data GSheet alla mappatura se esiste nel modello
+         # (spesso non è una feature diretta, ma necessaria per recupero/timestamp)
+         date_col_model_name = st.session_state.date_col_name_csv # Nome colonna data nel modello (da CSV)
+
          column_mapping_gsheet_to_past_s2s = {
              # NOME_COLONNA_GSHEET : NOME_FEATURE_MODELLO_PASSATO (esempio, adattare!)
              'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
@@ -2086,18 +2227,18 @@ elif page == 'Simulazione':
              'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
              'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
              'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-             GSHEET_DATE_COL: st.session_state.date_col_name_csv # Mappa colonna data
+             GSHEET_DATE_COL: date_col_model_name # Mappa colonna data
          }
-         # Filtra solo quelle richieste dal modello
-         relevant_model_cols_for_mapping = past_feature_cols_s2s + [st.session_state.date_col_name_csv]
+         # Filtra solo quelle richieste dal modello (feature passate + colonna data se presente nel mapping)
+         required_model_cols_for_mapping = past_feature_cols_s2s + [date_col_model_name]
          column_mapping_gsheet_to_past_s2s_filtered = {
              gs_col: model_col for gs_col, model_col in column_mapping_gsheet_to_past_s2s.items()
-             if model_col in relevant_model_cols_for_mapping
+             if model_col in required_model_cols_for_mapping
          }
 
          # Gestione Imputazione Feature Passate non mappate
          past_features_set = set(past_feature_cols_s2s)
-         mapped_past_features_target = set(column_mapping_gsheet_to_past_s2s_filtered.values()) - {st.session_state.date_col_name_csv}
+         mapped_past_features_target = set(column_mapping_gsheet_to_past_s2s_filtered.values()) - {date_col_model_name}
          missing_past_features_in_map = list(past_features_set - mapped_past_features_target)
          imputed_values_sim_past_s2s = {}
          if missing_past_features_in_map:
@@ -2113,11 +2254,12 @@ elif page == 'Simulazione':
          if st.button("Carica/Aggiorna Storico da GSheet", key="fetch_gsh_s2s_base"):
               fetch_sim_gsheet_data.clear() # Pulisce cache
               with st.spinner("Recupero dati storici (passato)..."):
-                  required_cols_fetch = past_feature_cols_s2s + [st.session_state.date_col_name_csv]
+                  # Le colonne richieste includono le feature passate e la colonna data
+                  required_cols_fetch = past_feature_cols_s2s + [date_col_model_name]
                   imported_df_past, import_err_past, last_ts_past = fetch_sim_gsheet_data(
                        GSHEET_ID, active_config['input_window_steps'], GSHEET_DATE_COL, GSHEET_DATE_FORMAT,
                        column_mapping_gsheet_to_past_s2s_filtered,
-                       required_cols_fetch,
+                       required_cols_fetch, # Passa le colonne modello (feature+data)
                        imputed_values_sim_past_s2s
                   )
               if import_err_past:
@@ -2125,7 +2267,7 @@ elif page == 'Simulazione':
                   st.session_state.seq2seq_past_data_gsheet = None; fetch_error_gsheet_s2s = import_err_past
               elif imported_df_past is not None:
                   try:
-                      # Seleziona e riordina SOLO le colonne necessarie per l'encoder
+                      # Seleziona e riordina SOLO le colonne FEATURE passate necessarie per l'encoder
                       final_past_df = imported_df_past[past_feature_cols_s2s]
                       st.success(f"Recuperate e processate {len(final_past_df)} righe storiche.")
                       st.session_state.seq2seq_past_data_gsheet = final_past_df
@@ -2133,7 +2275,8 @@ elif page == 'Simulazione':
                       fetch_error_gsheet_s2s = None
                       st.rerun() # Rerun per mostrare subito stato e dati
                   except KeyError as e_cols:
-                      st.error(f"Errore selezione colonne storiche dopo fetch: {e_cols}")
+                      missing_cols_final = [c for c in past_feature_cols_s2s if c not in imported_df_past.columns]
+                      st.error(f"Errore selezione colonne storiche dopo fetch: Colonne mancanti {missing_cols_final}")
                       st.session_state.seq2seq_past_data_gsheet = None; fetch_error_gsheet_s2s = f"Errore colonne: {e_cols}"
               else: st.error("Recupero storico Seq2Seq non riuscito (risultato vuoto)."); fetch_error_gsheet_s2s = "Errore recupero dati."
 
@@ -2170,9 +2313,9 @@ elif page == 'Simulazione':
                  use_container_width=True,
                  column_config={ # Configurazione dinamica colonne forecast
                      col: st.column_config.NumberColumn(
-                         label=get_station_label(col, short=False), # Etichetta breve
+                         label=get_station_label(col, short=True), # Etichetta breve
                          help=f"Valore previsto per {col}",
-                         min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else None,
+                         min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None, # Min 0 per livelli/pioggia/umidità
                          max_value=100.0 if 'umidit' in col.lower() else None,
                          format="%.1f" if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else "%.2f",
                          step=0.5 if ('pioggia' in col.lower() or 'cumulata' in col.lower()) else (1.0 if 'umidit' in col.lower() else 0.1),
@@ -2185,8 +2328,12 @@ elif page == 'Simulazione':
              forecast_data_valid_s2s = False
              if edited_forecast_df is not None and not edited_forecast_df.isnull().any().any():
                  if edited_forecast_df.shape == (forecast_steps_s2s, len(forecast_input_cols_s2s)):
-                     forecast_data_valid_s2s = True
-                     # st.caption("Previsioni future inserite correttamente.") # Meno verboso
+                     try:
+                         # Tenta conversione a float per essere sicuri
+                         edited_forecast_df_float = edited_forecast_df.astype(float)
+                         forecast_data_valid_s2s = True
+                     except ValueError:
+                         st.warning("Valori non numerici rilevati nella tabella previsioni.")
                  else:
                       st.warning("Numero di righe o colonne errato nella tabella previsioni.")
              else:
@@ -2227,17 +2374,18 @@ elif page == 'Simulazione':
                            # Rinomina colonne per leggibilità tabella display
                            rename_dict = {'Ora Prevista': 'Ora Prevista'}
                            for col in target_columns_model:
-                               unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""
-                               new_name = f"{get_station_label(col, short=False)} {unit_str}".strip()
+                               unit_match = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit_match.group(1) or unit_match.group(2)})" if unit_match and (unit_match.group(1) or unit_match.group(2)) else ""
+                               new_name = f"{get_station_label(col, short=True)} {unit_str}".strip() # Usa etichetta breve
                                count = 1; final_name = new_name
                                while final_name in rename_dict.values(): count += 1; final_name = f"{new_name}_{count}"
                                rename_dict[col] = final_name
                            results_df_s2s_display = results_df_s2s.copy().rename(columns=rename_dict)
                            st.dataframe(results_df_s2s_display.round(3), hide_index=True)
-                           st.markdown(get_table_download_link(results_df_s2s, f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
+                           st.markdown(get_table_download_link(results_df_s2s, f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
 
                            # Grafici Risultati Individuali
                            st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali)')
+                           # Qui plot_predictions userà SIMULATION_THRESHOLDS
                            figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s)
                            num_graph_cols = min(len(figs_sim_s2s), 3)
                            sim_cols = st.columns(num_graph_cols)
@@ -2268,8 +2416,18 @@ elif page == 'Simulazione':
                                    x=x_axis_comb,
                                    y=predictions_s2s[:, i],
                                    mode='lines+markers',
-                                   name=get_station_label(sensor, short=False) # Usa etichetta breve per leggenda
+                                   name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
                                ))
+                               # --- AGGIUNTA SOGLIE ANCHE AL COMBINATO ---
+                               threshold_info_comb = SIMULATION_THRESHOLDS.get(sensor, {})
+                               soglia_att_comb = threshold_info_comb.get('attenzione')
+                               soglia_all_comb = threshold_info_comb.get('allerta')
+                               # Aggiungi linee solo se sono livelli (o comunque se definite)
+                               if soglia_att_comb is not None:
+                                    fig_combined_s2s.add_hline(y=soglia_att_comb, line_dash="dash", line_color="rgba(255,165,0,0.6)", annotation_text=f"Att.{get_station_label(sensor, short=True)} ({soglia_att_comb:.1f})", annotation_position="bottom left")
+                               if soglia_all_comb is not None:
+                                     fig_combined_s2s.add_hline(y=soglia_all_comb, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"All.{get_station_label(sensor, short=True)} ({soglia_all_comb:.1f})", annotation_position="top left")
+                               # --- FINE SOGLIE COMBINATO ---
 
                            # --- MODIFICA TITOLO GRAFICO COMBINATO (USA COSTANTE) ---
                            attribution_text_comb = ATTRIBUTION_PHRASE
@@ -2309,6 +2467,9 @@ elif page == 'Simulazione':
          predictions_sim_lstm = None # Inizializza variabile per risultati LSTM
          start_pred_time_lstm = None # Inizializza variabile per timestamp LSTM
 
+         # Recupera le feature columns specifiche per il modello LSTM attivo
+         feature_columns_current_model = active_config.get("feature_columns", st.session_state.feature_columns)
+
          if sim_method == 'Manuale (Valori Costanti)':
              st.markdown(f'Inserisci valori costanti per le **{len(feature_columns_current_model)}** feature di input.')
              st.caption(f"Questi valori saranno ripetuti per i **{input_steps}** passi temporali ({input_steps*0.5:.1f} ore) richiesti dal modello.")
@@ -2319,7 +2480,7 @@ elif page == 'Simulazione':
              for feature in feature_columns_current_model:
                  with cols_manual_lstm[col_idx_manual % 3]:
                      label = get_station_label(feature, short=True)
-                     unit = re.search(r'\[(.*?)\]|\((.*?)\)', feature); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""
+                     unit_match = re.search(r'\[(.*?)\]|\((.*?)\)', feature); unit_str = f"({unit_match.group(1) or unit_match.group(2)})" if unit_match and (unit_match.group(1) or unit_match.group(2)) else ""
                      fmt = "%.1f" if 'pioggia' in feature.lower() or 'umidit' in feature.lower() else "%.2f"
                      step = 0.5 if 'pioggia' in feature.lower() else (1.0 if 'umidit' in feature.lower() else 0.1)
                      try:
@@ -2343,9 +2504,13 @@ elif page == 'Simulazione':
              if st.button('Esegui Simulazione LSTM (Manuale)', type="primary", disabled=(not input_ready_manual), key="sim_run_exec_lstm_manual"):
                  if input_ready_manual:
                       with st.spinner('Simulazione LSTM (Manuale) in corso...'):
-                           scaler_features_lstm, scaler_targets_lstm = active_scalers # Scaler da tupla
-                           predictions_sim_lstm = predict(active_model, sim_data_input_manual, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                           start_pred_time_lstm = datetime.now(italy_tz) # Usa ora corrente per manuale
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
+                               scaler_features_lstm, scaler_targets_lstm = active_scalers # Scaler da tupla
+                               predictions_sim_lstm = predict(active_model, sim_data_input_manual, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
+                               start_pred_time_lstm = datetime.now(italy_tz) # Usa ora corrente per manuale
+                           else:
+                               st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                               predictions_sim_lstm = None
                  else: st.error("Dati input manuali non pronti o invalidi.")
 
 
@@ -2355,6 +2520,7 @@ elif page == 'Simulazione':
              st.caption(f"Verranno recuperati i dati dal Foglio Google (ID: `{GSHEET_ID}`).")
 
              # Mappatura GSheet -> Feature Modello LSTM
+             date_col_model_name = st.session_state.date_col_name_csv # Nome colonna data nel modello (da CSV)
              column_mapping_gsheet_to_lstm = {
                  'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)', 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
                  'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)', 'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
@@ -2362,15 +2528,15 @@ elif page == 'Simulazione':
                  'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)', 'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
                  'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)', 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
                  'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-                 GSHEET_DATE_COL: st.session_state.date_col_name_csv # Mappa data
+                 GSHEET_DATE_COL: date_col_model_name # Mappa data
              }
              # Filtra mappatura solo per colonne richieste da feature_columns_current_model + data
-             relevant_model_cols_lstm_map = feature_columns_current_model + [st.session_state.date_col_name_csv]
+             relevant_model_cols_lstm_map = feature_columns_current_model + [date_col_model_name]
              column_mapping_gsheet_to_lstm_filtered = { gs_col: model_col for gs_col, model_col in column_mapping_gsheet_to_lstm.items() if model_col in relevant_model_cols_lstm_map }
 
              # Imputazione per feature LSTM non mappate
              lstm_features_set = set(feature_columns_current_model)
-             mapped_lstm_features_target = set(column_mapping_gsheet_to_lstm_filtered.values()) - {st.session_state.date_col_name_csv}
+             mapped_lstm_features_target = set(column_mapping_gsheet_to_lstm_filtered.values()) - {date_col_model_name}
              missing_lstm_features_in_map = list(lstm_features_set - mapped_lstm_features_target)
              imputed_values_sim_lstm_gs = {}
              if missing_lstm_features_in_map:
@@ -2385,25 +2551,29 @@ elif page == 'Simulazione':
              if st.button("Importa da Google Sheet (LSTM)", key="sim_run_gsheet_import_lstm"):
                  fetch_sim_gsheet_data.clear()
                  with st.spinner("Recupero dati LSTM da GSheet..."):
-                     required_cols_lstm_fetch = feature_columns_current_model + [st.session_state.date_col_name_csv]
+                     # Colonne richieste: features + data
+                     required_cols_lstm_fetch = feature_columns_current_model + [date_col_model_name]
                      imported_df_lstm, import_err_lstm, last_ts_lstm = fetch_sim_gsheet_data(
                           GSHEET_ID, input_steps, GSHEET_DATE_COL, GSHEET_DATE_FORMAT,
                           column_mapping_gsheet_to_lstm_filtered,
-                          required_cols_lstm_fetch, imputed_values_sim_lstm_gs
+                          required_cols_lstm_fetch, # Passa le colonne modello (feature+data)
+                          imputed_values_sim_lstm_gs
                      )
                  if import_err_lstm:
                      st.error(f"Recupero GSheet per LSTM fallito: {import_err_lstm}")
                      st.session_state.imported_sim_data_gs_df_lstm = None; fetch_error_gsheet_lstm = import_err_lstm
                  elif imported_df_lstm is not None:
                      try:
-                         final_lstm_df = imported_df_lstm[feature_columns_current_model] # Seleziona solo feature input
+                         # Seleziona e riordina SOLO le colonne FEATURE necessarie per l'input LSTM
+                         final_lstm_df = imported_df_lstm[feature_columns_current_model]
                          st.success(f"Recuperate e processate {len(final_lstm_df)} righe LSTM da GSheet.")
                          st.session_state.imported_sim_data_gs_df_lstm = final_lstm_df
                          st.session_state.imported_sim_start_time_gs_lstm = last_ts_lstm if last_ts_lstm else datetime.now(italy_tz)
                          fetch_error_gsheet_lstm = None
                          st.rerun() # Rerun per aggiornare stato
                      except KeyError as e_cols_lstm:
-                         st.error(f"Errore selezione colonne LSTM dopo fetch: {e_cols_lstm}")
+                         missing_cols_final_lstm = [c for c in feature_columns_current_model if c not in imported_df_lstm.columns]
+                         st.error(f"Errore selezione colonne LSTM dopo fetch: Colonne mancanti {missing_cols_final_lstm}")
                          st.session_state.imported_sim_data_gs_df_lstm = None; fetch_error_gsheet_lstm = f"Errore colonne: {e_cols_lstm}"
                  else: st.error("Recupero GSheet per LSTM non riuscito."); fetch_error_gsheet_lstm = "Errore sconosciuto."
 
@@ -2434,9 +2604,13 @@ elif page == 'Simulazione':
              if st.button('Esegui Simulazione LSTM (GSheet)', type="primary", disabled=(not input_ready_lstm_gs), key="sim_run_exec_lstm_gsheet"):
                   if input_ready_lstm_gs:
                       with st.spinner('Simulazione LSTM (GSheet) in corso...'):
-                           scaler_features_lstm, scaler_targets_lstm = active_scalers
-                           predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                           start_pred_time_lstm = sim_start_time_lstm_gs # Usa timestamp da GSheet
+                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
+                                scaler_features_lstm, scaler_targets_lstm = active_scalers
+                                predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
+                                start_pred_time_lstm = sim_start_time_lstm_gs # Usa timestamp da GSheet
+                            else:
+                                st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                                predictions_sim_lstm = None
                   else: st.error("Dati input da GSheet non pronti o non importati.")
 
 
@@ -2463,7 +2637,7 @@ elif page == 'Simulazione':
                  column_config={ # Configurazione dinamica colonne
                      col: st.column_config.NumberColumn(
                          label=get_station_label(col, short=True), help=f"Valore storico per {col}",
-                         min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else None,
+                         min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None,
                          max_value=100.0 if 'umidit' in col.lower() else None,
                          format="%.1f" if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else "%.2f",
                          step=0.5 if ('pioggia' in col.lower() or 'cumulata' in col.lower()) else (1.0 if 'umidit' in col.lower() else 0.1),
@@ -2479,6 +2653,7 @@ elif page == 'Simulazione':
                          sim_data_input_lstm_editor = edited_lstm_df[feature_columns_current_model].astype(float).values
                          validation_passed_editor = True
                      except KeyError as e_key_edit: st.error(f"Errore colonna tabella: {e_key_edit}")
+                     except ValueError: st.error("Valori non numerici inseriti nella tabella.")
                      except Exception as e_conv_edit: st.error(f"Errore conversione dati tabella: {e_conv_edit}")
                  else: st.warning("Numero righe/colonne errato nella tabella.")
              else: st.warning("Completa o correggi la tabella. Tutti i valori devono essere numerici.")
@@ -2488,9 +2663,13 @@ elif page == 'Simulazione':
              if st.button('Esegui Simulazione LSTM (Tabella)', type="primary", disabled=(not input_ready_lstm_editor), key="sim_run_exec_lstm_editor"):
                   if input_ready_lstm_editor:
                       with st.spinner('Simulazione LSTM (Tabella) in corso...'):
-                           scaler_features_lstm, scaler_targets_lstm = active_scalers
-                           predictions_sim_lstm = predict(active_model, sim_data_input_lstm_editor, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                           start_pred_time_lstm = datetime.now(italy_tz) # Usa ora corrente per tabella
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
+                               scaler_features_lstm, scaler_targets_lstm = active_scalers
+                               predictions_sim_lstm = predict(active_model, sim_data_input_lstm_editor, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
+                               start_pred_time_lstm = datetime.now(italy_tz) # Usa ora corrente per tabella
+                           else:
+                               st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                               predictions_sim_lstm = None
                   else: st.error("Dati input da tabella non pronti o invalidi.")
 
 
@@ -2529,9 +2708,13 @@ elif page == 'Simulazione':
              if st.button('Esegui Simulazione LSTM (CSV)', type="primary", disabled=(not input_ready_lstm_csv), key="sim_run_exec_lstm_csv"):
                  if input_ready_lstm_csv:
                       with st.spinner('Simulazione LSTM (CSV) in corso...'):
-                           scaler_features_lstm, scaler_targets_lstm = active_scalers
-                           predictions_sim_lstm = predict(active_model, sim_data_input_lstm_csv, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                           start_pred_time_lstm = sim_start_time_lstm_csv # Usa timestamp da CSV
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
+                               scaler_features_lstm, scaler_targets_lstm = active_scalers
+                               predictions_sim_lstm = predict(active_model, sim_data_input_lstm_csv, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
+                               start_pred_time_lstm = sim_start_time_lstm_csv # Usa timestamp da CSV
+                           else:
+                                st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                                predictions_sim_lstm = None
                  else: st.error("Dati input da CSV non pronti o invalidi.")
 
          # --- Visualizzazione Risultati LSTM (comune a tutti i metodi) ---
@@ -2559,17 +2742,18 @@ elif page == 'Simulazione':
              if 'Ora Prevista' in results_df_lstm.columns: rename_dict_lstm['Ora Prevista'] = 'Ora Prevista'
              if 'Passo Futuro' in results_df_lstm.columns: rename_dict_lstm['Passo Futuro'] = 'Passo Futuro'
              for col in target_columns_model:
-                 unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""
-                 new_name = f"{get_station_label(col, short=True)} {unit_str}".strip()
+                 unit_match = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit_match.group(1) or unit_match.group(2)})" if unit_match and (unit_match.group(1) or unit_match.group(2)) else ""
+                 new_name = f"{get_station_label(col, short=True)} {unit_str}".strip() # Usa etichetta breve
                  count = 1; final_name = new_name
                  while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
                  rename_dict_lstm[col] = final_name
              results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
              st.dataframe(results_df_lstm_display.round(3), hide_index=True)
-             st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
+             st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
 
              # Grafici Risultati Individuali
              st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali)')
+             # Qui plot_predictions userà SIMULATION_THRESHOLDS
              figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm)
              num_graph_cols_lstm = min(len(figs_sim_lstm), 3)
              sim_cols_lstm = st.columns(num_graph_cols_lstm)
@@ -2588,7 +2772,7 @@ elif page == 'Simulazione':
              st.subheader(f'Grafico Combinato Idrometri Output (LSTM {sim_method})')
              fig_combined_lstm = go.Figure()
              # Genera asse X
-             if start_pred_time_lstm:
+             if start_pred_time_lstm and len(pred_times_lstm) == output_steps_actual: # Verifica se pred_times_lstm è definito e corretto
                  x_axis_comb_lstm = pred_times_lstm # Usa le date/ore calcolate per la tabella
                  x_title_comb_lstm = "Data e Ora Previste"
                  x_tick_format_lstm = "%d/%m %H:%M"
@@ -2604,6 +2788,16 @@ elif page == 'Simulazione':
                      mode='lines+markers',
                      name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
                  ))
+                 # --- AGGIUNTA SOGLIE ANCHE AL COMBINATO ---
+                 #threshold_info_comb_lstm = SIMULATION_THRESHOLDS.get(sensor, {})
+                 #soglia_att_comb_lstm = threshold_info_comb_lstm.get('attenzione')
+                 #soglia_all_comb_lstm = threshold_info_comb_lstm.get('allerta')
+                 # Aggiungi linee solo se sono livelli (o comunque se definite)
+                 #if soglia_att_comb_lstm is not None:
+                 #    fig_combined_lstm.add_hline(y=soglia_att_comb_lstm, line_dash="dash", line_color="rgba(255,165,0,0.6)", annotation_text=f"Att.{get_station_label(sensor, short=True)} ({soglia_att_comb_lstm:.1f})", annotation_position="bottom left")
+                 #if soglia_all_comb_lstm is not None:
+                 #     fig_combined_lstm.add_hline(y=soglia_all_comb_lstm, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"All.{get_station_label(sensor, short=True)} ({soglia_all_comb_lstm:.1f})", annotation_position="top left")
+                 # --- FINE SOGLIE COMBINATO ---
 
              # --- MODIFICA TITOLO GRAFICO COMBINATO (USA COSTANTE) ---
              attribution_text_comb = ATTRIBUTION_PHRASE
@@ -2630,9 +2824,10 @@ elif page == 'Simulazione':
              # --- FINE MODIFICA ---
              # --- Fine Grafico Combinato ---
 
-         elif st.session_state.get(f"sim_run_exec_lstm_{sim_method.split()[0].lower()}", False): # Se il bottone era stato premuto ma la predizione è fallita
+         elif st.session_state.get(f"sim_run_exec_lstm_{sim_method.split()[0].lower()}_state", False): # Usa una chiave di stato per il bottone
+             # Se il bottone è stato premuto (chiave di stato è True) ma la predizione è None, mostra errore.
              st.error(f"Predizione simulazione LSTM ({sim_method}) fallita.")
-
+             st.session_state[f"sim_run_exec_lstm_{sim_method.split()[0].lower()}_state"] = False # Resetta lo stato
 
 # --- PAGINA ANALISI DATI STORICI ---
 elif page == 'Analisi Dati Storici':
@@ -2771,8 +2966,7 @@ elif page == 'Allenamento Modello':
              st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
              # 1. Prepara Dati
              with st.spinner("Preparazione dati LSTM..."):
-                  # NOTA: prepare_training_data prende input/output window in ORE, non steps
-                  # Convertiamo gli steps (da UI) in ore per la funzione
+                  # prepare_training_data prende input/output window in ORE, non steps
                   input_hours_lstm = iw_t_lstm / 2
                   output_hours_lstm = ow_t_lstm / 2 # L'output window qui è in ORE
 
