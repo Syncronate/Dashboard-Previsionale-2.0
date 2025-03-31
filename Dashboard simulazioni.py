@@ -50,6 +50,12 @@ DEFAULT_THRESHOLDS = {
     'Nevola - Livello Nevola (mt)': 2.0, 'Misa - Livello Misa (mt)': 2.8,
     'Ponte Garibaldi - Livello Misa 2 (mt)': 4.0
 }
+
+# --- NUOVE COSTANTI PER LA FRASE DI ATTRIBUZIONE ---
+ATTRIBUTION_PHRASE = "Previsione progettata e elaborata da Alberto Bussaglia, per maggiori info contattare il sottoscritto"
+ATTRIBUTION_PHRASE_FILENAME_SUFFIX = "_by_Alberto_Bussaglia" # Versione sicura per nomi file
+# --- FINE NUOVE COSTANTI ---
+
 italy_tz = pytz.timezone('Europe/Rome')
 HUMIDITY_COL_NAME = "Umidita' Sensore 3452 (Montemurello)" # Colonna specifica umidità
 
@@ -649,8 +655,8 @@ def plot_predictions(predictions, config, start_time=None):
     output_steps = predictions.shape[0] # Steps previsti
     total_hours_predicted = output_steps * 0.5
 
-    # Testo da aggiungere al titolo
-    attribution_text = "Previsione progettata e elaborata da Alberto Bussaglia, per maggiori info contattare il sottoscritto"
+    # Testo da aggiungere al titolo - USA LA COSTANTE GLOBALE
+    attribution_text = ATTRIBUTION_PHRASE
 
     figs = []
     for i, sensor in enumerate(target_cols):
@@ -671,7 +677,7 @@ def plot_predictions(predictions, config, start_time=None):
         unit_match = re.search(r'\((.*?)\)', sensor)
         y_axis_unit = unit_match.group(1).strip() if unit_match else "Valore"
 
-        # --- MODIFICA TITOLO ---
+        # --- MODIFICA TITOLO (USA LA COSTANTE) ---
         plot_title = f'Previsione {model_type} - {station_name_graph}<br><span style="font-size:10px;">{attribution_text}</span>'
         # --- FINE MODIFICA TITOLO ---
 
@@ -1193,35 +1199,31 @@ def get_binary_file_download_link(file_object, filename, text):
 def get_plotly_download_link(fig, filename_base, text_html="Scarica HTML", text_png="Scarica PNG"):
     """Genera link download per grafico Plotly (HTML, PNG se kaleido è installato)."""
     href_html = ""; href_png = ""
+    # Pulisci ulteriormente il nome base per sicurezza file system
+    safe_filename_base = re.sub(r'[^\w-]', '_', filename_base)
+
     # Download HTML
     try:
-        # --- MODIFICA FILENAME HTML ---
-        # Pulisci ulteriormente il nome base per sicurezza
-        safe_filename_base = re.sub(r'[^\w-]', '_', filename_base)
         html_filename = f"{safe_filename_base}.html"
-        # --- FINE MODIFICA ---
         buf_html = io.StringIO(); fig.write_html(buf_html, include_plotlyjs='cdn')
         buf_html.seek(0); b64_html = base64.b64encode(buf_html.getvalue().encode()).decode()
-        href_html = f'<a href="data:text/html;base64,{b64_html}" download="{html_filename}">{text_html}</a>' # Usa html_filename
+        href_html = f'<a href="data:text/html;base64,{b64_html}" download="{html_filename}">{text_html}</a>'
     except Exception as e_html:
-        print(f"Errore generazione download HTML {filename_base}: {e_html}")
+        print(f"Errore generazione download HTML {safe_filename_base}: {e_html}")
         href_html = "<i>Errore HTML</i>"
 
     # Download PNG (richiede kaleido: pip install kaleido)
     try:
         import importlib
         if importlib.util.find_spec("kaleido"):
-            # --- MODIFICA FILENAME PNG ---
-            safe_filename_base = re.sub(r'[^\w-]', '_', filename_base)
             png_filename = f"{safe_filename_base}.png"
-            # --- FINE MODIFICA ---
             buf_png = io.BytesIO(); fig.write_image(buf_png, format="png", scale=2) # Scale per risoluzione migliore
             buf_png.seek(0); b64_png = base64.b64encode(buf_png.getvalue()).decode()
-            href_png = f'<a href="data:image/png;base64,{b64_png}" download="{png_filename}">{text_png}</a>' # Usa png_filename
+            href_png = f'<a href="data:image/png;base64,{b64_png}" download="{png_filename}">{text_png}</a>'
         else:
              print("Nota: 'kaleido' non installato, download PNG grafico disabilitato.")
     except Exception as e_png:
-        print(f"Errore generazione download PNG {filename_base}: {e_png}")
+        print(f"Errore generazione download PNG {safe_filename_base}: {e_png}")
         href_png = "<i>Errore PNG</i>"
 
     return f"{href_html} {href_png}".strip()
@@ -2243,8 +2245,8 @@ elif page == 'Simulazione':
                               with sim_cols[i % num_graph_cols]:
                                    target_col_name = target_columns_model[i]
                                    s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                                   # --- MODIFICA FILENAME SIMULAZIONE S2S INDIVIDUALE ---
-                                   filename_base_s2s_ind = f"grafico_sim_s2s_{s_name_file}_by_Alberto_Bussaglia_{datetime.now().strftime('%Y%m%d_%H%M')}"
+                                   # --- MODIFICA FILENAME SIMULAZIONE S2S INDIVIDUALE (USA COSTANTE) ---
+                                   filename_base_s2s_ind = f"grafico_sim_s2s_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                                    st.plotly_chart(fig_sim, use_container_width=True)
                                    st.markdown(get_plotly_download_link(fig_sim, filename_base_s2s_ind), unsafe_allow_html=True)
                                    # --- FINE MODIFICA ---
@@ -2269,8 +2271,8 @@ elif page == 'Simulazione':
                                    name=get_station_label(sensor, short=False) # Usa etichetta breve per leggenda
                                ))
 
-                           # --- MODIFICA TITOLO GRAFICO COMBINATO ---
-                           attribution_text_comb = "Previsione progettata e elaborata da Alberto Bussaglia, per maggiori info contattare il sottoscritto"
+                           # --- MODIFICA TITOLO GRAFICO COMBINATO (USA COSTANTE) ---
+                           attribution_text_comb = ATTRIBUTION_PHRASE
                            combined_title_s2s = f'Previsioni Combinate {active_model_type}<br><span style="font-size:10px;">{attribution_text_comb}</span>'
                            # --- FINE MODIFICA ---
 
@@ -2288,8 +2290,8 @@ elif page == 'Simulazione':
                                fig_combined_s2s.update_xaxes(tickformat=x_tick_format)
                            fig_combined_s2s.update_yaxes(rangemode='tozero')
                            st.plotly_chart(fig_combined_s2s, use_container_width=True)
-                           # --- MODIFICA FILENAME SIMULAZIONE S2S COMBINATO ---
-                           filename_base_s2s_comb = f"grafico_combinato_sim_s2s_by_Alberto_Bussaglia_{datetime.now().strftime('%Y%m%d_%H%M')}"
+                           # --- MODIFICA FILENAME SIMULAZIONE S2S COMBINATO (USA COSTANTE) ---
+                           filename_base_s2s_comb = f"grafico_combinato_sim_s2s{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                            st.markdown(get_plotly_download_link(fig_combined_s2s, filename_base_s2s_comb), unsafe_allow_html=True)
                            # --- FINE MODIFICA ---
                            # --- Fine Grafico Combinato ---
@@ -2575,8 +2577,8 @@ elif page == 'Simulazione':
                  with sim_cols_lstm[i % num_graph_cols_lstm]:
                       target_col_name = target_columns_model[i]
                       s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                      # --- MODIFICA FILENAME SIMULAZIONE LSTM INDIVIDUALE ---
-                      filename_base_lstm_ind = f"grafico_sim_lstm_{sim_method.split()[0].lower()}_{s_name_file}_by_Alberto_Bussaglia_{datetime.now().strftime('%Y%m%d_%H%M')}"
+                      # --- MODIFICA FILENAME SIMULAZIONE LSTM INDIVIDUALE (USA COSTANTE) ---
+                      filename_base_lstm_ind = f"grafico_sim_lstm_{sim_method.split()[0].lower()}_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                       st.plotly_chart(fig_sim, use_container_width=True)
                       st.markdown(get_plotly_download_link(fig_sim, filename_base_lstm_ind), unsafe_allow_html=True)
                       # --- FINE MODIFICA ---
@@ -2603,8 +2605,8 @@ elif page == 'Simulazione':
                      name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
                  ))
 
-             # --- MODIFICA TITOLO GRAFICO COMBINATO ---
-             attribution_text_comb = "Previsione progettata e elaborata da Alberto Bussaglia, per maggiori info contattare il sottoscritto"
+             # --- MODIFICA TITOLO GRAFICO COMBINATO (USA COSTANTE) ---
+             attribution_text_comb = ATTRIBUTION_PHRASE
              combined_title_lstm = f'Previsioni Combinate {active_model_type} ({sim_method})<br><span style="font-size:10px;">{attribution_text_comb}</span>'
              # --- FINE MODIFICA ---
 
@@ -2622,8 +2624,8 @@ elif page == 'Simulazione':
                  fig_combined_lstm.update_xaxes(tickformat=x_tick_format_lstm)
              fig_combined_lstm.update_yaxes(rangemode='tozero')
              st.plotly_chart(fig_combined_lstm, use_container_width=True)
-             # --- MODIFICA FILENAME SIMULAZIONE LSTM COMBINATO ---
-             filename_base_lstm_comb = f"grafico_combinato_sim_lstm_{sim_method.split()[0].lower()}_by_Alberto_Bussaglia_{datetime.now().strftime('%Y%m%d_%H%M')}"
+             # --- MODIFICA FILENAME SIMULAZIONE LSTM COMBINATO (USA COSTANTE) ---
+             filename_base_lstm_comb = f"grafico_combinato_sim_lstm_{sim_method.split()[0].lower()}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
              st.markdown(get_plotly_download_link(fig_combined_lstm, filename_base_lstm_comb), unsafe_allow_html=True)
              # --- FINE MODIFICA ---
              # --- Fine Grafico Combinato ---
