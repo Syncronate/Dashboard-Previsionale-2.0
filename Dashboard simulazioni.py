@@ -7,12 +7,12 @@ from sklearn.preprocessing import MinMaxScaler
 import os
 import io
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time # Aggiunto time
 import joblib
 from torch.utils.data import Dataset, DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import plotly.graph_objects as go
-import time
+import time as pytime # Rinominato per evitare conflitti con datetime.time
 import gspread # Importa gspread
 from google.oauth2.service_account import Credentials # Importa Credentials
 import re # Importa re per espressioni regolari
@@ -42,7 +42,7 @@ GSHEET_RELEVANT_COLS = [
     'Ponte Garibaldi - Livello Misa 2 (mt)'
 ]
 DASHBOARD_REFRESH_INTERVAL_SECONDS = 300
-DASHBOARD_HISTORY_ROWS = 48 # 24 ore (48 step da 30 min)
+DASHBOARD_HISTORY_ROWS = 48 # 24 ore (48 step da 30 min) - Usato per vista default
 DEFAULT_THRESHOLDS = {
     'Arcevia - Pioggia Ora (mm)': 10.0, 'Barbara - Pioggia Ora (mm)': 10.0, 'Corinaldo - Pioggia Ora (mm)': 10.0,
     'Misa - Pioggia Ora (mm)': 10.0, 'Umidita\' Sensore 3452 (Montemurello)': 95.0,
@@ -641,7 +641,7 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
 
 # --- Funzione Grafici Previsioni ---
 def plot_predictions(predictions, config, start_time=None):
-    """Genera grafici Plotly per le previsioni (LSTM o Seq2Seq)."""
+    """Genera grafici Plotly INDIVIDUALI per le previsioni (LSTM o Seq2Seq)."""
     if config is None or predictions is None: return []
 
     model_type = config.get("model_type", "LSTM")
@@ -685,9 +685,15 @@ def plot_predictions(predictions, config, start_time=None):
 
 # --- Funzioni Fetch Dati Google Sheet (Dashboard e Simulazione) ---
 @st.cache_data(ttl=DASHBOARD_REFRESH_INTERVAL_SECONDS, show_spinner="Recupero dati aggiornati dal foglio Google...")
-def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, date_col, date_format, num_rows_to_fetch=DASHBOARD_HISTORY_ROWS):
-    """Recupera e pulisce i dati recenti da GSheet per la Dashboard."""
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] ESECUZIONE fetch_gsheet_dashboard_data (Rows: {num_rows_to_fetch})")
+def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, date_col, date_format,
+                                fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS):
+    """
+    Recupera e pulisce i dati da GSheet per la Dashboard.
+    Se fetch_all=True, recupera tutti i dati.
+    Se fetch_all=False, recupera le ultime num_rows_default righe.
+    """
+    mode = "tutti i dati" if fetch_all else f"ultime {num_rows_default} righe"
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] ESECUZIONE fetch_gsheet_dashboard_data ({mode})")
     actual_fetch_time = datetime.now(italy_tz)
     try:
         if "GOOGLE_CREDENTIALS" not in st.secrets:
@@ -706,9 +712,17 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
              return None, "Errore: Foglio Google vuoto o con solo intestazione.", actual_fetch_time
 
         headers = all_values[0]
-        # Prendi le ultime num_rows_to_fetch righe di DATI (escludendo header)
-        start_index = max(1, len(all_values) - num_rows_to_fetch)
-        data_rows = all_values[start_index:]
+        if fetch_all:
+            data_rows = all_values[1:] # Tutti i dati tranne header
+            num_rows_fetched = len(data_rows)
+            print(f"GSheet Fetch All: Recuperate {num_rows_fetched} righe.")
+        else:
+            # Prendi le ultime num_rows_default righe di DATI (escludendo header)
+            start_index = max(1, len(all_values) - num_rows_default)
+            data_rows = all_values[start_index:]
+            num_rows_fetched = len(data_rows)
+            print(f"GSheet Fetch Last {num_rows_default}: Recuperate {num_rows_fetched} righe.")
+
 
         # Verifica colonne mancanti
         headers_set = set(headers)
@@ -717,35 +731,47 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
             return None, f"Errore: Colonne GSheet richieste mancanti: {', '.join(missing_cols)}", actual_fetch_time
 
         df = pd.DataFrame(data_rows, columns=headers)
-        df = df[relevant_columns] # Seleziona solo colonne utili
+        # Seleziona solo colonne utili DOPO aver creato il DataFrame con tutti gli headers
+        try:
+             df = df[relevant_columns]
+        except KeyError as e:
+             missing_in_df = [c for c in relevant_columns if c not in df.columns]
+             return None, f"Errore interno: Colonne ({missing_in_df}) non trovate nel DataFrame GSheet dopo la lettura.", actual_fetch_time
+
 
         # Pulizia dati e conversione tipi (gestione data con timezone)
         error_parsing = []
         for col in relevant_columns:
             if col == date_col:
                 try:
-                    df[col] = pd.to_datetime(df[col], format=date_format, errors='coerce')
+                    # Tentativo più robusto con infer_datetime_format
+                    df[col] = pd.to_datetime(df[col], format=date_format if date_format else None, errors='coerce', infer_datetime_format=True)
                     if df[col].isnull().any(): error_parsing.append(f"Formato data non valido per '{col}'")
                     # Localizza o converti a timezone italiana
-                    if df[col].dt.tz is None:
-                        df[col] = df[col].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
-                    else:
-                        df[col] = df[col].dt.tz_convert(italy_tz)
+                    if not df[col].empty and df[col].notna().any(): # Controlla se ci sono date valide
+                        if df[col].dt.tz is None:
+                            df[col] = df[col].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                        else:
+                            df[col] = df[col].dt.tz_convert(italy_tz)
                 except Exception as e_date: error_parsing.append(f"Errore data '{col}': {e_date}"); df[col] = pd.NaT
             else: # Colonne numeriche
                 try:
                     # Conversione robusta: str -> pulisci -> numeric
-                    df_col_str = df[col].astype(str).str.replace(',', '.', regex=False).str.strip()
-                    df[col] = df_col_str.replace(['N/A', '', '-', ' ', 'None', 'null'], np.nan, regex=False)
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    if col in df.columns:
+                        df_col_str = df[col].astype(str).str.replace(',', '.', regex=False).str.strip()
+                        df[col] = df_col_str.replace(['N/A', '', '-', ' ', 'None', 'null'], np.nan, regex=False)
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    else: # Colonna potrebbe mancare se relevant_cols non allineato con headers
+                         error_parsing.append(f"Colonna numerica '{col}' non presente nel DataFrame letto."); df[col] = np.nan
                 except Exception as e_num: error_parsing.append(f"Errore numerico '{col}': {e_num}"); df[col] = np.nan
 
+        # Ordina per data e resetta indice (IMPORTANTE prima di filtrare/selezionare)
         df = df.sort_values(by=date_col, na_position='first').reset_index(drop=True)
 
         # Segnala NaN trovati (non riempire qui per la dashboard)
-        nan_numeric_count = df.drop(columns=[date_col]).isnull().sum().sum()
+        nan_numeric_count = df.drop(columns=[date_col], errors='ignore').isnull().sum().sum()
         if nan_numeric_count > 0:
-             st.caption(f"Nota Dashboard: Trovati {nan_numeric_count} valori mancanti/non numerici nelle ultime {num_rows_to_fetch} righe GSheet.")
+             st.caption(f"Nota Dashboard: Trovati {nan_numeric_count} valori mancanti/non numerici in GSheet.")
 
         error_message = "Attenzione conversione dati GSheet: " + " | ".join(error_parsing) if error_parsing else None
         return df, error_message, actual_fetch_time
@@ -834,10 +860,11 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
                  df_mapped[date_col_model_name] = pd.to_datetime(df_mapped[date_col_model_name], format=date_format_gs, errors='coerce')
                  if df_mapped[date_col_model_name].isnull().any(): st.warning(f"Date non valide trovate in GSheet simulazione ('{date_col_model_name}').")
                  # Localizza/Converti timezone
-                 if df_mapped[date_col_model_name].dt.tz is None:
-                     df_mapped[date_col_model_name] = df_mapped[date_col_model_name].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
-                 else:
-                     df_mapped[date_col_model_name] = df_mapped[date_col_model_name].dt.tz_convert(italy_tz)
+                 if not df_mapped[date_col_model_name].empty and df_mapped[date_col_model_name].notna().any():
+                     if df_mapped[date_col_model_name].dt.tz is None:
+                         df_mapped[date_col_model_name] = df_mapped[date_col_model_name].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                     else:
+                         df_mapped[date_col_model_name] = df_mapped[date_col_model_name].dt.tz_convert(italy_tz)
 
                  df_mapped = df_mapped.sort_values(by=date_col_model_name, na_position='first')
                  # Trova ultimo timestamp valido
@@ -922,10 +949,10 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
         placeholder.plotly_chart(fig, use_container_width=True)
 
     st.write(f"Inizio training LSTM per {epochs} epoche su **{device}**...")
-    start_training_time = time.time()
+    start_training_time = pytime.time()
 
     for epoch in range(epochs):
-        epoch_start_time = time.time(); model.train(); train_loss = 0.0
+        epoch_start_time = pytime.time(); model.train(); train_loss = 0.0
         for i, batch_data in enumerate(train_loader):
             X_batch, y_batch = batch_data
             X_batch, y_batch = X_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)
@@ -958,12 +985,12 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
         progress_percentage = (epoch + 1) / epochs
         current_lr = optimizer.param_groups[0]['lr']
         val_loss_str = f"{val_loss:.6f}" if val_loss is not None and val_loss != float('inf') else "N/A"
-        epoch_time = time.time() - epoch_start_time
+        epoch_time = pytime.time() - epoch_start_time
         status_text.text(f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) | Train Loss: {train_loss:.6f} | Val Loss: {val_loss_str} | LR: {current_lr:.6f}')
         progress_bar.progress(progress_percentage, text=f"Training LSTM: Epoca {epoch+1}/{epochs}")
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
-    total_training_time = time.time() - start_training_time
+    total_training_time = pytime.time() - start_training_time
     st.write(f"Training LSTM completato in {total_training_time:.1f} secondi.")
 
     # Restituisci modello (migliore o finale)
@@ -1024,10 +1051,10 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train,
         placeholder.plotly_chart(fig, use_container_width=True)
 
     st.write(f"Inizio training Seq2Seq per {epochs} epoche su **{device}**...")
-    start_training_time = time.time()
+    start_training_time = pytime.time()
 
     for epoch in range(epochs):
-        epoch_start_time = time.time(); model.train(); train_loss = 0.0
+        epoch_start_time = pytime.time(); model.train(); train_loss = 0.0
         # Calcola teacher forcing ratio per l'epoca (decadimento lineare se specificato)
         current_tf_ratio = 0.5 # Default
         if teacher_forcing_ratio_schedule and isinstance(teacher_forcing_ratio_schedule, list) and len(teacher_forcing_ratio_schedule) == 2:
@@ -1105,13 +1132,13 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train,
         progress_percentage = (epoch + 1) / epochs
         current_lr = optimizer.param_groups[0]['lr']
         val_loss_str = f"{val_loss:.6f}" if val_loss is not None and val_loss != float('inf') else "N/A"
-        epoch_time = time.time() - epoch_start_time
+        epoch_time = pytime.time() - epoch_start_time
         tf_ratio_str = f"{current_tf_ratio:.2f}" if teacher_forcing_ratio_schedule else "N/A"
         status_text.text(f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) | Train Loss: {train_loss:.6f} | Val Loss: {val_loss_str} | TF Ratio: {tf_ratio_str} | LR: {current_lr:.6f}')
         progress_bar.progress(progress_percentage, text=f"Training Seq2Seq: Epoca {epoch+1}/{epochs}")
         update_loss_chart_seq2seq(train_losses, val_losses, loss_chart_placeholder)
 
-    total_training_time = time.time() - start_training_time
+    total_training_time = pytime.time() - start_training_time
     st.write(f"Training Seq2Seq completato in {total_training_time:.1f} secondi.")
 
     # Restituisci modello (migliore o finale)
@@ -1271,6 +1298,12 @@ if 'seq2seq_last_ts_gsheet' not in st.session_state: st.session_state.seq2seq_la
 if 'imported_sim_data_gs_df_lstm' not in st.session_state: st.session_state.imported_sim_data_gs_df_lstm = None
 if 'imported_sim_start_time_gs_lstm' not in st.session_state: st.session_state.imported_sim_start_time_gs_lstm = None
 if 'current_page' not in st.session_state: st.session_state.current_page = 'Dashboard' # Pagina di default
+# NUOVO: Stato per checkbox range date dashboard
+if 'dash_custom_range_check' not in st.session_state: st.session_state.dash_custom_range_check = False
+if 'dash_start_date' not in st.session_state: st.session_state.dash_start_date = datetime.now(italy_tz).date() - timedelta(days=7)
+if 'dash_end_date' not in st.session_state: st.session_state.dash_end_date = datetime.now(italy_tz).date()
+if 'full_gsheet_data_cache' not in st.session_state: st.session_state.full_gsheet_data_cache = None # Cache per dati completi GSheet
+
 
 # ==============================================================================
 # --- LAYOUT STREAMLIT PRINCIPALE ---
@@ -1582,7 +1615,7 @@ with st.sidebar:
             col_idx_thresh += 1
         if st.button("Salva Soglie", key="save_thresholds", type="secondary"):
             st.session_state.dashboard_thresholds = temp_thresholds.copy()
-            st.success("Soglie dashboard aggiornate!"); time.sleep(0.5); st.rerun()
+            st.success("Soglie dashboard aggiornate!"); pytime.sleep(0.5); st.rerun()
 
     st.divider()
 
@@ -1609,7 +1642,8 @@ with st.sidebar:
             if not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
             else: caption = "Allena un nuovo modello"
         radio_captions.append(caption); disabled_options.append(disabled)
-        if opt == 'Dashboard': default_page_idx = i # Imposta Dashboard come default
+        # Trova indice 'Dashboard' per default
+        if opt == 'Dashboard': default_page_idx = i
 
     # Gestione pagina corrente e blocco accesso a pagine disabilitate
     current_page = st.session_state.get('current_page', radio_options[default_page_idx])
@@ -1667,18 +1701,92 @@ if page == 'Dashboard':
         st.error("Errore Configurazione: Credenziali Google mancanti nei secrets di Streamlit.")
         st.stop()
 
-    # Fetch dati GSheet con cache basata su intervallo temporale
-    now_ts = time.time()
-    cache_time_key = int(now_ts // DASHBOARD_REFRESH_INTERVAL_SECONDS)
-    df_dashboard, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(
-        cache_time_key, GSHEET_ID, GSHEET_RELEVANT_COLS,
-        GSHEET_DATE_COL, GSHEET_DATE_FORMAT, DASHBOARD_HISTORY_ROWS
-    )
-    # Aggiorna stato sessione con ultimi dati/errori/timestamp
-    st.session_state.last_dashboard_data = df_dashboard
-    st.session_state.last_dashboard_error = error_msg
-    if df_dashboard is not None or error_msg is None:
-        st.session_state.last_dashboard_fetch_time = actual_fetch_time
+    # --- NUOVO: Opzione per range personalizzato ---
+    st.checkbox("Visualizza intervallo di date personalizzato", key="dash_custom_range_check", value=st.session_state.dash_custom_range_check)
+
+    df_dashboard = None
+    error_msg = None
+    actual_fetch_time = None
+    data_source_mode = "" # Per info status
+
+    if st.session_state.dash_custom_range_check:
+        st.subheader("Seleziona Intervallo Temporale")
+        col_date1, col_date2 = st.columns(2)
+        with col_date1:
+            start_date_select = st.date_input("Data Inizio", key="dash_start_date", value=st.session_state.dash_start_date)
+        with col_date2:
+            end_date_select = st.date_input("Data Fine", key="dash_end_date", value=st.session_state.dash_end_date)
+
+        # Aggiorna session state se le date cambiano
+        if start_date_select != st.session_state.dash_start_date:
+            st.session_state.dash_start_date = start_date_select
+        if end_date_select != st.session_state.dash_end_date:
+            st.session_state.dash_end_date = end_date_select
+
+        # Validazione date
+        if start_date_select > end_date_select:
+            st.error("La Data Fine deve essere uguale o successiva alla Data Inizio.")
+            st.stop()
+
+        # Costruisci datetime completi (timezone-aware) per il filtro
+        start_dt_filter = italy_tz.localize(datetime.combine(start_date_select, time.min))
+        end_dt_filter = italy_tz.localize(datetime.combine(end_date_select, time.max))
+
+        # Fetch di TUTTI i dati (usa cache separata per 'fetch_all=True')
+        now_ts = pytime.time()
+        cache_time_key_full = int(now_ts // (DASHBOARD_REFRESH_INTERVAL_SECONDS * 2)) # Cache più lunga per dati completi
+        df_dashboard_full, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(
+            cache_time_key_full, GSHEET_ID, GSHEET_RELEVANT_COLS,
+            GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=True
+        )
+        # Salva in cache di sessione per evitare refetch se cambia solo filtro
+        if df_dashboard_full is not None:
+            st.session_state.full_gsheet_data_cache = df_dashboard_full
+            st.session_state.last_dashboard_error = error_msg
+            st.session_state.last_dashboard_fetch_time = actual_fetch_time
+
+            # Filtra i dati completi
+            try:
+                df_dashboard = df_dashboard_full[
+                    (df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) &
+                    (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)
+                ].copy() # Usa .copy() per evitare SettingWithCopyWarning
+                data_source_mode = f"Dati da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
+                if df_dashboard.empty:
+                    st.warning(f"Nessun dato trovato nell'intervallo selezionato ({start_date_select.strftime('%d/%m')} - {end_date_select.strftime('%d/%m')}).")
+            except Exception as e_filter:
+                st.error(f"Errore durante il filtraggio dei dati per data: {e}")
+                df_dashboard = None
+        else:
+            # Se fetch fallisce, usa cache di sessione se disponibile
+            df_dashboard_full = st.session_state.get('full_gsheet_data_cache')
+            if df_dashboard_full is not None:
+                 st.warning("Recupero dati GSheet fallito, utilizzo dati precedentemente caricati.")
+                 try:
+                     df_dashboard = df_dashboard_full[
+                         (df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) &
+                         (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)
+                     ].copy()
+                     data_source_mode = f"Dati (da cache) da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
+                 except: pass # Ignora errori filtro su dati cached falliti
+            else:
+                 st.error(f"Recupero dati GSheet fallito: {error_msg}")
+            st.session_state.last_dashboard_error = error_msg # Salva errore
+
+    else: # --- Logica Originale: Ultime 24 Ore ---
+        now_ts = pytime.time()
+        cache_time_key_recent = int(now_ts // DASHBOARD_REFRESH_INTERVAL_SECONDS)
+        df_dashboard, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(
+            cache_time_key_recent, GSHEET_ID, GSHEET_RELEVANT_COLS,
+            GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS
+        )
+        # Aggiorna stato sessione con ultimi dati/errori/timestamp
+        st.session_state.last_dashboard_data = df_dashboard # Salva solo gli ultimi dati
+        st.session_state.last_dashboard_error = error_msg
+        if df_dashboard is not None or error_msg is None: # Aggiorna tempo solo se fetch ok o nessun errore specifico
+            st.session_state.last_dashboard_fetch_time = actual_fetch_time
+        data_source_mode = f"Ultime {DASHBOARD_HISTORY_ROWS // 2} ore circa"
+
 
     # --- Visualizzazione Stato e Bottone Refresh ---
     col_status, col_refresh_btn = st.columns([4, 1])
@@ -1687,31 +1795,33 @@ if page == 'Dashboard':
         if last_fetch_dt_sess:
              fetch_time_ago = datetime.now(italy_tz) - last_fetch_dt_sess
              fetch_secs_ago = int(fetch_time_ago.total_seconds())
-             status_text = f"Dati GSheet ({DASHBOARD_HISTORY_ROWS} righe) alle {last_fetch_dt_sess.strftime('%H:%M:%S')} ({fetch_secs_ago}s fa). Refresh ogni {DASHBOARD_REFRESH_INTERVAL_SECONDS}s."
+             status_text = f"{data_source_mode}. Aggiornato alle {last_fetch_dt_sess.strftime('%H:%M:%S')} ({fetch_secs_ago}s fa)."
+             if not st.session_state.dash_custom_range_check: status_text += f" Refresh auto ogni {DASHBOARD_REFRESH_INTERVAL_SECONDS}s."
              st.caption(status_text)
         else: st.caption("Recupero dati GSheet in corso o fallito...")
+
     with col_refresh_btn:
         if st.button("Aggiorna Ora", key="dash_refresh_button"):
             # Pulisce cache delle funzioni GSheet
             fetch_gsheet_dashboard_data.clear()
             fetch_sim_gsheet_data.clear()
-            st.success("Cache GSheet pulita. Ricaricamento..."); time.sleep(0.5); st.rerun()
+            st.session_state.full_gsheet_data_cache = None # Pulisce anche cache sessione dati completi
+            st.success("Cache GSheet pulita. Ricaricamento..."); pytime.sleep(0.5); st.rerun()
 
-    # Mostra errori GSheet (se presenti)
-    if st.session_state.last_dashboard_error:
-        error_msg_display = st.session_state.last_dashboard_error
-        if any(x in error_msg_display for x in ["API", "Foglio", "Credenziali", "Errore:"]): st.error(f"Errore GSheet: {error_msg_display}")
-        else: st.warning(f"Attenzione Dati GSheet: {error_msg_display}")
+    # Mostra errori GSheet (se presenti) - Usa errore da session state
+    last_error_sess = st.session_state.get('last_dashboard_error')
+    if last_error_sess:
+        if any(x in last_error_sess for x in ["API", "Foglio", "Credenziali", "Errore:"]): st.error(f"Errore GSheet: {last_error_sess}")
+        else: st.warning(f"Attenzione Dati GSheet: {last_error_sess}")
 
-    # --- Visualizzazione Dati e Grafici (usa dati da sessione) ---
-    df_dashboard_sess = st.session_state.get('last_dashboard_data')
-    if df_dashboard_sess is not None and not df_dashboard_sess.empty:
-        # --- Stato Ultimo Rilevamento ---
-        latest_row_data = df_dashboard_sess.iloc[-1]
+    # --- Visualizzazione Dati e Grafici (usa df_dashboard calcolato sopra) ---
+    if df_dashboard is not None and not df_dashboard.empty:
+        # --- Stato Ultimo Rilevamento (nel range visualizzato) ---
+        latest_row_data = df_dashboard.iloc[-1]
         last_update_time = latest_row_data.get(GSHEET_DATE_COL)
         if pd.notna(last_update_time) and isinstance(last_update_time, pd.Timestamp):
              time_now_italy = datetime.now(italy_tz)
-             # Assicura timezone
+             # Assicura timezone (dovrebbe già esserlo dal fetch)
              if last_update_time.tzinfo is None: last_update_time = italy_tz.localize(last_update_time)
              else: last_update_time = last_update_time.tz_convert(italy_tz)
 
@@ -1721,14 +1831,15 @@ if page == 'Dashboard':
              elif minutes_ago < 60: time_ago_str = f"{minutes_ago} min fa"
              else: time_ago_str = f"circa {minutes_ago // 60}h e {minutes_ago % 60}min fa"
 
-             st.markdown(f"**Ultimo rilevamento:** {time_str} ({time_ago_str})")
-             if minutes_ago > 90: # Warning se > 1.5 ore
+             st.markdown(f"**Ultimo rilevamento nel periodo visualizzato:** {time_str} ({time_ago_str})")
+             # Mostra warning solo se in modalità "ultime ore" e il dato è vecchio
+             if not st.session_state.dash_custom_range_check and minutes_ago > 90:
                  st.warning(f"Attenzione: Ultimo dato ricevuto oltre {minutes_ago} minuti fa.")
-        else: st.warning("Timestamp ultimo rilevamento non valido o mancante.")
+        else: st.warning("Timestamp ultimo rilevamento (nel periodo) non valido o mancante.")
 
         st.divider()
         # --- Tabella Valori Attuali e Soglie ---
-        st.subheader("Valori Attuali e Stato Allerta")
+        st.subheader("Valori Ultimo Rilevamento e Stato Allerta")
         cols_to_monitor = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]
         table_rows = []; current_alerts = []
         for col_name in cols_to_monitor:
@@ -1776,11 +1887,11 @@ if page == 'Dashboard':
                 "Soglia Numerica": None
             }
         )
-        st.session_state.active_alerts = current_alerts # Salva allerte attive
+        st.session_state.active_alerts = current_alerts # Salva allerte attive basate sull'ultimo valore visualizzato
 
         st.divider()
         # --- Grafico Comparativo Configurabile ---
-        st.subheader("Grafico Storico Comparativo")
+        st.subheader("Grafico Storico Comparativo (Periodo Selezionato)")
         sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
         default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2] # Default 3 livelli o primi 2 sensori
         selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
@@ -1788,10 +1899,11 @@ if page == 'Dashboard':
 
         if selected_cols_compare:
             fig_compare = go.Figure()
-            x_axis_data = df_dashboard_sess[GSHEET_DATE_COL]
+            x_axis_data = df_dashboard[GSHEET_DATE_COL] # Usa df_dashboard (filtrato o ultimi N)
             for col in selected_cols_compare:
-                fig_compare.add_trace(go.Scatter(x=x_axis_data, y=df_dashboard_sess[col], mode='lines', name=get_station_label(col, short=True)))
-            fig_compare.update_layout(title=f"Andamento Storico Comparato (ultime {DASHBOARD_HISTORY_ROWS//2} ore)", xaxis_title='Data e Ora', yaxis_title='Valore',
+                fig_compare.add_trace(go.Scatter(x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True)))
+            title_compare = f"Andamento Storico Comparato ({data_source_mode})"
+            fig_compare.update_layout(title=title_compare, xaxis_title='Data e Ora', yaxis_title='Valore',
                                       height=500, hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig_compare, use_container_width=True)
             # Link download grafico
@@ -1800,11 +1912,11 @@ if page == 'Dashboard':
 
         st.divider()
         # --- Grafici Individuali ---
-        st.subheader("Grafici Storici Individuali")
+        st.subheader("Grafici Storici Individuali (Periodo Selezionato)")
         num_cols_individual = 3 # Numero di colonne per i grafici
         graph_cols = st.columns(num_cols_individual)
         col_idx_graph = 0
-        x_axis_data_indiv = df_dashboard_sess[GSHEET_DATE_COL]
+        x_axis_data_indiv = df_dashboard[GSHEET_DATE_COL] # Usa df_dashboard (filtrato o ultimi N)
         for col_name in cols_to_monitor:
             with graph_cols[col_idx_graph % num_cols_individual]:
                 threshold_individual = st.session_state.dashboard_thresholds.get(col_name)
@@ -1813,7 +1925,7 @@ if page == 'Dashboard':
                 yaxis_title_individual = f"Valore {unit}".strip()
 
                 fig_individual = go.Figure()
-                fig_individual.add_trace(go.Scatter(x=x_axis_data_indiv, y=df_dashboard_sess[col_name], mode='lines', name=label_individual))
+                fig_individual.add_trace(go.Scatter(x=x_axis_data_indiv, y=df_dashboard[col_name], mode='lines', name=label_individual))
                 # Aggiungi linea soglia se definita
                 if threshold_individual is not None:
                     fig_individual.add_hline(y=threshold_individual, line_dash="dash", line_color="red",
@@ -1830,8 +1942,8 @@ if page == 'Dashboard':
             col_idx_graph += 1
 
         st.divider()
-        # --- Riepilogo Alert Attivi ---
-        st.subheader("Riepilogo Allerte")
+        # --- Riepilogo Alert Attivi (basato su ultimo valore visualizzato) ---
+        st.subheader("Riepilogo Allerte (basato su ultimo valore nel periodo)")
         active_alerts_sess = st.session_state.get('active_alerts', [])
         if active_alerts_sess:
              st.warning("**Allerte Attive (Valori >= Soglia):**")
@@ -1846,31 +1958,57 @@ if page == 'Dashboard':
                  thr_fmt = f"{float(thr):.1f}" if isinstance(thr, (int, float, np.number)) else str(thr)
                  alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit}** >= Soglia **{thr_fmt}{unit}**\n"
              st.markdown(alert_md)
-        else: st.success("Nessuna soglia superata nell'ultimo rilevamento.")
+        else: st.success("Nessuna soglia superata nell'ultimo rilevamento del periodo visualizzato.")
 
-    elif df_dashboard_sess is not None and df_dashboard_sess.empty:
-        st.warning("Recupero dati GSheet riuscito, ma nessun dato trovato nelle ultime righe.")
+    elif df_dashboard is not None and df_dashboard.empty and st.session_state.dash_custom_range_check:
+        # Messaggio specifico per range personalizzato vuoto già mostrato sopra
+        pass
+    elif df_dashboard is not None and df_dashboard.empty and not st.session_state.dash_custom_range_check:
+        st.warning("Recupero dati GSheet riuscito, ma nessun dato trovato nelle ultime ore.")
     elif not st.session_state.last_dashboard_error: # Se non ci sono errori e df è None, fetch iniziale
         st.info("Recupero dati dashboard in corso...")
 
-    # --- Auto Refresh JS ---
-    try:
-        component_key = f"dashboard_auto_refresh_{DASHBOARD_REFRESH_INTERVAL_SECONDS}"
-        js_code = f"""
-        (function() {{
-            const intervalIdKey = 'streamlit_auto_refresh_interval_id_{component_key}';
-            if (window[intervalIdKey]) {{ clearInterval(window[intervalIdKey]); }} // Clear previous
-            window[intervalIdKey] = setInterval(function() {{
-                if (window.streamlitHook && typeof window.streamlitHook.rerunScript === 'function') {{
-                    console.log('Triggering Streamlit rerun via JS timer ({component_key})');
-                    window.streamlitHook.rerunScript(null);
-                }} else {{ console.warn('Streamlit hook not available for JS auto-refresh.'); }}
-            }}, {DASHBOARD_REFRESH_INTERVAL_SECONDS * 1000});
-        }})();
-        """
-        streamlit_js_eval(js_expressions=js_code, key=component_key, want_output=False)
-    except Exception as e_js:
-        st.caption(f"Nota: Impossibile impostare auto-refresh ({e_js})")
+    # --- Auto Refresh JS (solo se NON in modalità custom range) ---
+    if not st.session_state.dash_custom_range_check:
+        try:
+            component_key = f"dashboard_auto_refresh_{DASHBOARD_REFRESH_INTERVAL_SECONDS}"
+            js_code = f"""
+            (function() {{
+                const intervalIdKey = 'streamlit_auto_refresh_interval_id_{component_key}';
+                if (window[intervalIdKey]) {{ clearInterval(window[intervalIdKey]); }} // Clear previous
+                window[intervalIdKey] = setInterval(function() {{
+                    // Check if the dashboard page is still active (optional, but good practice)
+                    // This requires knowing how Streamlit internally identifies the active page,
+                    // which might be complex or unstable. For simplicity, we'll always rerun.
+                    if (window.streamlitHook && typeof window.streamlitHook.rerunScript === 'function') {{
+                        console.log('Triggering Streamlit rerun via JS timer ({component_key})');
+                        // Rerun only if custom range is NOT checked (check again client-side is hard)
+                        // We rely on the Python logic disabling this section if custom range is on.
+                         window.streamlitHook.rerunScript(null);
+                    }} else {{ console.warn('Streamlit hook not available for JS auto-refresh.'); }}
+                }}, {DASHBOARD_REFRESH_INTERVAL_SECONDS * 1000});
+            }})();
+            """
+            streamlit_js_eval(js_expressions=js_code, key=component_key, want_output=False)
+        except Exception as e_js:
+            st.caption(f"Nota: Impossibile impostare auto-refresh ({e_js})")
+    else:
+         # Prova a pulire il timer se esiste quando si passa a custom range
+         try:
+              component_key = f"dashboard_auto_refresh_{DASHBOARD_REFRESH_INTERVAL_SECONDS}"
+              js_clear_code = f"""
+              (function() {{
+                  const intervalIdKey = 'streamlit_auto_refresh_interval_id_{component_key}';
+                  if (window[intervalIdKey]) {{
+                      console.log('Clearing JS auto-refresh timer ({component_key})');
+                      clearInterval(window[intervalIdKey]);
+                      window[intervalIdKey] = null;
+                  }}
+              }})();
+              """
+              streamlit_js_eval(js_expressions=js_clear_code, key=f"{component_key}_clear", want_output=False)
+         except Exception as e_js_clear:
+              st.caption(f"Nota: Impossibile pulire timer auto-refresh ({e_js_clear})")
 
 
 # --- PAGINA SIMULAZIONE ---
@@ -1882,6 +2020,7 @@ elif page == 'Simulazione':
 
     # Mostra dettagli modello attivo
     st.info(f"Simulazione con Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
+    target_columns_model = [] # Inizializza per evitare errori se config manca
     if active_model_type == "Seq2Seq":
         st.caption(f"Input Storico: {active_config['input_window_steps']} steps | Input Forecast: {active_config['forecast_window_steps']} steps | Output: {active_config['output_window_steps']} steps")
         with st.expander("Dettagli Colonne Modello Seq2Seq"):
@@ -2042,6 +2181,8 @@ elif page == 'Simulazione':
              if st.button("Esegui Simulazione Seq2Seq", disabled=not can_run_s2s_sim, type="primary", key="run_s2s_sim_button"):
                   if not can_run_s2s_sim: st.error("Mancano dati storici validi o previsioni future valide.")
                   else:
+                       predictions_s2s = None # Inizializza
+                       start_pred_time_s2s = None # Inizializza
                        with st.spinner("Simulazione Seq2Seq in corso..."):
                            past_data_np = st.session_state.seq2seq_past_data_gsheet[past_feature_cols_s2s].astype(float).values
                            future_forecast_np = edited_forecast_df[forecast_input_cols_s2s].astype(float).values
@@ -2051,13 +2192,13 @@ elif page == 'Simulazione':
                                active_scalers, # Dizionario scaler
                                active_config, active_device
                            )
+                           start_pred_time_s2s = st.session_state.get('seq2seq_last_ts_gsheet', datetime.now(italy_tz))
 
                        # Mostra risultati
                        if predictions_s2s is not None:
                            output_steps_actual = predictions_s2s.shape[0]
                            total_hours_output_actual = output_steps_actual * 0.5
                            st.subheader(f'Risultato Simulazione Seq2Seq: Prossime {total_hours_output_actual:.1f} ore')
-                           start_pred_time_s2s = st.session_state.get('seq2seq_last_ts_gsheet', datetime.now(italy_tz))
                            st.caption(f"Previsione calcolata a partire da: {start_pred_time_s2s.strftime('%d/%m/%Y %H:%M:%S %Z')}")
 
                            # Tabella Risultati
@@ -2076,8 +2217,8 @@ elif page == 'Simulazione':
                            st.dataframe(results_df_s2s_display.round(3), hide_index=True)
                            st.markdown(get_table_download_link(results_df_s2s, f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
 
-                           # Grafici Risultati
-                           st.subheader('Grafici Previsioni Simulate (Seq2Seq)')
+                           # Grafici Risultati Individuali
+                           st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali)')
                            figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s)
                            num_graph_cols = min(len(figs_sim_s2s), 3)
                            sim_cols = st.columns(num_graph_cols)
@@ -2087,6 +2228,44 @@ elif page == 'Simulazione':
                                    s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
                                    st.plotly_chart(fig_sim, use_container_width=True)
                                    st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_s2s_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
+
+                           # --- NUOVO: Grafico Combinato ---
+                           st.subheader('Grafico Combinato Idrometri Output (Seq2Seq)')
+                           fig_combined_s2s = go.Figure()
+                           # Genera asse X (usa pred_times_s2s già calcolato)
+                           if start_pred_time_s2s and len(pred_times_s2s) == output_steps_actual:
+                               x_axis_comb, x_title_comb = pred_times_s2s, "Data e Ora Previste"
+                               x_tick_format = "%d/%m %H:%M"
+                           else: # Fallback a ore relative
+                               x_axis_comb = (np.arange(output_steps_actual) + 1) * 0.5
+                               x_title_comb = "Ore Future (passi da 30 min)"
+                               x_tick_format = None
+
+                           for i, sensor in enumerate(target_columns_model):
+                               fig_combined_s2s.add_trace(go.Scatter(
+                                   x=x_axis_comb,
+                                   y=predictions_s2s[:, i],
+                                   mode='lines+markers',
+                                   name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
+                               ))
+
+                           fig_combined_s2s.update_layout(
+                               title=f'Previsioni Combinate {active_model_type}',
+                               xaxis_title=x_title_comb,
+                               yaxis_title="Valore Idrometrico (m)", # Assumendo che target siano livelli
+                               height=500,
+                               margin=dict(l=60, r=20, t=50, b=50),
+                               hovermode="x unified",
+                               template="plotly_white",
+                               legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                           )
+                           if x_tick_format:
+                               fig_combined_s2s.update_xaxes(tickformat=x_tick_format)
+                           fig_combined_s2s.update_yaxes(rangemode='tozero')
+                           st.plotly_chart(fig_combined_s2s, use_container_width=True)
+                           st.markdown(get_plotly_download_link(fig_combined_s2s, f"grafico_combinato_sim_s2s_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
+                           # --- Fine Grafico Combinato ---
+
                        else:
                              st.error("Predizione simulazione Seq2Seq fallita.")
 
@@ -2097,6 +2276,9 @@ elif page == 'Simulazione':
          sim_method = st.radio("Scegli come fornire i dati di input:", sim_method_options, key="sim_method_radio_select_lstm", horizontal=True, label_visibility="collapsed")
 
          # --- Logica per Metodi LSTM ---
+         predictions_sim_lstm = None # Inizializza variabile per risultati LSTM
+         start_pred_time_lstm = None # Inizializza variabile per timestamp LSTM
+
          if sim_method == 'Manuale (Valori Costanti)':
              st.markdown(f'Inserisci valori costanti per le **{len(feature_columns_current_model)}** feature di input.')
              st.caption(f"Questi valori saranno ripetuti per i **{input_steps}** passi temporali ({input_steps*0.5:.1f} ore) richiesti dal modello.")
@@ -2133,32 +2315,7 @@ elif page == 'Simulazione':
                       with st.spinner('Simulazione LSTM (Manuale) in corso...'):
                            scaler_features_lstm, scaler_targets_lstm = active_scalers # Scaler da tupla
                            predictions_sim_lstm = predict(active_model, sim_data_input_manual, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                      # Mostra Risultati (simile a Seq2Seq)
-                      if predictions_sim_lstm is not None:
-                           output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
-                           st.subheader(f'Risultato Simulazione LSTM (Manuale): Prossime {total_hours_output_actual:.1f} ore')
-                           start_pred_time_lstm = datetime.now(italy_tz) # Usa ora corrente
-                           st.caption(f"Previsione calcolata a partire da: {start_pred_time_lstm.strftime('%d/%m/%Y %H:%M:%S %Z')}")
-                           # Tabella
-                           pred_times_lstm = [start_pred_time_lstm + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]
-                           results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); results_df_lstm.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
-                           rename_dict_lstm = {'Ora Prevista': 'Ora Prevista'};
-                           for col in target_columns_model:
-                               unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""; new_name = f"{get_station_label(col, short=True)} {unit_str}".strip(); count = 1; final_name = new_name
-                               while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
-                               rename_dict_lstm[col] = final_name
-                           results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
-                           st.dataframe(results_df_lstm_display.round(3), hide_index=True)
-                           st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_manuale_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
-                           # Grafici
-                           st.subheader('Grafici Previsioni Simulate (LSTM Manuale)')
-                           figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
-                           for i, fig_sim in enumerate(figs_sim_lstm):
-                               with sim_cols_lstm[i % num_graph_cols_lstm]:
-                                    target_col_name = target_columns_model[i]; s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                                    st.plotly_chart(fig_sim, use_container_width=True)
-                                    st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_lstm_manuale_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
-                      else: st.error("Predizione simulazione LSTM (Manuale) fallita.")
+                           start_pred_time_lstm = datetime.now(italy_tz) # Usa ora corrente per manuale
                  else: st.error("Dati input manuali non pronti o invalidi.")
 
 
@@ -2249,30 +2406,7 @@ elif page == 'Simulazione':
                       with st.spinner('Simulazione LSTM (GSheet) in corso...'):
                            scaler_features_lstm, scaler_targets_lstm = active_scalers
                            predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                      # Mostra Risultati
-                      if predictions_sim_lstm is not None:
-                           output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
-                           st.subheader(f'Risultato Simulazione LSTM (GSheet): Prossime {total_hours_output_actual:.1f} ore')
-                           st.caption(f"Previsione calcolata a partire da: {sim_start_time_lstm_gs.strftime('%d/%m/%Y %H:%M:%S %Z')}")
-                           # Tabella
-                           pred_times_lstm = [sim_start_time_lstm_gs + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]; results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); results_df_lstm.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
-                           rename_dict_lstm = {'Ora Prevista': 'Ora Prevista'};
-                           for col in target_columns_model:
-                               unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""; new_name = f"{get_station_label(col, short=True)} {unit_str}".strip(); count = 1; final_name = new_name
-                               while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
-                               rename_dict_lstm[col] = final_name
-                           results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
-                           st.dataframe(results_df_lstm_display.round(3), hide_index=True)
-                           st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_gsheet_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
-                           # Grafici
-                           st.subheader('Grafici Previsioni Simulate (LSTM GSheet)')
-                           figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, sim_start_time_lstm_gs); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
-                           for i, fig_sim in enumerate(figs_sim_lstm):
-                               with sim_cols_lstm[i % num_graph_cols_lstm]:
-                                    target_col_name = target_columns_model[i]; s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                                    st.plotly_chart(fig_sim, use_container_width=True)
-                                    st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_lstm_gsheet_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
-                      else: st.error("Predizione simulazione LSTM (GSheet) fallita.")
+                           start_pred_time_lstm = sim_start_time_lstm_gs # Usa timestamp da GSheet
                   else: st.error("Dati input da GSheet non pronti o non importati.")
 
 
@@ -2326,31 +2460,7 @@ elif page == 'Simulazione':
                       with st.spinner('Simulazione LSTM (Tabella) in corso...'):
                            scaler_features_lstm, scaler_targets_lstm = active_scalers
                            predictions_sim_lstm = predict(active_model, sim_data_input_lstm_editor, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                      # Mostra Risultati
-                      if predictions_sim_lstm is not None:
-                           output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
-                           st.subheader(f'Risultato Simulazione LSTM (Tabella): Prossime {total_hours_output_actual:.1f} ore')
-                           start_pred_time_lstm = datetime.now(italy_tz)
-                           st.caption(f"Previsione calcolata a partire da: {start_pred_time_lstm.strftime('%d/%m/%Y %H:%M:%S %Z')}")
-                           # Tabella
-                           pred_times_lstm = [start_pred_time_lstm + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]; results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); results_df_lstm.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
-                           rename_dict_lstm = {'Ora Prevista': 'Ora Prevista'};
-                           for col in target_columns_model:
-                               unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""; new_name = f"{get_station_label(col, short=True)} {unit_str}".strip(); count = 1; final_name = new_name
-                               while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
-                               rename_dict_lstm[col] = final_name
-                           results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
-                           st.dataframe(results_df_lstm_display.round(3), hide_index=True)
-                           st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_tabella_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
-                           # Grafici
-                           st.subheader('Grafici Previsioni Simulate (LSTM Tabella)')
-                           figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
-                           for i, fig_sim in enumerate(figs_sim_lstm):
-                               with sim_cols_lstm[i % num_graph_cols_lstm]:
-                                    target_col_name = target_columns_model[i]; s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                                    st.plotly_chart(fig_sim, use_container_width=True)
-                                    st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_lstm_tabella_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
-                      else: st.error("Predizione simulazione LSTM (Tabella) fallita.")
+                           start_pred_time_lstm = datetime.now(italy_tz) # Usa ora corrente per tabella
                   else: st.error("Dati input da tabella non pronti o invalidi.")
 
 
@@ -2370,7 +2480,8 @@ elif page == 'Simulazione':
                      sim_data_input_lstm_csv_ordered = latest_csv_data_df[feature_columns_current_model] # Ordine corretto
                      sim_data_input_lstm_csv = sim_data_input_lstm_csv_ordered.astype(float).values
                      last_csv_timestamp = df_current_csv[date_col_name_csv].iloc[-1]
-                     if pd.notna(last_csv_timestamp): sim_start_time_lstm_csv = last_csv_timestamp
+                     if pd.notna(last_csv_timestamp) and isinstance(last_csv_timestamp, pd.Timestamp):
+                         sim_start_time_lstm_csv = last_csv_timestamp.tz_localize(italy_tz) if last_csv_timestamp.tz is None else last_csv_timestamp.tz_convert(italy_tz)
                      else: sim_start_time_lstm_csv = datetime.now(italy_tz) # Fallback
                      st.caption("Dati CSV pronti per la simulazione.")
                      with st.expander("Mostra dati CSV utilizzati (Input LSTM)"):
@@ -2390,31 +2501,95 @@ elif page == 'Simulazione':
                       with st.spinner('Simulazione LSTM (CSV) in corso...'):
                            scaler_features_lstm, scaler_targets_lstm = active_scalers
                            predictions_sim_lstm = predict(active_model, sim_data_input_lstm_csv, scaler_features_lstm, scaler_targets_lstm, active_config, active_device)
-                      # Mostra Risultati
-                      if predictions_sim_lstm is not None:
-                           output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
-                           st.subheader(f'Risultato Simulazione LSTM (CSV): Prossime {total_hours_output_actual:.1f} ore')
-                           st.caption(f"Previsione calcolata a partire da: {sim_start_time_lstm_csv.strftime('%d/%m/%Y %H:%M:%S %Z')}")
-                           # Tabella
-                           pred_times_lstm = [sim_start_time_lstm_csv + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]; results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); results_df_lstm.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
-                           rename_dict_lstm = {'Ora Prevista': 'Ora Prevista'};
-                           for col in target_columns_model:
-                               unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""; new_name = f"{get_station_label(col, short=True)} {unit_str}".strip(); count = 1; final_name = new_name
-                               while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
-                               rename_dict_lstm[col] = final_name
-                           results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
-                           st.dataframe(results_df_lstm_display.round(3), hide_index=True)
-                           st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_csv_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
-                           # Grafici
-                           st.subheader('Grafici Previsioni Simulate (LSTM CSV)')
-                           figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, sim_start_time_lstm_csv); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
-                           for i, fig_sim in enumerate(figs_sim_lstm):
-                               with sim_cols_lstm[i % num_graph_cols_lstm]:
-                                    target_col_name = target_columns_model[i]; s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                                    st.plotly_chart(fig_sim, use_container_width=True)
-                                    st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_lstm_csv_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
-                      else: st.error("Predizione simulazione LSTM (CSV) fallita.")
+                           start_pred_time_lstm = sim_start_time_lstm_csv # Usa timestamp da CSV
                  else: st.error("Dati input da CSV non pronti o invalidi.")
+
+         # --- Visualizzazione Risultati LSTM (comune a tutti i metodi) ---
+         if predictions_sim_lstm is not None:
+             output_steps_actual = predictions_sim_lstm.shape[0]
+             total_hours_output_actual = output_steps_actual * 0.5
+             st.subheader(f'Risultato Simulazione LSTM ({sim_method}): Prossime {total_hours_output_actual:.1f} ore')
+             if start_pred_time_lstm:
+                 st.caption(f"Previsione calcolata a partire da: {start_pred_time_lstm.strftime('%d/%m/%Y %H:%M:%S %Z')}")
+             else:
+                 st.caption("Previsione calcolata (timestamp iniziale non disponibile).")
+
+             # Tabella Risultati
+             if start_pred_time_lstm:
+                 pred_times_lstm = [start_pred_time_lstm + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]
+                 results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model)
+                 results_df_lstm.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
+             else: # Senza timestamp
+                 pred_steps_lstm = [f"Step {i+1} (+{(i+1)*0.5}h)" for i in range(output_steps_actual)]
+                 results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model)
+                 results_df_lstm.insert(0, 'Passo Futuro', pred_steps_lstm)
+
+             # Rinomina colonne per leggibilità tabella display
+             rename_dict_lstm = {}
+             if 'Ora Prevista' in results_df_lstm.columns: rename_dict_lstm['Ora Prevista'] = 'Ora Prevista'
+             if 'Passo Futuro' in results_df_lstm.columns: rename_dict_lstm['Passo Futuro'] = 'Passo Futuro'
+             for col in target_columns_model:
+                 unit = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit.group(1) or unit.group(2)})" if unit else ""
+                 new_name = f"{get_station_label(col, short=True)} {unit_str}".strip()
+                 count = 1; final_name = new_name
+                 while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
+                 rename_dict_lstm[col] = final_name
+             results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
+             st.dataframe(results_df_lstm_display.round(3), hide_index=True)
+             st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"), unsafe_allow_html=True)
+
+             # Grafici Risultati Individuali
+             st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali)')
+             figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm)
+             num_graph_cols_lstm = min(len(figs_sim_lstm), 3)
+             sim_cols_lstm = st.columns(num_graph_cols_lstm)
+             for i, fig_sim in enumerate(figs_sim_lstm):
+                 with sim_cols_lstm[i % num_graph_cols_lstm]:
+                      target_col_name = target_columns_model[i]
+                      s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
+                      st.plotly_chart(fig_sim, use_container_width=True)
+                      st.markdown(get_plotly_download_link(fig_sim, f"grafico_sim_lstm_{sim_method.split()[0].lower()}_{s_name_file}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
+
+             # --- NUOVO: Grafico Combinato ---
+             st.subheader(f'Grafico Combinato Idrometri Output (LSTM {sim_method})')
+             fig_combined_lstm = go.Figure()
+             # Genera asse X
+             if start_pred_time_lstm:
+                 x_axis_comb_lstm = pred_times_lstm # Usa le date/ore calcolate per la tabella
+                 x_title_comb_lstm = "Data e Ora Previste"
+                 x_tick_format_lstm = "%d/%m %H:%M"
+             else: # Fallback a ore relative
+                 x_axis_comb_lstm = (np.arange(output_steps_actual) + 1) * 0.5
+                 x_title_comb_lstm = "Ore Future (passi da 30 min)"
+                 x_tick_format_lstm = None
+
+             for i, sensor in enumerate(target_columns_model):
+                 fig_combined_lstm.add_trace(go.Scatter(
+                     x=x_axis_comb_lstm,
+                     y=predictions_sim_lstm[:, i],
+                     mode='lines+markers',
+                     name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
+                 ))
+
+             fig_combined_lstm.update_layout(
+                 title=f'Previsioni Combinate {active_model_type} ({sim_method})',
+                 xaxis_title=x_title_comb_lstm,
+                 yaxis_title="Valore Idrometrico (m)", # Assumendo target livelli
+                 height=500,
+                 margin=dict(l=60, r=20, t=50, b=50),
+                 hovermode="x unified",
+                 template="plotly_white",
+                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+             )
+             if x_tick_format_lstm:
+                 fig_combined_lstm.update_xaxes(tickformat=x_tick_format_lstm)
+             fig_combined_lstm.update_yaxes(rangemode='tozero')
+             st.plotly_chart(fig_combined_lstm, use_container_width=True)
+             st.markdown(get_plotly_download_link(fig_combined_lstm, f"grafico_combinato_sim_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}"), unsafe_allow_html=True)
+             # --- Fine Grafico Combinato ---
+
+         elif st.session_state.get(f"sim_run_exec_lstm_{sim_method.split()[0].lower()}", False): # Se il bottone era stato premuto ma la predizione è fallita
+             st.error(f"Predizione simulazione LSTM ({sim_method}) fallita.")
 
 
 # --- PAGINA ANALISI DATI STORICI ---
@@ -2425,8 +2600,21 @@ elif page == 'Analisi Dati Storici':
     else:
         st.info(f"Dataset CSV caricato: **{len(df_current_csv)}** righe.")
         if date_col_name_csv in df_current_csv:
-            st.caption(f"Periodo: da **{df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')}** a **{df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')}**")
+             try:
+                 # Assicurati che la colonna data sia datetime
+                 if not pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
+                      df_current_csv[date_col_name_csv] = pd.to_datetime(df_current_csv[date_col_name_csv], errors='coerce')
+                      df_current_csv = df_current_csv.dropna(subset=[date_col_name_csv])
+
+                 if not df_current_csv.empty:
+                     min_date_str = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
+                     max_date_str = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
+                     st.caption(f"Periodo: da **{min_date_str}** a **{max_date_str}**")
+                 else: st.warning("Nessuna data valida trovata nel dataset CSV.")
+             except Exception as e_date_analysis:
+                  st.warning(f"Impossibile determinare il periodo dei dati CSV: {e_date_analysis}")
         else: st.warning(f"Colonna data '{date_col_name_csv}' non trovata per analisi periodo.")
+
 
         st.subheader("Esplorazione Dati")
         st.dataframe(df_current_csv.head())
@@ -2441,7 +2629,7 @@ elif page == 'Analisi Dati Storici':
 
         st.divider()
         st.subheader("Visualizzazione Temporale")
-        if date_col_name_csv in df_current_csv and not numeric_cols_analysis.empty:
+        if date_col_name_csv in df_current_csv and not numeric_cols_analysis.empty and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
             cols_to_plot = st.multiselect(
                 "Seleziona colonne da visualizzare:",
                 options=numeric_cols_analysis.tolist(),
@@ -2460,7 +2648,7 @@ elif page == 'Analisi Dati Storici':
                 analysis_filename_base = f"analisi_temporale_{datetime.now().strftime('%Y%m%d_%H%M')}"
                 st.markdown(get_plotly_download_link(fig_analysis, analysis_filename_base), unsafe_allow_html=True)
             else: st.info("Seleziona almeno una colonna per visualizzare il grafico.")
-        else: st.info("Colonna data o colonne numeriche mancanti per la visualizzazione temporale.")
+        else: st.info("Colonna data (tipo datetime) o colonne numeriche mancanti per la visualizzazione temporale.")
 
         st.divider()
         st.subheader("Matrice di Correlazione")
@@ -2541,15 +2729,21 @@ elif page == 'Allenamento Modello':
              st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
              # 1. Prepara Dati
              with st.spinner("Preparazione dati LSTM..."):
-                  input_hours_lstm = iw_t_lstm / 2 # Converti steps in ore per la funzione
-                  output_hours_lstm = ow_t_lstm / 2
+                  # NOTA: prepare_training_data prende input/output window in ORE, non steps
+                  # Convertiamo gli steps (da UI) in ore per la funzione
+                  input_hours_lstm = iw_t_lstm / 2
+                  output_hours_lstm = ow_t_lstm / 2 # L'output window qui è in ORE
+
+                  # La funzione prepare_training_data si aspetta output_window come ORE
+                  # Ma la classe HydroLSTM si aspetta output_window come STEPS
+                  # Passiamo gli STEPS (ow_t_lstm) a train_model
                   X_tr, y_tr, X_v, y_v, sc_f, sc_t = prepare_training_data(
                        df_current_csv.copy(), selected_features_train_lstm, selected_targets_train_lstm,
                        int(input_hours_lstm), int(output_hours_lstm), vs_t_lstm
                   )
              if X_tr is None or sc_f is None or sc_t is None: st.error("Preparazione dati LSTM fallita."); st.stop()
 
-             # 2. Allena Modello
+             # 2. Allena Modello - Passa ow_t_lstm (STEPS) qui
              trained_model_lstm, train_loss_history, val_loss_history = train_model(
                    X_tr, y_tr, X_v, y_v, len(selected_features_train_lstm), len(selected_targets_train_lstm), ow_t_lstm, # Passa output STEPS
                    hs_t_lstm, nl_t_lstm, ep_t_lstm, bs_t_lstm, lr_t_lstm, dr_t_lstm,
