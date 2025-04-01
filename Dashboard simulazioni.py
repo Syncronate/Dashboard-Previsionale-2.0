@@ -1521,93 +1521,80 @@ if page == 'Dashboard':
         st.subheader("Valori Ultimo Rilevamento, Stato Allerta e Portata")
         cols_to_monitor = [col for col in df_dashboard.columns if col != GSHEET_DATE_COL]
         table_rows = []; current_alerts = []
-        for col_name in cols_to_monitor:
-            current_value_H = latest_row_data.get(col_name) if 'latest_row_data' in locals() else None
-            threshold = st.session_state.dashboard_thresholds.get(col_name)
-            alert_active = False; value_numeric = np.nan; value_display = "N/D"; unit = ""
-            unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', col_name)
-            if unit_match: unit = (unit_match.group(1) or unit_match.group(2) or "").strip()
+        if 'latest_row_data' in locals(): # Assicurati che esista
+            for col_name in cols_to_monitor:
+                current_value_H = latest_row_data.get(col_name)
+                threshold = st.session_state.dashboard_thresholds.get(col_name)
+                alert_active = False; value_numeric = np.nan; value_display = "N/D"; unit = ""
+                unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', col_name)
+                if unit_match: unit = (unit_match.group(1) or unit_match.group(2) or "").strip()
 
-            if pd.notna(current_value_H) and isinstance(current_value_H, (int, float, np.number)):
-                 value_numeric = float(current_value_H)
-                 fmt_spec = ".1f" if unit in ['mm', '%'] else ".2f"
-                 try: value_display = f"{value_numeric:{fmt_spec}} {unit}".strip()
-                 except ValueError: value_display = f"{value_numeric} {unit}".strip()
-                 if threshold is not None and isinstance(threshold, (int, float, np.number)) and value_numeric >= float(threshold):
-                      alert_active = True; current_alerts.append((col_name, value_numeric, threshold))
-            elif pd.notna(current_value_H): value_display = f"{current_value_H} (?)"
+                if pd.notna(current_value_H) and isinstance(current_value_H, (int, float, np.number)):
+                     value_numeric = float(current_value_H)
+                     fmt_spec = ".1f" if unit in ['mm', '%'] else ".2f"
+                     try: value_display = f"{value_numeric:{fmt_spec}} {unit}".strip()
+                     except ValueError: value_display = f"{value_numeric} {unit}".strip()
+                     if threshold is not None and isinstance(threshold, (int, float, np.number)) and value_numeric >= float(threshold):
+                          alert_active = True; current_alerts.append((col_name, value_numeric, threshold))
+                elif pd.notna(current_value_H): value_display = f"{current_value_H} (?)"
 
-            portata_Q = None; portata_display = "N/A"
-            sensor_info = STATION_COORDS.get(col_name)
-            if sensor_info:
-                sensor_code = sensor_info.get('sensor_code')
-                if sensor_code and sensor_code in RATING_CURVES:
-                    portata_Q = calculate_discharge(sensor_code, value_numeric)
-                    if portata_Q is not None and pd.notna(portata_Q): portata_display = f"{portata_Q:.2f}"
-                    else: portata_display = "-"
+                portata_Q = None; portata_display = "N/A"
+                sensor_info = STATION_COORDS.get(col_name)
+                if sensor_info:
+                    sensor_code = sensor_info.get('sensor_code')
+                    if sensor_code and sensor_code in RATING_CURVES:
+                        portata_Q = calculate_discharge(sensor_code, value_numeric)
+                        if portata_Q is not None and pd.notna(portata_Q): portata_display = f"{portata_Q:.2f}"
+                        else: portata_display = "-"
 
-            status = "ALLERTA" if alert_active else ("OK" if pd.notna(value_numeric) else "N/D")
-            threshold_display = f"{float(threshold):.1f}" if threshold is not None else "-"
-            table_rows.append({
-                "Stazione": get_station_label(col_name, short=True), "Valore H": value_display, "Portata Q (m³/s)": portata_display,
-                "Soglia H": threshold_display, "Stato": status, "Valore Numerico H": value_numeric, "Soglia Numerica H": float(threshold) if threshold else None })
+                status = "ALLERTA" if alert_active else ("OK" if pd.notna(value_numeric) else "N/D")
+                threshold_display = f"{float(threshold):.1f}" if threshold is not None else "-"
+                table_rows.append({
+                    "Stazione": get_station_label(col_name, short=True), "Valore H": value_display, "Portata Q (m³/s)": portata_display,
+                    "Soglia H": threshold_display, "Stato": status, "Valore Numerico H": value_numeric, "Soglia Numerica H": float(threshold) if threshold else None })
 
-        df_display = pd.DataFrame(table_rows)
-        def highlight_alert(row): return ['background-color: rgba(255, 0, 0, 0.1);'] * len(row) if row['Stato'] == 'ALLERTA' else [''] * len(row)
-        st.dataframe( df_display.style.apply(highlight_alert, axis=1),
-            column_order=["Stazione", "Valore H", "Portata Q (m³/s)", "Soglia H", "Stato"], hide_index=True, use_container_width=True,
-            column_config={ "Valore Numerico H": None, "Soglia Numerica H": None } )
-        st.session_state.active_alerts = current_alerts
+            df_display = pd.DataFrame(table_rows)
+            def highlight_alert(row): return ['background-color: rgba(255, 0, 0, 0.1);'] * len(row) if row['Stato'] == 'ALLERTA' else [''] * len(row)
+            st.dataframe( df_display.style.apply(highlight_alert, axis=1),
+                column_order=["Stazione", "Valore H", "Portata Q (m³/s)", "Soglia H", "Stato"], hide_index=True, use_container_width=True,
+                column_config={ "Valore Numerico H": None, "Soglia Numerica H": None } )
+            st.session_state.active_alerts = current_alerts
+        else:
+            st.warning("Impossibile visualizzare la tabella dei valori (dati non disponibili).")
+
 
         st.divider()
-        # --- Grafico Comparativo Configurabile (MODIFICATO per Portata Q) ---
-if GSHEET_DATE_COL in df_dashboard.columns:
-    st.subheader("Grafico Storico Comparativo (Periodo Selezionato)")
-    # ... (codice selezione sensori) ...
+        # --- Grafico Comparativo Configurabile (CON FIX TypeError) ---
+        if GSHEET_DATE_COL in df_dashboard.columns:
+            st.subheader("Grafico Storico Comparativo (Periodo Selezionato)")
+            sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
+            default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2]
+            selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
+            selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare]
 
-    if selected_cols_compare:
-        fig_compare = go.Figure()
-        x_axis_data = df_dashboard[GSHEET_DATE_COL]
-        show_yaxis2 = False
+            if selected_cols_compare:
+                fig_compare = go.Figure()
+                x_axis_data = df_dashboard[GSHEET_DATE_COL]
+                show_yaxis2 = False # Flag per mostrare asse Q
 
-        # Colori Plotly di default
-        default_colors = go.layout.Template().layout.colorway
-        # --- INIZIO MODIFICA ---
-        # Aggiungi controllo e fallback per default_colors
-        if not default_colors or not isinstance(default_colors, (list, tuple)) or len(default_colors) == 0:
-            st.warning("Colorway Plotly di default non trovato o vuoto, utilizzo colori fallback.")
-            # Fallback ai colori standard di Plotly se default_colors è None, non è una sequenza, o è vuota
-            default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-        # --- FINE MODIFICA ---
+                # Colori Plotly di default
+                default_colors = go.layout.Template().layout.colorway
+                # --- INIZIO FIX TypeError ---
+                # Aggiungi controllo e fallback per default_colors
+                if not default_colors or not isinstance(default_colors, (list, tuple)) or len(default_colors) == 0:
+                    st.warning("Colorway Plotly di default non trovato o vuoto, utilizzo colori fallback.")
+                    # Fallback ai colori standard di Plotly se default_colors è None, non è una sequenza, o è vuota
+                    default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                # --- FINE FIX TypeError ---
 
-        # Aggiungi tracce H (asse y1)
-        for i, col in enumerate(selected_cols_compare):
-            # Ora len(default_colors) è sicuramente > 0
-            color_idx = i % len(default_colors)
-            fig_compare.add_trace(go.Scatter(
-                x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True),
-                line=dict(color=default_colors[color_idx]), yaxis='y1'
-            ))
-
-        # Aggiungi tracce Q (asse y2) - Se applicabile
-        for i, col in enumerate(selected_cols_compare):
-            sensor_info_comp = STATION_COORDS.get(col)
-            if sensor_info_comp:
-                sensor_code_comp = sensor_info_comp.get('sensor_code')
-                if sensor_code_comp and sensor_code_comp in RATING_CURVES:
-                    # ... (calcolo q_values_comp) ...
-                    valid_q_mask_comp = pd.notna(q_values_comp) & (q_values_comp >= 0)
-
-                    if np.any(valid_q_mask_comp):
-                        show_yaxis2 = True
-                        # Usa lo stesso controllo sicuro per default_colors
-                        color_idx = i % len(default_colors)
-                        fig_compare.add_trace(go.Scatter(
-                            x=x_axis_data[valid_q_mask_comp], y=q_values_comp[valid_q_mask_comp],
-                            mode='lines', name=f"Q {get_station_label(col, short=True)}",
-                            line=dict(color=default_colors[color_idx], dash='dot'),
-                            yaxis='y2'
-                        ))
+                # Aggiungi tracce H (asse y1)
+                for i, col in enumerate(selected_cols_compare):
+                    # Ora len(default_colors) è sicuramente > 0
+                    color_idx = i % len(default_colors)
+                    fig_compare.add_trace(go.Scatter(
+                        x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True),
+                        line=dict(color=default_colors[color_idx]), yaxis='y1'
+                    ))
 
                 # Aggiungi tracce Q (asse y2) - Se applicabile
                 for i, col in enumerate(selected_cols_compare):
@@ -1615,13 +1602,19 @@ if GSHEET_DATE_COL in df_dashboard.columns:
                     if sensor_info_comp:
                         sensor_code_comp = sensor_info_comp.get('sensor_code')
                         if sensor_code_comp and sensor_code_comp in RATING_CURVES:
-                            h_values_comp = df_dashboard[col].astype(float).values # Assicura float
+                            # Converti H a float per il calcolo Q, gestendo errori
+                            try:
+                                h_values_comp = df_dashboard[col].replace(['', 'None', '-'], np.nan).astype(float).values
+                            except Exception:
+                                h_values_comp = pd.to_numeric(df_dashboard[col], errors='coerce').values
+
                             q_values_comp = calculate_discharge_vectorized(sensor_code_comp, h_values_comp)
                             valid_q_mask_comp = pd.notna(q_values_comp) & (q_values_comp >= 0) # Maschera per Q valido >= 0
 
                             if np.any(valid_q_mask_comp):
                                 show_yaxis2 = True # Abilita asse Y2
-                                color_idx = i % len(default_colors) # Usa stesso colore di H
+                                # Usa lo stesso controllo sicuro per default_colors
+                                color_idx = i % len(default_colors)
                                 fig_compare.add_trace(go.Scatter(
                                     x=x_axis_data[valid_q_mask_comp], y=q_values_comp[valid_q_mask_comp],
                                     mode='lines', name=f"Q {get_station_label(col, short=True)}", # Aggiungi "Q "
@@ -1639,7 +1632,7 @@ if GSHEET_DATE_COL in df_dashboard.columns:
                 # Aggiungi asse Y2 solo se necessario
                 if show_yaxis2:
                     fig_compare.update_layout(
-                        yaxis2=dict(title="Portata Q (m³/s)", overlaying="y", side="right", rangemode='tozero', showgrid=False)
+                        yaxis2=dict(title="Portata Q (m³/s)", overlaying="y", side="right", rangemode='tozero', showgrid=False, titlefont_color="firebrick", tickfont_color="firebrick")
                     )
 
                 st.plotly_chart(fig_compare, use_container_width=True)
@@ -1678,7 +1671,12 @@ if GSHEET_DATE_COL in df_dashboard.columns:
                     if sensor_info_indiv:
                         sensor_code_indiv = sensor_info_indiv.get('sensor_code')
                         if sensor_code_indiv and sensor_code_indiv in RATING_CURVES:
-                             h_values_indiv = df_dashboard[col_name].astype(float).values
+                             # Converti H a float per il calcolo Q, gestendo errori
+                             try:
+                                 h_values_indiv = df_dashboard[col_name].replace(['', 'None', '-'], np.nan).astype(float).values
+                             except Exception:
+                                 h_values_indiv = pd.to_numeric(df_dashboard[col_name], errors='coerce').values
+
                              q_values_indiv = calculate_discharge_vectorized(sensor_code_indiv, h_values_indiv)
                              valid_q_mask_indiv = pd.notna(q_values_indiv) & (q_values_indiv >= 0)
                              if np.any(valid_q_mask_indiv):
