@@ -1630,10 +1630,17 @@ if page == 'Dashboard':
                     legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5) # Legenda sotto
                 )
                 # Aggiungi asse Y2 solo se necessario
-                if show_yaxis2:
-                    fig_compare.update_layout(
-                        yaxis2=dict(title="Portata Q (m³/s)", overlaying="y", side="right", rangemode='tozero', showgrid=False, titlefont_color="firebrick", tickfont_color="firebrick")
-                    )
+if show_yaxis2:
+    fig_compare.update_layout(
+        yaxis2=dict(
+            title=dict(text="Portata Q (m³/s)", font=dict(color="firebrick")), # <-- Struttura corretta per titolo
+            tickfont=dict(color="firebrick"),                            # <-- Struttura corretta per tick
+            overlaying="y",
+            side="right",
+            rangemode='tozero',
+            showgrid=False
+        )
+    )
 
                 st.plotly_chart(fig_compare, use_container_width=True)
                 compare_filename_base = f"compare_HQ_{'_'.join(sl.replace(' ','_') for sl in selected_labels_compare)}_{datetime.now().strftime('%Y%m%d_%H%M')}"
