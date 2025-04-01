@@ -2419,14 +2419,14 @@ elif page == 'Simulazione':
                                    name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
                                ))
                                # --- AGGIUNTA SOGLIE ANCHE AL COMBINATO ---
-                               threshold_info_comb = SIMULATION_THRESHOLDS.get(sensor, {})
-                               soglia_att_comb = threshold_info_comb.get('attenzione')
-                               soglia_all_comb = threshold_info_comb.get('allerta')
+                              # threshold_info_comb = SIMULATION_THRESHOLDS.get(sensor, {})
+                              # soglia_att_comb = threshold_info_comb.get('attenzione')
+                              # soglia_all_comb = threshold_info_comb.get('allerta')
                                # Aggiungi linee solo se sono livelli (o comunque se definite)
-                               if soglia_att_comb is not None:
-                                    fig_combined_s2s.add_hline(y=soglia_att_comb, line_dash="dash", line_color="rgba(255,165,0,0.6)", annotation_text=f"Att.{get_station_label(sensor, short=True)} ({soglia_att_comb:.1f})", annotation_position="bottom left")
-                               if soglia_all_comb is not None:
-                                     fig_combined_s2s.add_hline(y=soglia_all_comb, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"All.{get_station_label(sensor, short=True)} ({soglia_all_comb:.1f})", annotation_position="top left")
+                            #   if soglia_att_comb is not None:
+                               #     fig_combined_s2s.add_hline(y=soglia_att_comb, line_dash="dash", line_color="rgba(255,165,0,0.6)", annotation_text=f"Att.{get_station_label(sensor, short=True)} ({soglia_att_comb:.1f})", annotation_position="bottom left")
+                             #  if soglia_all_comb is not None:
+                                #     fig_combined_s2s.add_hline(y=soglia_all_comb, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"All.{get_station_label(sensor, short=True)} ({soglia_all_comb:.1f})", annotation_position="top left")
                                # --- FINE SOGLIE COMBINATO ---
 
                            # --- MODIFICA TITOLO GRAFICO COMBINATO (USA COSTANTE) ---
