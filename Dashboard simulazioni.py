@@ -1577,7 +1577,19 @@ st.caption('Applicazione per monitoraggio, simulazione e addestramento di modell
 
 # --- Sidebar ---
 with st.sidebar:
-    st.header('Impostazioni')
+    # --- INSERIMENTO LOGO ---
+    try:
+        # Assicurati che il file 'logo.png' sia nella stessa cartella dello script
+        logo_path = "logo.png"
+        # CORREZIONE: Usare use_container_width invece di use_column_width
+        st.image(logo_path, use_container_width=True)
+    except FileNotFoundError:
+        st.error(f"Errore: File logo '{logo_path}' non trovato nella directory dello script.") # Messaggio più specifico
+    except Exception as e:
+        st.warning(f"Impossibile caricare il logo: {e}")
+    # --- FINE INSERIMENTO LOGO ---
+
+    st.header('Impostazioni') # L'header viene dopo il logo
 
     # --- Caricamento Dati Storici CSV ---
     st.subheader('Dati Storici (per Analisi/Training)')
@@ -2350,7 +2362,7 @@ elif page == 'Simulazione':
     if active_model_type == "Seq2Seq":
         st.caption(f"Input Storico: {active_config['input_window_steps']} steps | Input Forecast: {active_config['forecast_window_steps']} steps | Output: {active_config['output_window_steps']} steps")
         with st.expander("Dettagli Colonne Modello Seq2Seq"):
-             st.markdown("**Feature Storiche (Encoder Input):**")
+             st.markdown("**Feature Storiche (Input Encoder):**")
              st.caption(f"`{', '.join(active_config['all_past_feature_columns'])}`")
              st.markdown("**Feature Forecast (Decoder Input):**")
              st.caption(f"`{', '.join(active_config['forecast_input_columns'])}`")
