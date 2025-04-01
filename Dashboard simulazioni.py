@@ -766,12 +766,12 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-# --- Funzione Grafici Previsioni (v4 - Rimosso row/col da update_yaxes) ---
+# --- Funzione Grafici Previsioni (v5 - Corretto titlefont in update_yaxes/yaxis2) ---
 def plot_predictions(predictions, config, start_time=None):
     """
     Genera grafici Plotly INDIVIDUALI per le previsioni (LSTM o Seq2Seq).
     Aggiunge linee orizzontali per le soglie H e un secondo asse Y per la portata Q.
-    Layout aggiornato con approccio minimale e update_xaxes/update_yaxes.
+    Layout corretto per title.font.
     """
     if config is None or predictions is None: return []
 
@@ -860,22 +860,25 @@ def plot_predictions(predictions, config, start_time=None):
             if x_tick_format:
                  fig.update_xaxes(tickformat=x_tick_format)
 
-            # Asse Y1 (H)
+            # Asse Y1 (H) - CORRETTO title.font
             fig.update_yaxes(
-                title_text=f"Livello H ({y_axis_unit})",
-                titlefont=dict(color="#1f77b4"),
+                title=dict( # Usa dizionario per title
+                    text=f"Livello H ({y_axis_unit})",
+                    font=dict(color="#1f77b4") # Font annidato dentro title
+                 ),
                 tickfont=dict(color="#1f77b4"),
                 side="left",
                 rangemode='tozero',
-                # RIGA RIMOSSA: row=1, col=1
             )
 
             # Asse Y2 (Q) e Legenda - SOLO se ci sono dati Q
             if has_discharge_data:
                 fig.update_layout(
                      yaxis2=dict(
-                        title="Portata Q (m³/s)",
-                        titlefont=dict(color="firebrick"),
+                        title=dict( # Usa dizionario per title
+                            text="Portata Q (m³/s)",
+                            font=dict(color="firebrick") # Font annidato dentro title
+                        ),
                         tickfont=dict(color="firebrick"),
                         overlaying="y",
                         side="right",
@@ -902,7 +905,7 @@ def plot_predictions(predictions, config, start_time=None):
                  )
 
         except Exception as e_layout:
-            st.error(f"Errore durante aggiornamento layout Plotly (v4): {e_layout}")
+            st.error(f"Errore durante aggiornamento layout Plotly (v5): {e_layout}")
             print(f"--- Errore Layout per Sensore: {sensor} ---")
             print(f"has_discharge_data: {has_discharge_data}")
             try:
@@ -916,7 +919,6 @@ def plot_predictions(predictions, config, start_time=None):
         figs.append(fig)
 
     return figs
-
 # --- Funzioni Fetch Dati Google Sheet (Dashboard e Simulazione) ---
 # (Nessuna modifica necessaria qui)
 @st.cache_data(ttl=DASHBOARD_REFRESH_INTERVAL_SECONDS, show_spinner="Recupero dati aggiornati dal foglio Google...")
