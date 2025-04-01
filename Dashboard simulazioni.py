@@ -1561,28 +1561,53 @@ if page == 'Dashboard':
 
         st.divider()
         # --- Grafico Comparativo Configurabile (MODIFICATO per Portata Q) ---
-        if GSHEET_DATE_COL in df_dashboard.columns:
-            st.subheader("Grafico Storico Comparativo (Periodo Selezionato)")
-            sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
-            default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2]
-            selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
-            selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare]
+if GSHEET_DATE_COL in df_dashboard.columns:
+    st.subheader("Grafico Storico Comparativo (Periodo Selezionato)")
+    # ... (codice selezione sensori) ...
 
-            if selected_cols_compare:
-                fig_compare = go.Figure()
-                x_axis_data = df_dashboard[GSHEET_DATE_COL]
-                show_yaxis2 = False # Flag per mostrare asse Q
+    if selected_cols_compare:
+        fig_compare = go.Figure()
+        x_axis_data = df_dashboard[GSHEET_DATE_COL]
+        show_yaxis2 = False
 
-                # Colori Plotly di default
-                default_colors = go.layout.Template().layout.colorway
+        # Colori Plotly di default
+        default_colors = go.layout.Template().layout.colorway
+        # --- INIZIO MODIFICA ---
+        # Aggiungi controllo e fallback per default_colors
+        if not default_colors or not isinstance(default_colors, (list, tuple)) or len(default_colors) == 0:
+            st.warning("Colorway Plotly di default non trovato o vuoto, utilizzo colori fallback.")
+            # Fallback ai colori standard di Plotly se default_colors è None, non è una sequenza, o è vuota
+            default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        # --- FINE MODIFICA ---
 
-                # Aggiungi tracce H (asse y1)
-                for i, col in enumerate(selected_cols_compare):
-                    color_idx = i % len(default_colors)
-                    fig_compare.add_trace(go.Scatter(
-                        x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True),
-                        line=dict(color=default_colors[color_idx]), yaxis='y1'
-                    ))
+        # Aggiungi tracce H (asse y1)
+        for i, col in enumerate(selected_cols_compare):
+            # Ora len(default_colors) è sicuramente > 0
+            color_idx = i % len(default_colors)
+            fig_compare.add_trace(go.Scatter(
+                x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True),
+                line=dict(color=default_colors[color_idx]), yaxis='y1'
+            ))
+
+        # Aggiungi tracce Q (asse y2) - Se applicabile
+        for i, col in enumerate(selected_cols_compare):
+            sensor_info_comp = STATION_COORDS.get(col)
+            if sensor_info_comp:
+                sensor_code_comp = sensor_info_comp.get('sensor_code')
+                if sensor_code_comp and sensor_code_comp in RATING_CURVES:
+                    # ... (calcolo q_values_comp) ...
+                    valid_q_mask_comp = pd.notna(q_values_comp) & (q_values_comp >= 0)
+
+                    if np.any(valid_q_mask_comp):
+                        show_yaxis2 = True
+                        # Usa lo stesso controllo sicuro per default_colors
+                        color_idx = i % len(default_colors)
+                        fig_compare.add_trace(go.Scatter(
+                            x=x_axis_data[valid_q_mask_comp], y=q_values_comp[valid_q_mask_comp],
+                            mode='lines', name=f"Q {get_station_label(col, short=True)}",
+                            line=dict(color=default_colors[color_idx], dash='dot'),
+                            yaxis='y2'
+                        ))
 
                 # Aggiungi tracce Q (asse y2) - Se applicabile
                 for i, col in enumerate(selected_cols_compare):
