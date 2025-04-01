@@ -766,7 +766,7 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-# --- Funzione Grafici Previsioni (v3 - Approccio Minimale/Difensivo) ---
+# --- Funzione Grafici Previsioni (v4 - Rimosso row/col da update_yaxes) ---
 def plot_predictions(predictions, config, start_time=None):
     """
     Genera grafici Plotly INDIVIDUALI per le previsioni (LSTM o Seq2Seq).
@@ -867,7 +867,7 @@ def plot_predictions(predictions, config, start_time=None):
                 tickfont=dict(color="#1f77b4"),
                 side="left",
                 rangemode='tozero',
-                row=1, col=1 # Specifica subplot (anche se c'è solo 1)
+                # RIGA RIMOSSA: row=1, col=1
             )
 
             # Asse Y2 (Q) e Legenda - SOLO se ci sono dati Q
@@ -902,11 +902,9 @@ def plot_predictions(predictions, config, start_time=None):
                  )
 
         except Exception as e_layout:
-            st.error(f"Errore durante aggiornamento layout Plotly (v3): {e_layout}")
-            # Stampa informazioni utili per il debug
+            st.error(f"Errore durante aggiornamento layout Plotly (v4): {e_layout}")
             print(f"--- Errore Layout per Sensore: {sensor} ---")
             print(f"has_discharge_data: {has_discharge_data}")
-            # Stampa stato figura prima dell'errore (se possibile)
             try:
                  print("--- Stato fig.layout PRIMA dell'errore ---")
                  print(fig.layout)
