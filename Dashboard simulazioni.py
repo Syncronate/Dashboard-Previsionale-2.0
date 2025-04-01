@@ -2789,14 +2789,7 @@ elif page == 'Simulazione':
                      name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
                  ))
                  # --- AGGIUNTA SOGLIE ANCHE AL COMBINATO ---
-                 #threshold_info_comb_lstm = SIMULATION_THRESHOLDS.get(sensor, {})
-                 #soglia_att_comb_lstm = threshold_info_comb_lstm.get('attenzione')
-                 #soglia_all_comb_lstm = threshold_info_comb_lstm.get('allerta')
-                 # Aggiungi linee solo se sono livelli (o comunque se definite)
-                 #if soglia_att_comb_lstm is not None:
-                 #    fig_combined_lstm.add_hline(y=soglia_att_comb_lstm, line_dash="dash", line_color="rgba(255,165,0,0.6)", annotation_text=f"Att.{get_station_label(sensor, short=True)} ({soglia_att_comb_lstm:.1f})", annotation_position="bottom left")
-                 #if soglia_all_comb_lstm is not None:
-                 #     fig_combined_lstm.add_hline(y=soglia_all_comb_lstm, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"All.{get_station_label(sensor, short=True)} ({soglia_all_comb_lstm:.1f})", annotation_position="top left")
+                 
                  # --- FINE SOGLIE COMBINATO ---
 
              # --- MODIFICA TITOLO GRAFICO COMBINATO (USA COSTANTE) ---
