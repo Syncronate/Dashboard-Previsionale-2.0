@@ -766,145 +766,154 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-# --- Funzione Grafici Previsioni (MODIFICATA per soglie e Q, layout consolidato) ---
+# --- Funzione Grafici Previsioni (v3 - Approccio Minimale/Difensivo) ---
 def plot_predictions(predictions, config, start_time=None):
     """
     Genera grafici Plotly INDIVIDUALI per le previsioni (LSTM o Seq2Seq).
     Aggiunge linee orizzontali per le soglie H e un secondo asse Y per la portata Q.
-    Layout aggiornato con chiamata consolidata.
+    Layout aggiornato con approccio minimale e update_xaxes/update_yaxes.
     """
     if config is None or predictions is None: return []
 
     model_type = config.get("model_type", "LSTM")
     target_cols = config["target_columns"]
-    output_steps = predictions.shape[0] # Steps previsti
+    output_steps = predictions.shape[0]
 
-    attribution_text = ATTRIBUTION_PHRASE # Usa costante globale
+    attribution_text = ATTRIBUTION_PHRASE
 
     figs = []
     for i, sensor in enumerate(target_cols):
+        # --- Setup Base Figura e Asse X ---
         fig = go.Figure()
-        # Genera asse X (timestamp o passi)
         if start_time:
             time_steps = [start_time + timedelta(minutes=30 * (step + 1)) for step in range(output_steps)]
             x_axis, x_title = time_steps, "Data e Ora Previste"
             x_tick_format = "%d/%m %H:%M"
         else:
-            time_steps = np.arange(1, output_steps + 1) * 0.5 # Ore relative
+            time_steps = np.arange(1, output_steps + 1) * 0.5
             x_axis, x_title = time_steps, "Ore Future (passi da 30 min)"
             x_tick_format = None
+        x_axis_np = np.array(x_axis) # Assicura sia numpy array
 
-        station_name_graph = get_station_label(sensor, short=False) # Etichetta completa
+        station_name_graph = get_station_label(sensor, short=False)
+        plot_title = f'Previsione {model_type} - {station_name_graph}<br><span style="font-size:10px;">{attribution_text}</span>'
 
-        # Estrai unità di misura per asse Y (Livello H)
-        unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', sensor) # Cerca parentesi tonde o quadre
-        y_axis_unit = "m" # Default per livello
+        # --- Dati Livello (H) e Asse Y1 ---
+        unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', sensor)
+        y_axis_unit = "m"
         if unit_match:
             unit_content = unit_match.group(1) or unit_match.group(2)
             if unit_content: y_axis_unit = unit_content.strip()
 
-        # Aggiungi traccia previsione Livello (H) all'asse Y primario
         fig.add_trace(go.Scatter(
-            x=x_axis,
+            x=x_axis_np,
             y=predictions[:, i],
             mode='lines+markers',
-            name=f'Livello Previsto (H)',
-            yaxis='y1' # Assegna esplicitamente a y1
+            name=f'Livello H ({y_axis_unit})', # Nome traccia più specifico
+            yaxis='y1'
         ))
 
-        # --- AGGIUNTA SOGLIE ATTENZIONE/ALLERTA (basate su H) ---
-        threshold_info = SIMULATION_THRESHOLDS.get(sensor, {}) # Cerca soglie per questo specifico sensore
+        # --- Soglie H ---
+        threshold_info = SIMULATION_THRESHOLDS.get(sensor, {})
         soglia_attenzione = threshold_info.get('attenzione')
         soglia_allerta = threshold_info.get('allerta')
+        if soglia_attenzione is not None:
+            fig.add_hline(y=soglia_attenzione, line_dash="dash", line_color="orange", annotation_text=f"Att.H({soglia_attenzione:.2f})", annotation_position="bottom right", layer="below")
+        if soglia_allerta is not None:
+            fig.add_hline(y=soglia_allerta, line_dash="dash", line_color="red", annotation_text=f"All.H({soglia_allerta:.2f})", annotation_position="top right", layer="below")
 
-        if soglia_attenzione is not None and isinstance(soglia_attenzione, (int, float)):
-            fig.add_hline(
-                y=soglia_attenzione, line_dash="dash", line_color="orange",
-                annotation_text=f"Attenzione H ({soglia_attenzione:.2f})",
-                annotation_position="bottom right", layer="below" # Sposta sotto la traccia dati
-            )
-        if soglia_allerta is not None and isinstance(soglia_allerta, (int, float)):
-            fig.add_hline(
-                y=soglia_allerta, line_dash="dash", line_color="red",
-                annotation_text=f"Allerta H ({soglia_allerta:.2f})",
-                annotation_position="top right", layer="below" # Sposta sotto la traccia dati
-            )
-
-        # --- AGGIUNTA TRACCIA PORTATA (Q) e SECONDO ASSE Y (se applicabile) ---
+        # --- Dati Portata (Q) e Asse Y2 (Condizionale) ---
         sensor_info = STATION_COORDS.get(sensor)
         sensor_code_plot = sensor_info.get('sensor_code') if sensor_info else None
-        has_discharge_data = False # Flag
+        has_discharge_data = False
         predicted_Q_values = None
 
         if sensor_code_plot and sensor_code_plot in RATING_CURVES:
             predicted_H_values = predictions[:, i]
-            # Calcola Q, gestendo NaN/None in input e output
             predicted_Q_values = calculate_discharge_vectorized(sensor_code_plot, predicted_H_values)
-            valid_Q_mask = pd.notna(predicted_Q_values) # Maschera per Q validi
+            valid_Q_mask = pd.notna(predicted_Q_values)
 
-            # Aggiungi traccia Q solo se ci sono valori validi
             if np.any(valid_Q_mask):
                 has_discharge_data = True
-                # Converti x_axis in array numpy se non lo è già
-                x_axis_np = np.array(x_axis)
-                # Aggiungi traccia per la portata sul secondo asse Y
                 fig.add_trace(go.Scatter(
-                    x=x_axis_np[valid_Q_mask], # Usa solo x corrispondenti a Q validi
-                    y=predicted_Q_values[valid_Q_mask], # Usa solo Q validi
+                    x=x_axis_np[valid_Q_mask],
+                    y=predicted_Q_values[valid_Q_mask],
                     mode='lines',
-                    name='Portata Prevista (Q)',
-                    line=dict(color='firebrick', dash='dot'), # Colore e stile diversi
-                    yaxis='y2' # Assegna al secondo asse Y
+                    name='Portata Q (m³/s)',
+                    line=dict(color='firebrick', dash='dot'),
+                    yaxis='y2'
                 ))
 
-        # --- Configurazione Layout Finale (Consolidata) ---
-        plot_title = f'Previsione {model_type} - {station_name_graph}<br><span style="font-size:10px;">{attribution_text}</span>'
-        layout_updates = {
-            "title": plot_title,
-            "xaxis": {"title": x_title}, # Usa dizionario per asse X
-            "yaxis": { # Configurazione asse Y1 (H)
-                "title": f"Livello Previsto ({y_axis_unit})",
-                "titlefont": {"color": "#1f77b4"},
-                "tickfont": {"color": "#1f77b4"},
-                "side": "left",
-                "rangemode": 'tozero'
-            },
-            "height": 400,
-            "margin": dict(l=60, r=60, t=70, b=50), # Margine destro già aumentato per potenziale y2
-            "hovermode": "x unified",
-            "template": "plotly_white",
-            # Legenda di default (verticale, in alto a dx)
-            "legend": dict(orientation="v", yanchor="top", y=1, xanchor="right", x=1)
-        }
+        # --- Aggiornamento Layout (Approccio Separato) ---
+        try:
+            # Titolo e impostazioni generali
+            fig.update_layout(
+                title=plot_title,
+                height=400,
+                margin=dict(l=60, r=60, t=70, b=50), # Margine destro per y2
+                hovermode="x unified",
+                template="plotly_white",
+            )
 
-        # Aggiungi/Modifica layout se abbiamo aggiunto la portata
-        if has_discharge_data:
-            layout_updates["yaxis2"] = dict(
-                title="Portata Prevista (m³/s)",
-                titlefont=dict(color="firebrick"),
-                tickfont=dict(color="firebrick"),
-                overlaying="y", # Sovrappone a y1
-                side="right",
+            # Asse X
+            fig.update_xaxes(title_text=x_title)
+            if x_tick_format:
+                 fig.update_xaxes(tickformat=x_tick_format)
+
+            # Asse Y1 (H)
+            fig.update_yaxes(
+                title_text=f"Livello H ({y_axis_unit})",
+                titlefont=dict(color="#1f77b4"),
+                tickfont=dict(color="#1f77b4"),
+                side="left",
                 rangemode='tozero',
-                showgrid=False, # Opzionale: nasconde griglia per y2
+                row=1, col=1 # Specifica subplot (anche se c'è solo 1)
             )
-            # Aggiorna la legenda per posizionarla sotto quando c'è il secondo asse
-            layout_updates["legend"] = dict(
-                orientation="h",
-                yanchor="bottom",
-                y=-0.3, # Posiziona sotto l'asse X
-                xanchor="center",
-                x=0.5
-            )
-            # Il margine destro è già 60, potrebbe non servire aumentarlo ulteriormente
-            # layout_updates["margin"]["r"] = 70 # Opzionale: aumenta ancora se necessario
 
-        # Applica tutti gli aggiornamenti del layout in una volta
-        fig.update_layout(layout_updates)
+            # Asse Y2 (Q) e Legenda - SOLO se ci sono dati Q
+            if has_discharge_data:
+                fig.update_layout(
+                     yaxis2=dict(
+                        title="Portata Q (m³/s)",
+                        titlefont=dict(color="firebrick"),
+                        tickfont=dict(color="firebrick"),
+                        overlaying="y",
+                        side="right",
+                        rangemode='tozero',
+                        showgrid=False,
+                    ),
+                    legend=dict( # Sposta legenda sotto solo se c'è y2
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.3,
+                        xanchor="center",
+                        x=0.5
+                    )
+                )
+            else: # Configurazione legenda di default se non c'è y2
+                 fig.update_layout(
+                      legend=dict(
+                          orientation="v",
+                          yanchor="top",
+                          y=1,
+                          xanchor="right",
+                          x=1
+                      )
+                 )
 
-        # Applica formato tick X specifico se necessario (dopo update_layout)
-        if x_tick_format:
-            fig.update_xaxes(tickformat=x_tick_format)
+        except Exception as e_layout:
+            st.error(f"Errore durante aggiornamento layout Plotly (v3): {e_layout}")
+            # Stampa informazioni utili per il debug
+            print(f"--- Errore Layout per Sensore: {sensor} ---")
+            print(f"has_discharge_data: {has_discharge_data}")
+            # Stampa stato figura prima dell'errore (se possibile)
+            try:
+                 print("--- Stato fig.layout PRIMA dell'errore ---")
+                 print(fig.layout)
+                 print("-----------------------------------------")
+            except:
+                 print("Impossibile stampare fig.layout")
+            raise e_layout # Rilancia l'errore
 
         figs.append(fig)
 
