@@ -23,6 +23,7 @@ import random
 import mimetypes # Per indovinare i tipi MIME per i download
 from streamlit_js_eval import streamlit_js_eval # Per forzare refresh periodico
 import pytz # Per gestione timezone
+import math # Per calcoli matematici (potenza)
 
 # --- Configurazione Pagina Streamlit ---
 st.set_page_config(page_title="Modello Predittivo Idrologico", layout="wide")
@@ -52,62 +53,147 @@ DEFAULT_THRESHOLDS = { # Soglie USATE NELLA DASHBOARD
 }
 
 # --- NUOVE COSTANTI PER SOGLIE SIMULAZIONE (ATTENZIONE/ALLERTA) ---
-# Le chiavi DEVONO corrispondere ESATTAMENTE ai nomi delle colonne TARGET
-# usati nei file di configurazione (.json) dei modelli.
-# Aggiungere qui le soglie per TUTTI i potenziali target idrometrici.
 SIMULATION_THRESHOLDS = {
-    # Livelli GSheet Style (usati in alcuni modelli/config)
+    # Livelli GSheet Style
     'Serra dei Conti - Livello Misa (mt)': {'attenzione': 1.2, 'allerta': 1.7},
     'Pianello di Ostra - Livello Misa (m)': {'attenzione': 1.5, 'allerta': 2.0},
     'Nevola - Livello Nevola (mt)': {'attenzione': 2.0, 'allerta': 2.5},
     'Misa - Livello Misa (mt)': {'attenzione': 1.5, 'allerta': 2.0},
     'Ponte Garibaldi - Livello Misa 2 (mt)': {'attenzione': 1.5, 'allerta': 2.2},
-
-    # Livelli CSV/Internal Style (usati in altri modelli/config)
-    # Assicurati che i valori siano consistenti con quelli sopra se il sensore è lo stesso
-    'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)': {'attenzione': 2.0, 'allerta': 2.5},
-    'Livello Idrometrico Sensore 1112 [m] (Bettolelle)': {'attenzione': 2.2, 'allerta': 2.8}, # Corrisponde a 'Misa - Livello Misa (mt)'
-    'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'attenzione': 1.6, 'allerta': 2.0}, # Corrisponde a 'Nevola - Livello Nevola (mt)'
-    'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'attenzione': 2.4, 'allerta': 3.0}, # Corrisponde a 'Pianello di Ostra - Livello Misa (m)'
-    'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'attenzione': 3.2, 'allerta': 4.0}  # Corrisponde a 'Ponte Garibaldi - Livello Misa 2 (mt)'
-
-    # Aggiungi qui ALTRE colonne target (es. piogge, umidità) se vuoi visualizzare soglie anche per quelle
-    # 'Nome_Colonna_Target_Pioggia': {'attenzione': 5.0, 'allerta': 10.0},
+    # Livelli CSV/Internal Style
+    'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)': {'attenzione': 1.2, 'allerta': 1.7}, # Aggiornato per coerenza
+    'Livello Idrometrico Sensore 1112 [m] (Bettolelle)': {'attenzione': 1.5, 'allerta': 2.0}, # Aggiornato per coerenza
+    'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'attenzione': 2.0, 'allerta': 2.5}, # Aggiornato per coerenza
+    'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'attenzione': 1.5, 'allerta': 2.0}, # Aggiornato per coerenza
+    'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'attenzione': 1.5, 'allerta': 2.2}  # Aggiornato per coerenza
 }
-# --- FINE NUOVE COSTANTI ---
-
 
 # --- NUOVE COSTANTI PER LA FRASE DI ATTRIBUZIONE ---
 ATTRIBUTION_PHRASE = "Previsione progettata ed elaborata da Alberto Bussaglia del Comune di Senigallia. La previsione è di tipo probabilistico e non rappresenta una certezza.<br> Per maggiori informazioni, o per ottenere il consenso all'utilizzo/pubblicazione, contattare l'autore."
-ATTRIBUTION_PHRASE_FILENAME_SUFFIX = "_da_Alberto_Bussaglia_Area_PC" # Versione sicura per nomi file
-# --- FINE NUOVE COSTANTI ---
+ATTRIBUTION_PHRASE_FILENAME_SUFFIX = "_da_Alberto_Bussaglia_Area_PC"
 
 italy_tz = pytz.timezone('Europe/Rome')
-HUMIDITY_COL_NAME = "Umidita' Sensore 3452 (Montemurello)" # Colonna specifica umidità
+HUMIDITY_COL_NAME = "Umidita' Sensore 3452 (Montemurello)"
 
+# --- NUOVA COSTANTE: SCALE DI DEFLUSSO ---
+RATING_CURVES = {
+    '1112': [
+        {'min_H': 0.73, 'max_H': 1.3,  'a': 32.6,   'b': 0.72,  'c': 2.45, 'd': 0.0},
+        {'min_H': 1.31, 'max_H': 3.93, 'a': 30.19,  'b': 0.82,  'c': 1.78, 'd': 0.1},
+        {'min_H': 3.94, 'max_H': 6.13, 'a': 15.51,  'b': 0.85,  'c': 2.4,  'd': 0.11}
+    ],
+    '1008': [
+        {'min_H': 0.45, 'max_H': 0.73, 'a': 24.52,  'b': 0.45,  'c': 1.86, 'd': 0.0},
+        {'min_H': 0.74, 'max_H': 2.9,  'a': 28.77,  'b': 0.55,  'c': 1.48, 'd': 0.0}
+    ],
+    '1283': [
+        {'min_H': 0.85, 'max_H': 1.2,  'a': 0.628,  'b': 0.849, 'c': 0.957, 'd': 0.0},
+        {'min_H': 1.21, 'max_H': 1.46, 'a': 22.094, 'b': 1.2,   'c': 1.295, 'd': 0.231},
+        {'min_H': 1.47, 'max_H': 2.84, 'a': 48.606, 'b': 1.46,  'c': 1.18,  'd': 4.091},
+        {'min_H': 2.85, 'max_H': 5.0,  'a': 94.37,  'b': 2.84,  'c': 1.223, 'd': 75.173}
+    ]
+}
+# --- FINE NUOVA COSTANTE ---
+
+
+# --- AGGIORNAMENTO STATION_COORDS CON sensor_code ---
 STATION_COORDS = {
-    # Coordinate stazioni (invariate, usate per etichette)
+    # Pioggia e Umidità (invariati, senza sensor_code idrometrico)
     'Arcevia - Pioggia Ora (mm)': {'lat': 43.5228, 'lon': 12.9388, 'name': 'Arcevia (Pioggia)', 'type': 'Pioggia', 'location_id': 'Arcevia'},
     'Barbara - Pioggia Ora (mm)': {'lat': 43.5808, 'lon': 13.0277, 'name': 'Barbara (Pioggia)', 'type': 'Pioggia', 'location_id': 'Barbara'},
     'Corinaldo - Pioggia Ora (mm)': {'lat': 43.6491, 'lon': 13.0476, 'name': 'Corinaldo (Pioggia)', 'type': 'Pioggia', 'location_id': 'Corinaldo'},
-    'Nevola - Livello Nevola (mt)': {'lat': 43.6491, 'lon': 13.0476, 'name': 'Corinaldo (Livello Nevola)', 'type': 'Livello', 'location_id': 'Corinaldo'},
     'Misa - Pioggia Ora (mm)': {'lat': 43.690, 'lon': 13.165, 'name': 'Bettolelle (Pioggia)', 'type': 'Pioggia', 'location_id': 'Bettolelle'},
-    'Misa - Livello Misa (mt)': {'lat': 43.690, 'lon': 13.165, 'name': 'Bettolelle (Livello Misa)', 'type': 'Livello', 'location_id': 'Bettolelle'},
-    'Serra dei Conti - Livello Misa (mt)': {'lat': 43.5427, 'lon': 13.0389, 'name': 'Serra de\' Conti (Livello)', 'type': 'Livello', 'location_id': 'Serra de Conti'},
+    HUMIDITY_COL_NAME: {'lat': 43.6, 'lon': 13.0, 'name': 'Montemurello (Umidità)', 'type': 'Umidità', 'location_id': 'Montemurello'},
+
+    # Livelli GSheet Style (con sensor_code)
+    'Serra dei Conti - Livello Misa (mt)': {'lat': 43.5427, 'lon': 13.0389, 'name': 'Serra de\' Conti (Livello)', 'type': 'Livello', 'location_id': 'Serra de Conti', 'sensor_code': '1008'},
+    'Nevola - Livello Nevola (mt)': {'lat': 43.6491, 'lon': 13.0476, 'name': 'Corinaldo (Livello Nevola)', 'type': 'Livello', 'location_id': 'Corinaldo', 'sensor_code': '1283'},
+    'Misa - Livello Misa (mt)': {'lat': 43.690, 'lon': 13.165, 'name': 'Bettolelle (Livello Misa)', 'type': 'Livello', 'location_id': 'Bettolelle', 'sensor_code': '1112'},
+    # Livelli GSheet Style (senza scala di deflusso specificata)
     'Pianello di Ostra - Livello Misa (m)': {'lat': 43.660, 'lon': 13.135, 'name': 'Pianello di Ostra (Livello)', 'type': 'Livello', 'location_id': 'Pianello Ostra'},
     'Ponte Garibaldi - Livello Misa 2 (mt)': {'lat': 43.7176, 'lon': 13.2189, 'name': 'Ponte Garibaldi (Senigallia)', 'type': 'Livello', 'location_id': 'Ponte Garibaldi'},
-    HUMIDITY_COL_NAME: {'lat': 43.6, 'lon': 13.0, 'name': 'Montemurello (Umidità)', 'type': 'Umidità', 'location_id': 'Montemurello'},
-    # Aggiunta corrispondenze per nomi CSV/interni (se diversi e usati come target)
-     'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)': {'lat': 43.5427, 'lon': 13.0389, 'name': 'Serra de\' Conti (Livello)', 'type': 'Livello', 'location_id': 'Serra de Conti'},
-     'Livello Idrometrico Sensore 1112 [m] (Bettolelle)': {'lat': 43.690, 'lon': 13.165, 'name': 'Bettolelle (Livello Misa)', 'type': 'Livello', 'location_id': 'Bettolelle'},
-     'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'lat': 43.6491, 'lon': 13.0476, 'name': 'Corinaldo (Livello Nevola)', 'type': 'Livello', 'location_id': 'Corinaldo'},
+
+    # Livelli CSV/Internal Style (con sensor_code) - Assicurarsi che corrispondano a GSheet se usati
+     'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)': {'lat': 43.5427, 'lon': 13.0389, 'name': 'Serra de\' Conti (Livello)', 'type': 'Livello', 'location_id': 'Serra de Conti', 'sensor_code': '1008'},
+     'Livello Idrometrico Sensore 1112 [m] (Bettolelle)': {'lat': 43.690, 'lon': 13.165, 'name': 'Bettolelle (Livello Misa)', 'type': 'Livello', 'location_id': 'Bettolelle', 'sensor_code': '1112'},
+     'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'lat': 43.6491, 'lon': 13.0476, 'name': 'Corinaldo (Livello Nevola)', 'type': 'Livello', 'location_id': 'Corinaldo', 'sensor_code': '1283'},
+    # Livelli CSV/Internal Style (senza scala di deflusso specificata)
      'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'lat': 43.660, 'lon': 13.135, 'name': 'Pianello di Ostra (Livello)', 'type': 'Livello', 'location_id': 'Pianello Ostra'},
      'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'lat': 43.7176, 'lon': 13.2189, 'name': 'Ponte Garibaldi (Senigallia)', 'type': 'Livello', 'location_id': 'Ponte Garibaldi'}
 }
+# --- FINE AGGIORNAMENTO ---
+
+# --- NUOVA FUNZIONE CALCOLO PORTATA ---
+def calculate_discharge(sensor_code, H):
+    """
+    Calcola la portata (Q) in m3/s dato il codice sensore e il livello H (m).
+    Utilizza le scale di deflusso definite in RATING_CURVES.
+
+    Args:
+        sensor_code (str): Codice identificativo del sensore ('1112', '1008', '1283').
+        H (float): Livello idrometrico in metri.
+
+    Returns:
+        float or None: La portata calcolata (Q) in m3/s, o None se H non è valido,
+                       il sensore non ha una scala di deflusso definita, o H è
+                       fuori dagli intervalli di validità. np.nan è anche possibile
+                       in caso di errori matematici.
+    """
+    if sensor_code not in RATING_CURVES:
+        # print(f"Debug: Nessuna scala di deflusso per sensore {sensor_code}")
+        return None
+    if H is None or not isinstance(H, (int, float, np.number)) or np.isnan(H):
+        # print(f"Debug: Livello H non valido ({H}) per sensore {sensor_code}")
+        return None
+
+    try:
+        H = float(H) # Assicura che sia float
+        rules = RATING_CURVES[sensor_code]
+
+        for rule in rules:
+            min_H, max_H = rule['min_H'], rule['max_H']
+
+            # Controlla se H rientra nell'intervallo della regola
+            # Nota: gli intervalli forniti hanno piccoli gap (es. 1.3 vs 1.31).
+            # Gestiamo questi gap includendo il limite inferiore del gap successivo
+            # nella regola precedente se non c'è sovrapposizione esatta.
+            # O più semplicemente, usiamo <= per max_H.
+            if min_H <= H <= max_H:
+                a, b, c, d = rule['a'], rule['b'], rule['c'], rule['d']
+
+                # Controlla se H è inferiore a 'b' (zero idrometrico della formula)
+                base = H - b
+                if base < 0:
+                    # Se H è sotto lo zero idrometrico 'b' ma DENTRO l'intervallo min/max
+                    # della regola, potrebbe indicare una condizione di flusso minimo
+                    # o un leggero disallineamento. Restituiamo 'd' (il termine costante).
+                    # Potrebbe anche indicare un errore nella scala o nel dato H.
+                    # print(f"Warning: H ({H:.3f}) < b ({b:.3f}) per sensore {sensor_code} nella regola {min_H}-{max_H}. Restituito d={d}")
+                    # Per sicurezza e per evitare errori matematici (potenze negative),
+                    # si potrebbe restituire d se H >= min_H, altrimenti np.nan/None.
+                    # Qui scegliamo di restituire 'd' se H >= min_H.
+                    return float(d) if H >= min_H else np.nan # O None
+
+                # Calcola la portata
+                Q = a * math.pow(base, c) + d
+                # print(f"Debug: Calcolato Q={Q:.3f} per H={H:.3f} (Sensore {sensor_code}) usando regola {min_H}-{max_H}")
+                return float(Q)
+
+        # Se H è fuori da tutti gli intervalli definiti per quel sensore
+        # print(f"Warning: Livello H={H:.3f} fuori range per sensore {sensor_code}. Intervalli: {[(r['min_H'], r['max_H']) for r in rules]}")
+        return None
+
+    except (ValueError, TypeError, OverflowError) as e:
+        # print(f"Errore calcolo portata per sensore {sensor_code}, H={H}: {e}")
+        return np.nan # Restituisce NaN in caso di errori matematici
+
+# Vettorizza la funzione per applicarla facilmente agli array numpy (per la simulazione)
+calculate_discharge_vectorized = np.vectorize(calculate_discharge, otypes=[float])
+# --- FINE NUOVA FUNZIONE ---
+
 
 # --- Definizioni Classi Modello (Dataset, LSTM, Encoder, Decoder, Seq2Seq) ---
 # (Nessuna modifica necessaria qui)
-# Dataset modificato per Seq2Seq (gestisce 1 o 3 tensor)
 class TimeSeriesDataset(Dataset):
     def __init__(self, *tensors):
         assert all(tensors[0].shape[0] == tensor.shape[0] for tensor in tensors), "Size mismatch between tensors"
@@ -120,7 +206,6 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         return tuple(tensor[idx] for tensor in self.tensors)
 
-# Modello LSTM Standard (Invariato)
 class HydroLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, output_window, num_layers=2, dropout=0.2):
         super(HydroLSTM, self).__init__()
@@ -140,7 +225,6 @@ class HydroLSTM(nn.Module):
         out = out.view(out.size(0), self.output_window, self.output_size) # Reshape
         return out
 
-# Modello Encoder LSTM (Seq2Seq)
 class EncoderLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
         super().__init__()
@@ -151,7 +235,6 @@ class EncoderLSTM(nn.Module):
         _, (hidden, cell) = self.lstm(x) # Ignora outputs, prendi solo stati finali
         return hidden, cell
 
-# Modello Decoder LSTM (Seq2Seq)
 class DecoderLSTM(nn.Module):
     def __init__(self, forecast_input_size, hidden_size, output_size, num_layers=2, dropout=0.2):
         super().__init__()
@@ -169,7 +252,6 @@ class DecoderLSTM(nn.Module):
         prediction = self.fc(output.squeeze(1)) # Shape: (batch, output_size)
         return prediction, hidden, cell
 
-# Modello Seq2Seq Combinato
 class Seq2SeqHydro(nn.Module):
     def __init__(self, encoder, decoder, output_window_steps, device):
         super().__init__()
@@ -210,7 +292,6 @@ class Seq2SeqHydro(nn.Module):
 
 # --- Funzioni Utilità Modello/Dati ---
 # (Nessuna modifica necessaria qui)
-# Funzione preparazione dati LSTM standard
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, val_split=20):
     """Prepara i dati per l'allenamento del modello LSTM standard."""
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati LSTM Standard...")
@@ -290,7 +371,6 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
     print(f"Dati LSTM pronti: Train={len(X_train)}, Val={len(X_val)}")
     return X_train, y_train, X_val, y_val, scaler_features, scaler_targets
 
-# Funzione preparazione dati Seq2Seq
 def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, target_cols,
                                  input_window_steps, forecast_window_steps, output_window_steps, val_split=20):
     """Prepara dati per modello Seq2Seq con 3 scaler separati."""
@@ -398,6 +478,7 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
     return (X_enc_train, X_dec_train, y_tar_train,
             X_enc_val, X_dec_val, y_tar_val,
             scaler_past_features, scaler_forecast_features, scaler_targets)
+
 
 # --- Funzioni Caricamento Modello/Scaler (Aggiornate) ---
 # (Nessuna modifica necessaria qui)
@@ -573,7 +654,6 @@ def load_specific_scalers(config, model_info):
 
 # --- Funzioni Predict (Standard e Seq2Seq) ---
 # (Nessuna modifica necessaria qui)
-# Predict LSTM Standard
 def predict(model, input_data, scaler_features, scaler_targets, config, device):
     """Esegue predizione per modello LSTM standard."""
     if model is None or scaler_features is None or scaler_targets is None or config is None:
@@ -625,7 +705,6 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
         st.error(f"Errore durante predict LSTM: {e}")
         st.error(traceback.format_exc()); return None
 
-# Predict Seq2Seq
 def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, device):
     """Esegue predizione per modello Seq2Seq."""
     if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
@@ -687,7 +766,7 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-# --- Funzione Grafici Previsioni (MODIFICATA) ---
+# --- Funzione Grafici Previsioni (MODIFICATA per soglie) ---
 def plot_predictions(predictions, config, start_time=None):
     """
     Genera grafici Plotly INDIVIDUALI per le previsioni (LSTM o Seq2Seq).
@@ -715,10 +794,10 @@ def plot_predictions(predictions, config, start_time=None):
 
         station_name_graph = get_station_label(sensor, short=False) # Etichetta completa
 
-        # Aggiungi traccia previsione
-        fig.add_trace(go.Scatter(x=x_axis, y=predictions[:, i], mode='lines+markers', name=f'Previsto'))
+        # Aggiungi traccia previsione (Livello H)
+        fig.add_trace(go.Scatter(x=x_axis, y=predictions[:, i], mode='lines+markers', name=f'Livello Previsto (H)'))
 
-        # --- AGGIUNTA SOGLIE ATTENZIONE/ALLERTA ---
+        # --- AGGIUNTA SOGLIE ATTENZIONE/ALLERTA (basate su H) ---
         threshold_info = SIMULATION_THRESHOLDS.get(sensor, {}) # Cerca soglie per questo specifico sensore
         soglia_attenzione = threshold_info.get('attenzione')
         soglia_allerta = threshold_info.get('allerta')
@@ -729,7 +808,7 @@ def plot_predictions(predictions, config, start_time=None):
                 y=soglia_attenzione,
                 line_dash="dash",
                 line_color="orange", # Giallo può essere poco visibile
-                annotation_text=f"Attenzione ({soglia_attenzione:.2f})",
+                annotation_text=f"Attenzione H ({soglia_attenzione:.2f})",
                 annotation_position="bottom right"
             )
 
@@ -739,16 +818,15 @@ def plot_predictions(predictions, config, start_time=None):
                 y=soglia_allerta,
                 line_dash="dash",
                 line_color="red",
-                annotation_text=f"Allerta ({soglia_allerta:.2f})",
+                annotation_text=f"Allerta H ({soglia_allerta:.2f})",
                 annotation_position="top right" # Posizione diversa per evitare sovrapposizioni
             )
         # --- FINE AGGIUNTA SOGLIE ---
 
-        # Estrai unità di misura per asse Y
+        # Estrai unità di misura per asse Y (Livello)
         unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', sensor) # Cerca parentesi tonde o quadre
-        y_axis_unit = ""
+        y_axis_unit = "m" # Default per livello
         if unit_match:
-            # Prendi il gruppo non nullo (o il primo se entrambi esistono, improbabile)
             unit_content = unit_match.group(1) or unit_match.group(2)
             if unit_content: y_axis_unit = unit_content.strip()
 
@@ -757,7 +835,7 @@ def plot_predictions(predictions, config, start_time=None):
         fig.update_layout(
             title=plot_title,
             xaxis_title=x_title,
-            yaxis_title=y_axis_unit if y_axis_unit else "Valore Previsto", # Usa unità o default
+            yaxis_title=f"Livello Previsto ({y_axis_unit})", # Asse Y primario è Livello H
             height=400,
             margin=dict(l=60, r=20, t=70, b=50), # Aumentato margine top per titolo lungo
             hovermode="x unified",
@@ -765,7 +843,45 @@ def plot_predictions(predictions, config, start_time=None):
         )
         if start_time:
             fig.update_xaxes(tickformat="%d/%m %H:%M") # Formato data/ora
-        fig.update_yaxes(rangemode='tozero') # Asse Y parte da zero (mantiene hline visibili)
+        fig.update_yaxes(rangemode='tozero', title_font=dict(color="#1f77b4")) # Asse Y parte da zero (mantiene hline visibili)
+
+        # --- AGGIUNTA SECONDO ASSE Y PER PORTATA (Q) ---
+        # Controlla se esiste una scala di deflusso per questo sensore
+        sensor_info = STATION_COORDS.get(sensor)
+        sensor_code_plot = sensor_info.get('sensor_code') if sensor_info else None
+
+        if sensor_code_plot and sensor_code_plot in RATING_CURVES:
+            # Calcola la portata per ogni H previsto
+            predicted_H_values = predictions[:, i]
+            predicted_Q_values = calculate_discharge_vectorized(sensor_code_plot, predicted_H_values)
+
+            # Aggiungi traccia per la portata sul secondo asse Y
+            fig.add_trace(go.Scatter(
+                x=x_axis,
+                y=predicted_Q_values,
+                mode='lines',
+                name='Portata Prevista (Q)',
+                line=dict(color='firebrick', dash='dot'), # Colore e stile diversi
+                yaxis='y2' # Assegna al secondo asse Y
+            ))
+
+            # Configura il secondo asse Y
+            fig.update_layout(
+                yaxis2=dict(
+                    title="Portata Prevista (m³/s)",
+                    titlefont=dict(color="firebrick"),
+                    tickfont=dict(color="firebrick"),
+                    overlaying="y",
+                    side="right",
+                    rangemode='tozero' # Anche asse portata parte da zero
+                ),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.3) # Sposta legenda sotto
+            )
+            # Aggiusta margini se necessario per accomodare il secondo asse
+            fig.update_layout(margin=dict(r=60)) # Aumenta margine destro
+
+        # --- FINE AGGIUNTA SECONDO ASSE Y ---
+
         figs.append(fig)
     return figs
 
@@ -881,7 +997,6 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
     except gspread.exceptions.SpreadsheetNotFound: return None, f"Errore: Foglio Google non trovato (ID: '{sheet_id}').", actual_fetch_time
     except Exception as e: return None, f"Errore imprevisto recupero dati GSheet: {type(e).__name__} - {e}\n{traceback.format_exc()}", actual_fetch_time
 
-# Fetch dati GSheet per simulazione (LSTM e Seq2Seq)
 @st.cache_data(ttl=120, show_spinner="Importazione dati storici da Google Sheet per simulazione...")
 def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format_gs, col_mapping, required_model_cols_fetch, impute_dict):
     """ Recupera, mappa, pulisce e ordina n_rows_steps di dati da GSheet per simulazione. """
@@ -1018,7 +1133,6 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
 
 # --- Funzioni Allenamento (Standard e Seq2Seq) ---
 # (Nessuna modifica necessaria qui)
-# Allenamento LSTM Standard
 def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_window_steps,
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
                 save_strategy='migliore',
@@ -1118,7 +1232,6 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
 
     return final_model_to_return, train_losses, val_losses
 
-# Allenamento Seq2Seq
 def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train,
                         X_enc_val, X_dec_val, y_tar_val,
                         encoder, decoder, output_window_steps, # Passa encoder/decoder istanziati
@@ -1349,7 +1462,7 @@ def extract_sheet_id(url):
     return None # Restituisce None se non trovato
 
 # --- Funzione Estrazione Etichetta Stazione ---
-# (Nessuna modifica necessaria qui)
+# (Aggiornata leggermente per chiarezza)
 def get_station_label(col_name, short=False):
     """Restituisce etichetta leggibile per colonna sensore, usando STATION_COORDS."""
     if col_name in STATION_COORDS:
@@ -1366,19 +1479,21 @@ def get_station_label(col_name, short=False):
                 label = f"{loc_id} ({type_abbr})"
             else:
                 label = loc_id # Solo location se unico tipo lì
-            return label[:25] + ('...' if len(label) > 25 else '') # Tronca se necessario
+            # Rimuove parentesi e spazi extra per brevità
+            label = re.sub(r'\s*\(.*?\)\s*', '', label).strip()
+            return label[:20] + ('...' if len(label) > 20 else '') # Tronca se necessario (più corto)
         else: # Non short o senza location_id definito
             return name # Restituisce nome completo
 
     # Fallback se col_name non è in STATION_COORDS
-    parts = col_name.split(' - '); label = col_name.split(' (')[0].strip()
-    if len(parts) > 1:
-        location = parts[0].strip(); measurement = parts[1].split(' (')[0].split('[')[0].strip(); # Pulisce anche [m]
-        label = f"{location} ({measurement[0]})" if short else f"{location} - {measurement}"
-    else: # Se non c'è ' - ', usa il nome pulito
-        label = col_name.split(' (')[0].split('[')[0].strip() # Rimuovi unità
+    label = col_name # Default a nome colonna
+    # Tenta di pulire nomi comuni
+    label = re.sub(r'\s*\[.*?\]|\s*\(.*?\)', '', label).strip() # Rimuove [m], (mm), etc.
+    label = label.replace('Sensore ', '').replace('Livello Idrometrico ', '').replace(' - Pioggia Ora', '')
+    label = label.replace(' - Livello Misa', '').replace(' - Livello Nevola', '')
+    parts = label.split(' '); label = ' '.join(parts[:2]) # Prende max le prime due parole
 
-    return label[:25] + ('...' if len(label) > 25 else '') if short else label
+    return label[:20] + ('...' if len(label) > 20 else '') if short else label
 
 # --- Inizializzazione Session State ---
 # (Nessuna modifica necessaria qui)
@@ -1980,13 +2095,13 @@ if page == 'Dashboard':
 
 
         st.divider()
-        # --- Tabella Valori Attuali e Soglie ---
-        st.subheader("Valori Ultimo Rilevamento e Stato Allerta")
+        # --- Tabella Valori Attuali, Soglie e Portata (MODIFICATA) ---
+        st.subheader("Valori Ultimo Rilevamento, Stato Allerta e Portata")
         cols_to_monitor = [col for col in df_dashboard.columns if col != GSHEET_DATE_COL] # Usa colonne effettivamente presenti
         table_rows = []; current_alerts = []
         for col_name in cols_to_monitor:
-            # Assicurati che latest_row_data sia definito (se la colonna data manca, potrebbe non esserlo)
-            current_value = latest_row_data.get(col_name) if 'latest_row_data' in locals() else None
+            # Assicurati che latest_row_data sia definito
+            current_value_H = latest_row_data.get(col_name) if 'latest_row_data' in locals() else None
 
             threshold = st.session_state.dashboard_thresholds.get(col_name)
             alert_active = False; value_numeric = np.nan; value_display = "N/D"; unit = ""
@@ -1995,23 +2110,44 @@ if page == 'Dashboard':
                 unit_content = unit_match.group(1) or unit_match.group(2)
                 if unit_content: unit = unit_content.strip()
 
-
-            if pd.notna(current_value) and isinstance(current_value, (int, float, np.number)):
-                 value_numeric = float(current_value)
+            if pd.notna(current_value_H) and isinstance(current_value_H, (int, float, np.number)):
+                 value_numeric = float(current_value_H)
                  fmt_spec = ".1f" if unit in ['mm', '%'] else ".2f" # Formato in base all'unità
                  try: value_display = f"{value_numeric:{fmt_spec}} {unit}".strip()
                  except ValueError: value_display = f"{value_numeric} {unit}".strip() # Fallback formattazione
 
                  if threshold is not None and isinstance(threshold, (int, float, np.number)) and value_numeric >= float(threshold):
                       alert_active = True; current_alerts.append((col_name, value_numeric, threshold))
-            elif pd.notna(current_value): value_display = f"{current_value} (?)" # Valore non numerico
+            elif pd.notna(current_value_H): value_display = f"{current_value_H} (?)" # Valore non numerico
+
+            # --- Calcolo Portata (Q) ---
+            portata_Q = None
+            portata_display = "N/A"
+            sensor_info = STATION_COORDS.get(col_name)
+            if sensor_info:
+                sensor_code = sensor_info.get('sensor_code')
+                if sensor_code and sensor_code in RATING_CURVES:
+                    portata_Q = calculate_discharge(sensor_code, value_numeric) # Usa H numerico
+                    if portata_Q is not None and pd.notna(portata_Q):
+                        portata_display = f"{portata_Q:.2f}" # Formatta Q a 2 decimali
+                    else:
+                        portata_display = "-" # "-" se non calcolabile (es. fuori range)
+            # --- Fine Calcolo Portata ---
 
             # Assegna status testuale
             status = "ALLERTA" if alert_active else ("OK" if pd.notna(value_numeric) else "N/D")
             threshold_display = f"{float(threshold):.1f}" if threshold is not None else "-" # Mostra soglia con 1 decimale
 
-            table_rows.append({"Stazione": get_station_label(col_name, short=True), "Valore": value_display, "Soglia": threshold_display, "Stato": status,
-                               "Valore Numerico": value_numeric, "Soglia Numerica": float(threshold) if threshold else None}) # Colonne nascoste per styling
+            table_rows.append({
+                "Stazione": get_station_label(col_name, short=True),
+                "Valore H": value_display,
+                "Portata Q (m³/s)": portata_display, # NUOVA COLONNA
+                "Soglia H": threshold_display,
+                "Stato": status,
+                # Colonne nascoste per styling
+                "Valore Numerico H": value_numeric,
+                "Soglia Numerica H": float(threshold) if threshold else None
+                })
 
         df_display = pd.DataFrame(table_rows)
 
@@ -2025,12 +2161,12 @@ if page == 'Dashboard':
         # Mostra tabella formattata
         st.dataframe(
             df_display.style.apply(highlight_alert, axis=1),
-            column_order=["Stazione", "Valore", "Soglia", "Stato"], # Ordine colonne visibili
+            column_order=["Stazione", "Valore H", "Portata Q (m³/s)", "Soglia H", "Stato"], # AGGIUNTO "Portata Q (m³/s)"
             hide_index=True,
             use_container_width=True,
             column_config={ # Nascondi colonne usate solo per lo stile
-                "Valore Numerico": None,
-                "Soglia Numerica": None
+                "Valore Numerico H": None,
+                "Soglia Numerica H": None
             }
         )
         st.session_state.active_alerts = current_alerts # Salva allerte attive basate sull'ultimo valore visualizzato
@@ -2050,7 +2186,7 @@ if page == 'Dashboard':
                 for col in selected_cols_compare:
                     fig_compare.add_trace(go.Scatter(x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True)))
                 title_compare = f"Andamento Storico Comparato ({data_source_mode})"
-                fig_compare.update_layout(title=title_compare, xaxis_title='Data e Ora', yaxis_title='Valore',
+                fig_compare.update_layout(title=title_compare, xaxis_title='Data e Ora', yaxis_title='Valore Misurato', # Titolo asse Y generico
                                           height=500, hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig_compare, use_container_width=True)
                 # Link download grafico
@@ -2079,10 +2215,10 @@ if page == 'Dashboard':
 
                     fig_individual = go.Figure()
                     fig_individual.add_trace(go.Scatter(x=x_axis_data_indiv, y=df_dashboard[col_name], mode='lines', name=label_individual))
-                    # Aggiungi linea soglia se definita
-                    if threshold_individual is not None:
+                    # Aggiungi linea soglia se definita (basata su H)
+                    if threshold_individual is not None and ('Livello' in col_name or '(m)' in col_name or '(mt)' in col_name):
                         fig_individual.add_hline(y=threshold_individual, line_dash="dash", line_color="red",
-                                                 annotation_text=f"Soglia ({float(threshold_individual):.1f})", annotation_position="bottom right")
+                                                 annotation_text=f"Soglia H ({float(threshold_individual):.1f})", annotation_position="bottom right")
 
                     fig_individual.update_layout(title=f"{label_individual}", xaxis_title=None, yaxis_title=yaxis_title_individual,
                                                  height=300, hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), template="plotly_white")
@@ -2101,7 +2237,7 @@ if page == 'Dashboard':
         st.subheader("Riepilogo Allerte (basato su ultimo valore nel periodo)")
         active_alerts_sess = st.session_state.get('active_alerts', [])
         if active_alerts_sess:
-             st.warning("**Allerte Attive (Valori >= Soglia):**")
+             st.warning("**Allerte Attive (Valori H >= Soglia H):**")
              alert_md = ""
              # Ordina per nome stazione per consistenza
              sorted_alerts = sorted(active_alerts_sess, key=lambda x: get_station_label(x[0], short=False))
@@ -2119,7 +2255,7 @@ if page == 'Dashboard':
                  thr_fmt = f"{float(thr):.1f}" if isinstance(thr, (int, float, np.number)) else str(thr)
                  alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit_alert}** >= Soglia **{thr_fmt}{unit_alert}**\n"
              st.markdown(alert_md)
-        else: st.success("Nessuna soglia superata nell'ultimo rilevamento del periodo visualizzato.")
+        else: st.success("Nessuna soglia H superata nell'ultimo rilevamento del periodo visualizzato.")
 
     elif df_dashboard is not None and df_dashboard.empty and st.session_state.dash_custom_range_check:
         # Messaggio specifico per range personalizzato vuoto già mostrato sopra
@@ -2184,7 +2320,7 @@ elif page == 'Simulazione':
              st.caption(f"`{', '.join(active_config['all_past_feature_columns'])}`")
              st.markdown("**Feature Forecast (Decoder Input):**")
              st.caption(f"`{', '.join(active_config['forecast_input_columns'])}`")
-             st.markdown("**Target (Output):**")
+             st.markdown("**Target (Output - Livello H):**") # Specificato H
              st.caption(f"`{', '.join(active_config['target_columns'])}`")
         target_columns_model = active_config['target_columns'] # Definisci per uso successivo
     else: # LSTM Standard
@@ -2194,29 +2330,24 @@ elif page == 'Simulazione':
         with st.expander("Dettagli Colonne Modello LSTM"):
              st.markdown("**Feature Input:**")
              st.caption(f"`{', '.join(feature_columns_current_model)}`")
-             st.markdown("**Target (Output):**")
+             st.markdown("**Target (Output - Livello H):**") # Specificato H
              st.caption(f"`{', '.join(active_config['target_columns'])}`")
         target_columns_model = active_config['target_columns'] # Definisci per uso successivo
         input_steps = active_config['input_window'] # Definisci per LSTM
 
     st.divider()
 
-    # --- SEZIONE INPUT DATI SIMULAZIONE ---
+    # --- SEZIONE INPUT DATI SIMULAZIONE (MODIFICATA per Portata) ---
     if active_model_type == "Seq2Seq":
          st.subheader(f"Preparazione Dati Input Simulazione Seq2Seq")
          # --- 1. Recupero dati storici passati da GSheet ---
          st.markdown("**Passo 1: Recupero Dati Storici (Input Encoder)**")
-         # (Usa GSHEET_ID di default)
          st.caption(f"Verranno recuperati gli ultimi {active_config['input_window_steps']} steps dal Foglio Google (ID: `{GSHEET_ID}`).")
 
-         # Mappatura colonne GSheet -> Feature Passate Modello Seq2Seq
          past_feature_cols_s2s = active_config["all_past_feature_columns"]
-         # Aggiungere la colonna data GSheet alla mappatura se esiste nel modello
-         # (spesso non è una feature diretta, ma necessaria per recupero/timestamp)
          date_col_model_name = st.session_state.date_col_name_csv # Nome colonna data nel modello (da CSV)
 
          column_mapping_gsheet_to_past_s2s = {
-             # NOME_COLONNA_GSHEET : NOME_FEATURE_MODELLO_PASSATO (esempio, adattare!)
              'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
              'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
              'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
@@ -2227,16 +2358,14 @@ elif page == 'Simulazione':
              'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
              'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
              'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-             GSHEET_DATE_COL: date_col_model_name # Mappa colonna data
+             GSHEET_DATE_COL: date_col_model_name
          }
-         # Filtra solo quelle richieste dal modello (feature passate + colonna data se presente nel mapping)
          required_model_cols_for_mapping = past_feature_cols_s2s + [date_col_model_name]
          column_mapping_gsheet_to_past_s2s_filtered = {
              gs_col: model_col for gs_col, model_col in column_mapping_gsheet_to_past_s2s.items()
              if model_col in required_model_cols_for_mapping
          }
 
-         # Gestione Imputazione Feature Passate non mappate
          past_features_set = set(past_feature_cols_s2s)
          mapped_past_features_target = set(column_mapping_gsheet_to_past_s2s_filtered.values()) - {date_col_model_name}
          missing_past_features_in_map = list(past_features_set - mapped_past_features_target)
@@ -2249,17 +2378,15 @@ elif page == 'Simulazione':
                      default_val = df_current_csv[missing_f].median()
                  imputed_values_sim_past_s2s[missing_f] = default_val
 
-         # Bottone Fetch dati storici
          fetch_error_gsheet_s2s = None
          if st.button("Carica/Aggiorna Storico da GSheet", key="fetch_gsh_s2s_base"):
               fetch_sim_gsheet_data.clear() # Pulisce cache
               with st.spinner("Recupero dati storici (passato)..."):
-                  # Le colonne richieste includono le feature passate e la colonna data
                   required_cols_fetch = past_feature_cols_s2s + [date_col_model_name]
                   imported_df_past, import_err_past, last_ts_past = fetch_sim_gsheet_data(
                        GSHEET_ID, active_config['input_window_steps'], GSHEET_DATE_COL, GSHEET_DATE_FORMAT,
                        column_mapping_gsheet_to_past_s2s_filtered,
-                       required_cols_fetch, # Passa le colonne modello (feature+data)
+                       required_cols_fetch,
                        imputed_values_sim_past_s2s
                   )
               if import_err_past:
@@ -2267,7 +2394,6 @@ elif page == 'Simulazione':
                   st.session_state.seq2seq_past_data_gsheet = None; fetch_error_gsheet_s2s = import_err_past
               elif imported_df_past is not None:
                   try:
-                      # Seleziona e riordina SOLO le colonne FEATURE passate necessarie per l'encoder
                       final_past_df = imported_df_past[past_feature_cols_s2s]
                       st.success(f"Recuperate e processate {len(final_past_df)} righe storiche.")
                       st.session_state.seq2seq_past_data_gsheet = final_past_df
@@ -2280,7 +2406,6 @@ elif page == 'Simulazione':
                       st.session_state.seq2seq_past_data_gsheet = None; fetch_error_gsheet_s2s = f"Errore colonne: {e_cols}"
               else: st.error("Recupero storico Seq2Seq non riuscito (risultato vuoto)."); fetch_error_gsheet_s2s = "Errore recupero dati."
 
-         # Mostra stato caricamento dati base e preview
          past_data_loaded_s2s = st.session_state.get('seq2seq_past_data_gsheet') is not None
          if past_data_loaded_s2s:
              st.caption("Dati storici base (input encoder) caricati.")
@@ -2295,7 +2420,6 @@ elif page == 'Simulazione':
              forecast_input_cols_s2s = active_config['forecast_input_columns']
              st.caption(f"Inserisci i valori previsti per le seguenti feature: `{', '.join(forecast_input_cols_s2s)}`")
 
-             # Data Editor per le previsioni future
              forecast_steps_s2s = active_config['forecast_window_steps']
              forecast_df_initial = pd.DataFrame(index=range(forecast_steps_s2s), columns=forecast_input_cols_s2s)
              last_known_past_data = st.session_state.seq2seq_past_data_gsheet.iloc[-1]
@@ -2311,25 +2435,23 @@ elif page == 'Simulazione':
                  key=forecast_editor_key,
                  num_rows="fixed",
                  use_container_width=True,
-                 column_config={ # Configurazione dinamica colonne forecast
+                 column_config={
                      col: st.column_config.NumberColumn(
-                         label=get_station_label(col, short=True), # Etichetta breve
+                         label=get_station_label(col, short=True),
                          help=f"Valore previsto per {col}",
-                         min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None, # Min 0 per livelli/pioggia/umidità
+                         min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None,
                          max_value=100.0 if 'umidit' in col.lower() else None,
                          format="%.1f" if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else "%.2f",
                          step=0.5 if ('pioggia' in col.lower() or 'cumulata' in col.lower()) else (1.0 if 'umidit' in col.lower() else 0.1),
-                         required=True # Rendi tutte le colonne richieste
+                         required=True
                      ) for col in forecast_input_cols_s2s
                  }
              )
 
-             # Validazione editor forecast
              forecast_data_valid_s2s = False
              if edited_forecast_df is not None and not edited_forecast_df.isnull().any().any():
                  if edited_forecast_df.shape == (forecast_steps_s2s, len(forecast_input_cols_s2s)):
                      try:
-                         # Tenta conversione a float per essere sicuri
                          edited_forecast_df_float = edited_forecast_df.astype(float)
                          forecast_data_valid_s2s = True
                      except ValueError:
@@ -2360,32 +2482,58 @@ elif page == 'Simulazione':
                            )
                            start_pred_time_s2s = st.session_state.get('seq2seq_last_ts_gsheet', datetime.now(italy_tz))
 
-                       # Mostra risultati
+                       # Mostra risultati (MODIFICATO per Portata)
                        if predictions_s2s is not None:
                            output_steps_actual = predictions_s2s.shape[0]
                            total_hours_output_actual = output_steps_actual * 0.5
                            st.subheader(f'Risultato Simulazione Seq2Seq: Prossime {total_hours_output_actual:.1f} ore')
                            st.caption(f"Previsione calcolata a partire da: {start_pred_time_s2s.strftime('%d/%m/%Y %H:%M:%S %Z')}")
 
-                           # Tabella Risultati
-                           pred_times_s2s = [start_pred_time_s2s + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]
+                           # --- Calcolo Portate Simulate (Q) ---
                            results_df_s2s = pd.DataFrame(predictions_s2s, columns=target_columns_model)
-                           results_df_s2s.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_s2s])
-                           # Rinomina colonne per leggibilità tabella display
-                           rename_dict = {'Ora Prevista': 'Ora Prevista'}
-                           for col in target_columns_model:
-                               unit_match = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit_match.group(1) or unit_match.group(2)})" if unit_match and (unit_match.group(1) or unit_match.group(2)) else ""
-                               new_name = f"{get_station_label(col, short=True)} {unit_str}".strip() # Usa etichetta breve
-                               count = 1; final_name = new_name
-                               while final_name in rename_dict.values(): count += 1; final_name = f"{new_name}_{count}"
-                               rename_dict[col] = final_name
-                           results_df_s2s_display = results_df_s2s.copy().rename(columns=rename_dict)
-                           st.dataframe(results_df_s2s_display.round(3), hide_index=True)
-                           st.markdown(get_table_download_link(results_df_s2s, f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
+                           q_cols_to_add_s2s = {}
+                           for i, target_col_h in enumerate(target_columns_model):
+                               sensor_info = STATION_COORDS.get(target_col_h)
+                               if sensor_info:
+                                   sensor_code_sim = sensor_info.get('sensor_code')
+                                   if sensor_code_sim and sensor_code_sim in RATING_CURVES:
+                                       h_values_sim = results_df_s2s[target_col_h].values
+                                       q_values_sim = calculate_discharge_vectorized(sensor_code_sim, h_values_sim)
+                                       q_col_name = f"Portata Prevista Q {get_station_label(target_col_h, short=True)} (m³/s)"
+                                       q_cols_to_add_s2s[q_col_name] = q_values_sim
+                           # Aggiungi colonne Q al DataFrame dei risultati
+                           for q_name, q_data in q_cols_to_add_s2s.items():
+                               results_df_s2s[q_name] = q_data
+                           # --- Fine Calcolo Portate ---
 
-                           # Grafici Risultati Individuali
-                           st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali)')
-                           # Qui plot_predictions userà SIMULATION_THRESHOLDS
+                           # Tabella Risultati (con Q)
+                           pred_times_s2s = [start_pred_time_s2s + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]
+                           results_df_s2s.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_s2s])
+
+                           # Rinomina colonne per leggibilità tabella display (ora include Q)
+                           results_df_s2s_display = results_df_s2s.copy()
+                           rename_dict_s2s = {'Ora Prevista': 'Ora Prevista'}
+                           final_display_columns = ['Ora Prevista']
+                           for col in target_columns_model: # Colonne H
+                               label_h = get_station_label(col, short=True)
+                               unit_match_h = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str_h = f"({unit_match_h.group(1) or unit_match_h.group(2)})" if unit_match_h and (unit_match_h.group(1) or unit_match_h.group(2)) else "(m)"
+                               new_name_h = f"{label_h} H {unit_str_h}"
+                               rename_dict_s2s[col] = new_name_h
+                               final_display_columns.append(new_name_h)
+                               # Cerca la colonna Q corrispondente
+                               q_col_match = f"Portata Prevista Q {label_h} (m³/s)"
+                               if q_col_match in results_df_s2s.columns:
+                                    rename_dict_s2s[q_col_match] = q_col_match # Lascia nome così com'è per display
+                                    final_display_columns.append(q_col_match)
+
+                           results_df_s2s_display = results_df_s2s_display.rename(columns=rename_dict_s2s)
+
+                           st.dataframe(results_df_s2s_display[final_display_columns].round(3), hide_index=True) # Mostra solo colonne rinominate e ordinate
+                           st.markdown(get_table_download_link(results_df_s2s, f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True) # Download completo
+
+                           # Grafici Risultati Individuali (plot_predictions ora include Q se applicabile)
+                           st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali H e Q)')
+                           # plot_predictions userà SIMULATION_THRESHOLDS per H e calcolerà/plotterà Q
                            figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s)
                            num_graph_cols = min(len(figs_sim_s2s), 3)
                            sim_cols = st.columns(num_graph_cols)
@@ -2393,16 +2541,13 @@ elif page == 'Simulazione':
                               with sim_cols[i % num_graph_cols]:
                                    target_col_name = target_columns_model[i]
                                    s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                                   # --- MODIFICA FILENAME SIMULAZIONE S2S INDIVIDUALE (USA COSTANTE) ---
                                    filename_base_s2s_ind = f"grafico_sim_s2s_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                                    st.plotly_chart(fig_sim, use_container_width=True)
                                    st.markdown(get_plotly_download_link(fig_sim, filename_base_s2s_ind), unsafe_allow_html=True)
-                                   # --- FINE MODIFICA ---
 
-                           # --- Grafico Combinato ---
-                           st.subheader('Grafico Combinato Idrometri Output (Seq2Seq)')
+                           # --- Grafico Combinato (solo H, come prima) ---
+                           st.subheader('Grafico Combinato Livelli H Output (Seq2Seq)')
                            fig_combined_s2s = go.Figure()
-                           # Genera asse X (usa pred_times_s2s già calcolato)
                            if start_pred_time_s2s and len(pred_times_s2s) == output_steps_actual:
                                x_axis_comb, x_title_comb = pred_times_s2s, "Data e Ora Previste"
                                x_tick_format = "%d/%m %H:%M"
@@ -2414,32 +2559,26 @@ elif page == 'Simulazione':
                            for i, sensor in enumerate(target_columns_model):
                                fig_combined_s2s.add_trace(go.Scatter(
                                    x=x_axis_comb,
-                                   y=predictions_s2s[:, i],
+                                   y=predictions_s2s[:, i], # Prende H da predictions_s2s
                                    mode='lines+markers',
                                    name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
                                ))
-                               # --- AGGIUNTA SOGLIE ANCHE AL COMBINATO ---
-                              # threshold_info_comb = SIMULATION_THRESHOLDS.get(sensor, {})
-                              # soglia_att_comb = threshold_info_comb.get('attenzione')
-                              # soglia_all_comb = threshold_info_comb.get('allerta')
-                               # Aggiungi linee solo se sono livelli (o comunque se definite)
-                            #   if soglia_att_comb is not None:
-                               #     fig_combined_s2s.add_hline(y=soglia_att_comb, line_dash="dash", line_color="rgba(255,165,0,0.6)", annotation_text=f"Att.{get_station_label(sensor, short=True)} ({soglia_att_comb:.1f})", annotation_position="bottom left")
-                             #  if soglia_all_comb is not None:
-                                #     fig_combined_s2s.add_hline(y=soglia_all_comb, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"All.{get_station_label(sensor, short=True)} ({soglia_all_comb:.1f})", annotation_position="top left")
-                               # --- FINE SOGLIE COMBINATO ---
+                               # Aggiunta soglie H al combinato (opzionale, può affollare)
+                               # threshold_info_comb = SIMULATION_THRESHOLDS.get(sensor, {})
+                               # soglia_att_comb = threshold_info_comb.get('attenzione')
+                               # soglia_all_comb = threshold_info_comb.get('allerta')
+                               # if soglia_att_comb is not None: fig_combined_s2s.add_hline(...)
+                               # if soglia_all_comb is not None: fig_combined_s2s.add_hline(...)
 
-                           # --- MODIFICA TITOLO GRAFICO COMBINATO (USA COSTANTE) ---
                            attribution_text_comb = ATTRIBUTION_PHRASE
-                           combined_title_s2s = f'Previsioni Combinate {active_model_type}<br><span style="font-size:10px;">{attribution_text_comb}</span>'
-                           # --- FINE MODIFICA ---
+                           combined_title_s2s = f'Previsioni Combinate Livello H {active_model_type}<br><span style="font-size:10px;">{attribution_text_comb}</span>'
 
                            fig_combined_s2s.update_layout(
-                               title=combined_title_s2s, # Usa titolo modificato
+                               title=combined_title_s2s,
                                xaxis_title=x_title_comb,
-                               yaxis_title="Valore Idrometrico (m)", # Assumendo che target siano livelli
+                               yaxis_title="Livello Idrometrico Previsto (m)", # Specifica H
                                height=500,
-                               margin=dict(l=60, r=20, t=70, b=50), # Aumentato margine top
+                               margin=dict(l=60, r=20, t=70, b=50),
                                hovermode="x unified",
                                template="plotly_white",
                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -2448,33 +2587,29 @@ elif page == 'Simulazione':
                                fig_combined_s2s.update_xaxes(tickformat=x_tick_format)
                            fig_combined_s2s.update_yaxes(rangemode='tozero')
                            st.plotly_chart(fig_combined_s2s, use_container_width=True)
-                           # --- MODIFICA FILENAME SIMULAZIONE S2S COMBINATO (USA COSTANTE) ---
-                           filename_base_s2s_comb = f"grafico_combinato_sim_s2s{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+                           filename_base_s2s_comb = f"grafico_combinato_H_sim_s2s{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                            st.markdown(get_plotly_download_link(fig_combined_s2s, filename_base_s2s_comb), unsafe_allow_html=True)
-                           # --- FINE MODIFICA ---
-                           # --- Fine Grafico Combinato ---
+                           # --- Fine Grafico Combinato H ---
 
                        else:
                              st.error("Predizione simulazione Seq2Seq fallita.")
 
-    else: # --- SEZIONE INPUT DATI SIMULAZIONE LSTM ---
+    else: # --- SEZIONE INPUT DATI SIMULAZIONE LSTM (MODIFICATA per Portata) ---
          st.subheader("Metodo Input Dati Simulazione LSTM")
          sim_method_options = ['Manuale (Valori Costanti)', 'Importa da Google Sheet (Ultime Ore)', 'Orario Dettagliato (Tabella)']
          if data_ready_csv: sim_method_options.append('Usa Ultime Ore da CSV Caricato')
          sim_method = st.radio("Scegli come fornire i dati di input:", sim_method_options, key="sim_method_radio_select_lstm", horizontal=True, label_visibility="collapsed")
 
-         # --- Logica per Metodi LSTM ---
-         predictions_sim_lstm = None # Inizializza variabile per risultati LSTM
-         start_pred_time_lstm = None # Inizializza variabile per timestamp LSTM
+         predictions_sim_lstm = None
+         start_pred_time_lstm = None
 
-         # Recupera le feature columns specifiche per il modello LSTM attivo
          feature_columns_current_model = active_config.get("feature_columns", st.session_state.feature_columns)
 
          if sim_method == 'Manuale (Valori Costanti)':
              st.markdown(f'Inserisci valori costanti per le **{len(feature_columns_current_model)}** feature di input.')
              st.caption(f"Questi valori saranno ripetuti per i **{input_steps}** passi temporali ({input_steps*0.5:.1f} ore) richiesti dal modello.")
              temp_sim_values_lstm = {}
-             cols_manual_lstm = st.columns(3) # Max 3 colonne per pulizia
+             cols_manual_lstm = st.columns(3)
              col_idx_manual = 0
              input_valid_manual = True
              for feature in feature_columns_current_model:
@@ -2516,11 +2651,9 @@ elif page == 'Simulazione':
 
          elif sim_method == 'Importa da Google Sheet (Ultime Ore)':
              st.markdown(f'Importa gli ultimi **{input_steps}** steps ({input_steps*0.5:.1f} ore) da Google Sheet per le **{len(feature_columns_current_model)}** feature di input.')
-             # (Usa GSHEET_ID di default)
              st.caption(f"Verranno recuperati i dati dal Foglio Google (ID: `{GSHEET_ID}`).")
 
-             # Mappatura GSheet -> Feature Modello LSTM
-             date_col_model_name = st.session_state.date_col_name_csv # Nome colonna data nel modello (da CSV)
+             date_col_model_name = st.session_state.date_col_name_csv
              column_mapping_gsheet_to_lstm = {
                  'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)', 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
                  'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)', 'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
@@ -2528,13 +2661,11 @@ elif page == 'Simulazione':
                  'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)', 'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
                  'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)', 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
                  'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-                 GSHEET_DATE_COL: date_col_model_name # Mappa data
+                 GSHEET_DATE_COL: date_col_model_name
              }
-             # Filtra mappatura solo per colonne richieste da feature_columns_current_model + data
              relevant_model_cols_lstm_map = feature_columns_current_model + [date_col_model_name]
              column_mapping_gsheet_to_lstm_filtered = { gs_col: model_col for gs_col, model_col in column_mapping_gsheet_to_lstm.items() if model_col in relevant_model_cols_lstm_map }
 
-             # Imputazione per feature LSTM non mappate
              lstm_features_set = set(feature_columns_current_model)
              mapped_lstm_features_target = set(column_mapping_gsheet_to_lstm_filtered.values()) - {date_col_model_name}
              missing_lstm_features_in_map = list(lstm_features_set - mapped_lstm_features_target)
@@ -2546,17 +2677,15 @@ elif page == 'Simulazione':
                      if data_ready_csv and missing_f in df_current_csv.columns and pd.notna(df_current_csv[missing_f].median()): default_val = df_current_csv[missing_f].median()
                      imputed_values_sim_lstm_gs[missing_f] = default_val
 
-             # Bottone Importazione
              fetch_error_gsheet_lstm = None
              if st.button("Importa da Google Sheet (LSTM)", key="sim_run_gsheet_import_lstm"):
                  fetch_sim_gsheet_data.clear()
                  with st.spinner("Recupero dati LSTM da GSheet..."):
-                     # Colonne richieste: features + data
                      required_cols_lstm_fetch = feature_columns_current_model + [date_col_model_name]
                      imported_df_lstm, import_err_lstm, last_ts_lstm = fetch_sim_gsheet_data(
                           GSHEET_ID, input_steps, GSHEET_DATE_COL, GSHEET_DATE_FORMAT,
                           column_mapping_gsheet_to_lstm_filtered,
-                          required_cols_lstm_fetch, # Passa le colonne modello (feature+data)
+                          required_cols_lstm_fetch,
                           imputed_values_sim_lstm_gs
                      )
                  if import_err_lstm:
@@ -2564,34 +2693,31 @@ elif page == 'Simulazione':
                      st.session_state.imported_sim_data_gs_df_lstm = None; fetch_error_gsheet_lstm = import_err_lstm
                  elif imported_df_lstm is not None:
                      try:
-                         # Seleziona e riordina SOLO le colonne FEATURE necessarie per l'input LSTM
                          final_lstm_df = imported_df_lstm[feature_columns_current_model]
                          st.success(f"Recuperate e processate {len(final_lstm_df)} righe LSTM da GSheet.")
                          st.session_state.imported_sim_data_gs_df_lstm = final_lstm_df
                          st.session_state.imported_sim_start_time_gs_lstm = last_ts_lstm if last_ts_lstm else datetime.now(italy_tz)
                          fetch_error_gsheet_lstm = None
-                         st.rerun() # Rerun per aggiornare stato
+                         st.rerun()
                      except KeyError as e_cols_lstm:
                          missing_cols_final_lstm = [c for c in feature_columns_current_model if c not in imported_df_lstm.columns]
                          st.error(f"Errore selezione colonne LSTM dopo fetch: Colonne mancanti {missing_cols_final_lstm}")
                          st.session_state.imported_sim_data_gs_df_lstm = None; fetch_error_gsheet_lstm = f"Errore colonne: {e_cols_lstm}"
                  else: st.error("Recupero GSheet per LSTM non riuscito."); fetch_error_gsheet_lstm = "Errore sconosciuto."
 
-             # Mostra stato caricamento e preview
              imported_df_lstm_gs = st.session_state.get("imported_sim_data_gs_df_lstm", None)
              if imported_df_lstm_gs is not None:
                  st.caption("Dati LSTM importati da Google Sheet pronti.")
                  with st.expander("Mostra dati importati (Input LSTM)"):
                      st.dataframe(imported_df_lstm_gs.round(3))
 
-             # Bottone Esecuzione Simulazione LSTM GSheet
              sim_data_input_lstm_gs = None; sim_start_time_lstm_gs = None
              if isinstance(imported_df_lstm_gs, pd.DataFrame):
                  try:
-                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_current_model] # Assicura ordine
+                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_current_model]
                      sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values
                      sim_start_time_lstm_gs = st.session_state.get("imported_sim_start_time_gs_lstm", datetime.now(italy_tz))
-                     if sim_data_input_lstm_gs.shape[0] != input_steps: # Verifica numero righe
+                     if sim_data_input_lstm_gs.shape[0] != input_steps:
                          st.warning(f"Numero righe dati GSheet ({sim_data_input_lstm_gs.shape[0]}) diverso da richiesto ({input_steps}). Uso i dati disponibili.")
                      if np.isnan(sim_data_input_lstm_gs).any():
                           st.error("Trovati valori NaN nei dati GSheet importati. Impossibile procedere.")
@@ -2618,23 +2744,21 @@ elif page == 'Simulazione':
              st.markdown(f'Inserisci i dati per i **{input_steps}** passi temporali ({input_steps*0.5:.1f} ore) precedenti.')
              st.caption(f"La tabella contiene le **{len(feature_columns_current_model)}** feature di input richieste dal modello.")
 
-             # Crea DataFrame iniziale per l'editor, precompilato da CSV se possibile
              editor_df_initial = pd.DataFrame(index=range(input_steps), columns=feature_columns_current_model)
              if data_ready_csv and len(df_current_csv) >= input_steps:
                  try:
                     last_data_csv = df_current_csv[feature_columns_current_model].iloc[-input_steps:].reset_index(drop=True)
-                    editor_df_initial = last_data_csv.astype(float).round(2) # Arrotonda per editor
+                    editor_df_initial = last_data_csv.astype(float).round(2)
                     st.caption("Tabella precompilata con gli ultimi dati CSV.")
                  except Exception as e_fill_csv:
                     st.caption(f"Impossibile precompilare con dati CSV ({e_fill_csv}). Inizializzata a 0.")
                     editor_df_initial = editor_df_initial.fillna(0.0)
-             else: editor_df_initial = editor_df_initial.fillna(0.0) # Fallback a 0
+             else: editor_df_initial = editor_df_initial.fillna(0.0)
 
-             # Data Editor
              lstm_editor_key = "lstm_editor_sim"
              edited_lstm_df = st.data_editor(
                  editor_df_initial, key=lstm_editor_key, num_rows="fixed", use_container_width=True,
-                 column_config={ # Configurazione dinamica colonne
+                 column_config={
                      col: st.column_config.NumberColumn(
                          label=get_station_label(col, short=True), help=f"Valore storico per {col}",
                          min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None,
@@ -2645,7 +2769,6 @@ elif page == 'Simulazione':
                  }
              )
 
-             # Validazione Editor
              sim_data_input_lstm_editor = None; validation_passed_editor = False
              if edited_lstm_df is not None and not edited_lstm_df.isnull().any().any():
                  if edited_lstm_df.shape == (input_steps, len(feature_columns_current_model)):
@@ -2678,7 +2801,6 @@ elif page == 'Simulazione':
              if not data_ready_csv: st.error("Dati CSV non caricati."); st.stop()
              if len(df_current_csv) < input_steps: st.error(f"Dati CSV insufficienti ({len(df_current_csv)} righe), richieste {input_steps}."); st.stop()
 
-             # Estrazione e preparazione dati CSV
              sim_data_input_lstm_csv = None; sim_start_time_lstm_csv = None
              try:
                  latest_csv_data_df = df_current_csv.iloc[-input_steps:]
@@ -2686,7 +2808,7 @@ elif page == 'Simulazione':
                  if missing_cols_csv:
                      st.error(f"Colonne modello LSTM mancanti nel CSV: `{', '.join(missing_cols_csv)}`")
                  else:
-                     sim_data_input_lstm_csv_ordered = latest_csv_data_df[feature_columns_current_model] # Ordine corretto
+                     sim_data_input_lstm_csv_ordered = latest_csv_data_df[feature_columns_current_model]
                      sim_data_input_lstm_csv = sim_data_input_lstm_csv_ordered.astype(float).values
                      last_csv_timestamp = df_current_csv[date_col_name_csv].iloc[-1]
                      if pd.notna(last_csv_timestamp) and isinstance(last_csv_timestamp, pd.Timestamp):
@@ -2717,7 +2839,7 @@ elif page == 'Simulazione':
                                 predictions_sim_lstm = None
                  else: st.error("Dati input da CSV non pronti o invalidi.")
 
-         # --- Visualizzazione Risultati LSTM (comune a tutti i metodi) ---
+         # --- Visualizzazione Risultati LSTM (comune a tutti i metodi, MODIFICATA per Portata) ---
          if predictions_sim_lstm is not None:
              output_steps_actual = predictions_sim_lstm.shape[0]
              total_hours_output_actual = output_steps_actual * 0.5
@@ -2727,33 +2849,57 @@ elif page == 'Simulazione':
              else:
                  st.caption("Previsione calcolata (timestamp iniziale non disponibile).")
 
-             # Tabella Risultati
+             # --- Calcolo Portate Simulate (Q) ---
+             results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model)
+             q_cols_to_add_lstm = {}
+             for i, target_col_h in enumerate(target_columns_model):
+                 sensor_info = STATION_COORDS.get(target_col_h)
+                 if sensor_info:
+                     sensor_code_sim = sensor_info.get('sensor_code')
+                     if sensor_code_sim and sensor_code_sim in RATING_CURVES:
+                         h_values_sim = results_df_lstm[target_col_h].values
+                         q_values_sim = calculate_discharge_vectorized(sensor_code_sim, h_values_sim)
+                         q_col_name = f"Portata Prevista Q {get_station_label(target_col_h, short=True)} (m³/s)"
+                         q_cols_to_add_lstm[q_col_name] = q_values_sim
+             # Aggiungi colonne Q al DataFrame dei risultati
+             for q_name, q_data in q_cols_to_add_lstm.items():
+                 results_df_lstm[q_name] = q_data
+             # --- Fine Calcolo Portate ---
+
+
+             # Tabella Risultati (con Q)
+             time_col_name = 'Ora Prevista' if start_pred_time_lstm else 'Passo Futuro'
              if start_pred_time_lstm:
                  pred_times_lstm = [start_pred_time_lstm + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]
-                 results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model)
-                 results_df_lstm.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
-             else: # Senza timestamp
+                 results_df_lstm.insert(0, time_col_name, [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
+             else:
                  pred_steps_lstm = [f"Step {i+1} (+{(i+1)*0.5}h)" for i in range(output_steps_actual)]
-                 results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model)
-                 results_df_lstm.insert(0, 'Passo Futuro', pred_steps_lstm)
+                 results_df_lstm.insert(0, time_col_name, pred_steps_lstm)
 
-             # Rinomina colonne per leggibilità tabella display
-             rename_dict_lstm = {}
-             if 'Ora Prevista' in results_df_lstm.columns: rename_dict_lstm['Ora Prevista'] = 'Ora Prevista'
-             if 'Passo Futuro' in results_df_lstm.columns: rename_dict_lstm['Passo Futuro'] = 'Passo Futuro'
-             for col in target_columns_model:
-                 unit_match = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str = f"({unit_match.group(1) or unit_match.group(2)})" if unit_match and (unit_match.group(1) or unit_match.group(2)) else ""
-                 new_name = f"{get_station_label(col, short=True)} {unit_str}".strip() # Usa etichetta breve
-                 count = 1; final_name = new_name
-                 while final_name in rename_dict_lstm.values(): count += 1; final_name = f"{new_name}_{count}"
-                 rename_dict_lstm[col] = final_name
-             results_df_lstm_display = results_df_lstm.copy().rename(columns=rename_dict_lstm)
-             st.dataframe(results_df_lstm_display.round(3), hide_index=True)
-             st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
+             # Rinomina colonne per leggibilità tabella display (ora include Q)
+             results_df_lstm_display = results_df_lstm.copy()
+             rename_dict_lstm = {time_col_name: time_col_name}
+             final_display_columns_lstm = [time_col_name]
+             for col in target_columns_model: # Colonne H
+                 label_h = get_station_label(col, short=True)
+                 unit_match_h = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str_h = f"({unit_match_h.group(1) or unit_match_h.group(2)})" if unit_match_h and (unit_match_h.group(1) or unit_match_h.group(2)) else "(m)"
+                 new_name_h = f"{label_h} H {unit_str_h}"
+                 rename_dict_lstm[col] = new_name_h
+                 final_display_columns_lstm.append(new_name_h)
+                 # Cerca la colonna Q corrispondente
+                 q_col_match = f"Portata Prevista Q {label_h} (m³/s)"
+                 if q_col_match in results_df_lstm.columns:
+                      rename_dict_lstm[q_col_match] = q_col_match # Lascia nome così com'è per display
+                      final_display_columns_lstm.append(q_col_match)
 
-             # Grafici Risultati Individuali
-             st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali)')
-             # Qui plot_predictions userà SIMULATION_THRESHOLDS
+             results_df_lstm_display = results_df_lstm_display.rename(columns=rename_dict_lstm)
+
+             st.dataframe(results_df_lstm_display[final_display_columns_lstm].round(3), hide_index=True) # Mostra solo colonne rinominate e ordinate
+             st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True) # Download completo
+
+             # Grafici Risultati Individuali (plot_predictions ora include Q se applicabile)
+             st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali H e Q)')
+             # plot_predictions userà SIMULATION_THRESHOLDS per H e calcolerà/plotterà Q
              figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm)
              num_graph_cols_lstm = min(len(figs_sim_lstm), 3)
              sim_cols_lstm = st.columns(num_graph_cols_lstm)
@@ -2761,19 +2907,16 @@ elif page == 'Simulazione':
                  with sim_cols_lstm[i % num_graph_cols_lstm]:
                       target_col_name = target_columns_model[i]
                       s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name, short=False))
-                      # --- MODIFICA FILENAME SIMULAZIONE LSTM INDIVIDUALE (USA COSTANTE) ---
                       filename_base_lstm_ind = f"grafico_sim_lstm_{sim_method.split()[0].lower()}_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                       st.plotly_chart(fig_sim, use_container_width=True)
                       st.markdown(get_plotly_download_link(fig_sim, filename_base_lstm_ind), unsafe_allow_html=True)
-                      # --- FINE MODIFICA ---
 
 
-             # --- Grafico Combinato ---
-             st.subheader(f'Grafico Combinato Idrometri Output (LSTM {sim_method})')
+             # --- Grafico Combinato (solo H, come prima) ---
+             st.subheader(f'Grafico Combinato Livelli H Output (LSTM {sim_method})')
              fig_combined_lstm = go.Figure()
-             # Genera asse X
-             if start_pred_time_lstm and len(pred_times_lstm) == output_steps_actual: # Verifica se pred_times_lstm è definito e corretto
-                 x_axis_comb_lstm = pred_times_lstm # Usa le date/ore calcolate per la tabella
+             if start_pred_time_lstm and 'pred_times_lstm' in locals() and len(pred_times_lstm) == output_steps_actual: # Verifica se pred_times_lstm è definito e corretto
+                 x_axis_comb_lstm = pred_times_lstm
                  x_title_comb_lstm = "Data e Ora Previste"
                  x_tick_format_lstm = "%d/%m %H:%M"
              else: # Fallback a ore relative
@@ -2784,32 +2927,23 @@ elif page == 'Simulazione':
              for i, sensor in enumerate(target_columns_model):
                  fig_combined_lstm.add_trace(go.Scatter(
                      x=x_axis_comb_lstm,
-                     y=predictions_sim_lstm[:, i],
+                     y=predictions_sim_lstm[:, i], # Prende H da predictions_sim_lstm
                      mode='lines+markers',
-                     name=get_station_label(sensor, short=True) # Usa etichetta breve per leggenda
+                     name=get_station_label(sensor, short=True)
                  ))
-                 # --- AGGIUNTA SOGLIE ANCHE AL COMBINATO ---
-                 #threshold_info_comb_lstm = SIMULATION_THRESHOLDS.get(sensor, {})
-                 #soglia_att_comb_lstm = threshold_info_comb_lstm.get('attenzione')
-                 #soglia_all_comb_lstm = threshold_info_comb_lstm.get('allerta')
-                 # Aggiungi linee solo se sono livelli (o comunque se definite)
-                 #if soglia_att_comb_lstm is not None:
-                 #    fig_combined_lstm.add_hline(y=soglia_att_comb_lstm, line_dash="dash", line_color="rgba(255,165,0,0.6)", annotation_text=f"Att.{get_station_label(sensor, short=True)} ({soglia_att_comb_lstm:.1f})", annotation_position="bottom left")
-                 #if soglia_all_comb_lstm is not None:
-                 #     fig_combined_lstm.add_hline(y=soglia_all_comb_lstm, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"All.{get_station_label(sensor, short=True)} ({soglia_all_comb_lstm:.1f})", annotation_position="top left")
-                 # --- FINE SOGLIE COMBINATO ---
+                 # Aggiunta soglie H al combinato (opzionale)
+                 # threshold_info_comb_lstm = SIMULATION_THRESHOLDS.get(sensor, {})
+                 # ...
 
-             # --- MODIFICA TITOLO GRAFICO COMBINATO (USA COSTANTE) ---
              attribution_text_comb = ATTRIBUTION_PHRASE
-             combined_title_lstm = f'Previsioni Combinate {active_model_type} ({sim_method})<br><span style="font-size:10px;">{attribution_text_comb}</span>'
-             # --- FINE MODIFICA ---
+             combined_title_lstm = f'Previsioni Combinate Livello H {active_model_type} ({sim_method})<br><span style="font-size:10px;">{attribution_text_comb}</span>'
 
              fig_combined_lstm.update_layout(
-                 title=combined_title_lstm, # Usa titolo modificato
+                 title=combined_title_lstm,
                  xaxis_title=x_title_comb_lstm,
-                 yaxis_title="Valore Idrometrico (m)", # Assumendo target livelli
+                 yaxis_title="Livello Idrometrico Previsto (m)", # Specifica H
                  height=500,
-                 margin=dict(l=60, r=20, t=70, b=50), # Aumentato margine top
+                 margin=dict(l=60, r=20, t=70, b=50),
                  hovermode="x unified",
                  template="plotly_white",
                  legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -2818,16 +2952,15 @@ elif page == 'Simulazione':
                  fig_combined_lstm.update_xaxes(tickformat=x_tick_format_lstm)
              fig_combined_lstm.update_yaxes(rangemode='tozero')
              st.plotly_chart(fig_combined_lstm, use_container_width=True)
-             # --- MODIFICA FILENAME SIMULAZIONE LSTM COMBINATO (USA COSTANTE) ---
-             filename_base_lstm_comb = f"grafico_combinato_sim_lstm_{sim_method.split()[0].lower()}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+             filename_base_lstm_comb = f"grafico_combinato_H_sim_lstm_{sim_method.split()[0].lower()}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
              st.markdown(get_plotly_download_link(fig_combined_lstm, filename_base_lstm_comb), unsafe_allow_html=True)
-             # --- FINE MODIFICA ---
-             # --- Fine Grafico Combinato ---
+             # --- Fine Grafico Combinato H ---
 
-         elif st.session_state.get(f"sim_run_exec_lstm_{sim_method.split()[0].lower()}_state", False): # Usa una chiave di stato per il bottone
-             # Se il bottone è stato premuto (chiave di stato è True) ma la predizione è None, mostra errore.
+         elif f"sim_run_exec_lstm_{sim_method.split()[0].lower()}" in st.session_state and st.session_state[f"sim_run_exec_lstm_{sim_method.split()[0].lower()}"]:
+             # Se il bottone è stato premuto ma la predizione è None, mostra errore.
+             # Usa il nome del bottone come chiave implicita nello stato dei widget di Streamlit
              st.error(f"Predizione simulazione LSTM ({sim_method}) fallita.")
-             st.session_state[f"sim_run_exec_lstm_{sim_method.split()[0].lower()}_state"] = False # Resetta lo stato
+
 
 # --- PAGINA ANALISI DATI STORICI ---
 elif page == 'Analisi Dati Storici':
