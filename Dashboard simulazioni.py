@@ -44,11 +44,11 @@ GSHEET_RELEVANT_COLS = [
 DASHBOARD_REFRESH_INTERVAL_SECONDS = 300
 DASHBOARD_HISTORY_ROWS = 48 # 24 ore (48 step da 30 min) - Usato per vista default
 DEFAULT_THRESHOLDS = { # Soglie USATE NELLA DASHBOARD
-    'Arcevia - Pioggia Ora (mm)': 10.0, 'Barbara - Pioggia Ora (mm)': 10.0, 'Corinaldo - Pioggia Ora (mm)': 10.0,
-    'Misa - Pioggia Ora (mm)': 10.0, 'Umidita\' Sensore 3452 (Montemurello)': 95.0,
-    'Serra dei Conti - Livello Misa (mt)': 2.5, 'Pianello di Ostra - Livello Misa (m)': 3.0,
-    'Nevola - Livello Nevola (mt)': 2.0, 'Misa - Livello Misa (mt)': 2.8,
-    'Ponte Garibaldi - Livello Misa 2 (mt)': 4.0
+    'Arcevia - Pioggia Ora (mm)': 2.0, 'Barbara - Pioggia Ora (mm)': 2.0, 'Corinaldo - Pioggia Ora (mm)': 2.0,
+    'Misa - Pioggia Ora (mm)': 2.0, 'Umidita\' Sensore 3452 (Montemurello)': 95.0,
+    'Serra dei Conti - Livello Misa (mt)': 1.7, 'Pianello di Ostra - Livello Misa (m)': 2.0,
+    'Nevola - Livello Nevola (mt)': 2.5, 'Misa - Livello Misa (mt)': 2.0,
+    'Ponte Garibaldi - Livello Misa 2 (mt)': 2.2
 }
 
 # --- NUOVE COSTANTI PER SOGLIE SIMULAZIONE (ATTENZIONE/ALLERTA) ---
@@ -57,11 +57,11 @@ DEFAULT_THRESHOLDS = { # Soglie USATE NELLA DASHBOARD
 # Aggiungere qui le soglie per TUTTI i potenziali target idrometrici.
 SIMULATION_THRESHOLDS = {
     # Livelli GSheet Style (usati in alcuni modelli/config)
-    'Serra dei Conti - Livello Misa (mt)': {'attenzione': 2.0, 'allerta': 2.5},
-    'Pianello di Ostra - Livello Misa (m)': {'attenzione': 2.4, 'allerta': 3.0},
-    'Nevola - Livello Nevola (mt)': {'attenzione': 1.8, 'allerta': 2.0},
-    'Misa - Livello Misa (mt)': {'attenzione': 2.5, 'allerta': 3.0},
-    'Ponte Garibaldi - Livello Misa 2 (mt)': {'attenzione': 2.0, 'allerta': 3.0},
+    'Serra dei Conti - Livello Misa (mt)': {'attenzione': 1.2, 'allerta': 1.7},
+    'Pianello di Ostra - Livello Misa (m)': {'attenzione': 1.5, 'allerta': 2.0},
+    'Nevola - Livello Nevola (mt)': {'attenzione': 2.0, 'allerta': 2.5},
+    'Misa - Livello Misa (mt)': {'attenzione': 1.5, 'allerta': 2.0},
+    'Ponte Garibaldi - Livello Misa 2 (mt)': {'attenzione': 1.5, 'allerta': 2.2},
 
     # Livelli CSV/Internal Style (usati in altri modelli/config)
     # Assicurati che i valori siano consistenti con quelli sopra se il sensore è lo stesso
