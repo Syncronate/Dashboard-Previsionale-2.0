@@ -766,12 +766,12 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-# --- Funzione Grafici Previsioni (MODIFICATA per soglie) ---
+# --- Funzione Grafici Previsioni (MODIFICATA per soglie e Q, layout consolidato) ---
 def plot_predictions(predictions, config, start_time=None):
     """
     Genera grafici Plotly INDIVIDUALI per le previsioni (LSTM o Seq2Seq).
-    Aggiunge linee orizzontali per le soglie di attenzione/allerta definite
-    nella costante globale SIMULATION_THRESHOLDS.
+    Aggiunge linee orizzontali per le soglie H e un secondo asse Y per la portata Q.
+    Layout aggiornato con chiamata consolidata.
     """
     if config is None or predictions is None: return []
 
@@ -788,101 +788,126 @@ def plot_predictions(predictions, config, start_time=None):
         if start_time:
             time_steps = [start_time + timedelta(minutes=30 * (step + 1)) for step in range(output_steps)]
             x_axis, x_title = time_steps, "Data e Ora Previste"
+            x_tick_format = "%d/%m %H:%M"
         else:
             time_steps = np.arange(1, output_steps + 1) * 0.5 # Ore relative
             x_axis, x_title = time_steps, "Ore Future (passi da 30 min)"
+            x_tick_format = None
 
         station_name_graph = get_station_label(sensor, short=False) # Etichetta completa
 
-        # Aggiungi traccia previsione (Livello H)
-        fig.add_trace(go.Scatter(x=x_axis, y=predictions[:, i], mode='lines+markers', name=f'Livello Previsto (H)'))
-
-        # --- AGGIUNTA SOGLIE ATTENZIONE/ALLERTA (basate su H) ---
-        threshold_info = SIMULATION_THRESHOLDS.get(sensor, {}) # Cerca soglie per questo specifico sensore
-        soglia_attenzione = threshold_info.get('attenzione')
-        soglia_allerta = threshold_info.get('allerta')
-
-        # Aggiungi linea Attenzione (giallo/arancio) se definita
-        if soglia_attenzione is not None and isinstance(soglia_attenzione, (int, float)):
-            fig.add_hline(
-                y=soglia_attenzione,
-                line_dash="dash",
-                line_color="orange", # Giallo può essere poco visibile
-                annotation_text=f"Attenzione H ({soglia_attenzione:.2f})",
-                annotation_position="bottom right"
-            )
-
-        # Aggiungi linea Allerta (rosso) se definita
-        if soglia_allerta is not None and isinstance(soglia_allerta, (int, float)):
-            fig.add_hline(
-                y=soglia_allerta,
-                line_dash="dash",
-                line_color="red",
-                annotation_text=f"Allerta H ({soglia_allerta:.2f})",
-                annotation_position="top right" # Posizione diversa per evitare sovrapposizioni
-            )
-        # --- FINE AGGIUNTA SOGLIE ---
-
-        # Estrai unità di misura per asse Y (Livello)
+        # Estrai unità di misura per asse Y (Livello H)
         unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', sensor) # Cerca parentesi tonde o quadre
         y_axis_unit = "m" # Default per livello
         if unit_match:
             unit_content = unit_match.group(1) or unit_match.group(2)
             if unit_content: y_axis_unit = unit_content.strip()
 
-        plot_title = f'Previsione {model_type} - {station_name_graph}<br><span style="font-size:10px;">{attribution_text}</span>'
+        # Aggiungi traccia previsione Livello (H) all'asse Y primario
+        fig.add_trace(go.Scatter(
+            x=x_axis,
+            y=predictions[:, i],
+            mode='lines+markers',
+            name=f'Livello Previsto (H)',
+            yaxis='y1' # Assegna esplicitamente a y1
+        ))
 
-        fig.update_layout(
-            title=plot_title,
-            xaxis_title=x_title,
-            yaxis_title=f"Livello Previsto ({y_axis_unit})", # Asse Y primario è Livello H
-            height=400,
-            margin=dict(l=60, r=20, t=70, b=50), # Aumentato margine top per titolo lungo
-            hovermode="x unified",
-            template="plotly_white" # Tema pulito
-        )
-        if start_time:
-            fig.update_xaxes(tickformat="%d/%m %H:%M") # Formato data/ora
-        fig.update_yaxes(rangemode='tozero', title_font=dict(color="#1f77b4")) # Asse Y parte da zero (mantiene hline visibili)
+        # --- AGGIUNTA SOGLIE ATTENZIONE/ALLERTA (basate su H) ---
+        threshold_info = SIMULATION_THRESHOLDS.get(sensor, {}) # Cerca soglie per questo specifico sensore
+        soglia_attenzione = threshold_info.get('attenzione')
+        soglia_allerta = threshold_info.get('allerta')
 
-        # --- AGGIUNTA SECONDO ASSE Y PER PORTATA (Q) ---
-        # Controlla se esiste una scala di deflusso per questo sensore
+        if soglia_attenzione is not None and isinstance(soglia_attenzione, (int, float)):
+            fig.add_hline(
+                y=soglia_attenzione, line_dash="dash", line_color="orange",
+                annotation_text=f"Attenzione H ({soglia_attenzione:.2f})",
+                annotation_position="bottom right", layer="below" # Sposta sotto la traccia dati
+            )
+        if soglia_allerta is not None and isinstance(soglia_allerta, (int, float)):
+            fig.add_hline(
+                y=soglia_allerta, line_dash="dash", line_color="red",
+                annotation_text=f"Allerta H ({soglia_allerta:.2f})",
+                annotation_position="top right", layer="below" # Sposta sotto la traccia dati
+            )
+
+        # --- AGGIUNTA TRACCIA PORTATA (Q) e SECONDO ASSE Y (se applicabile) ---
         sensor_info = STATION_COORDS.get(sensor)
         sensor_code_plot = sensor_info.get('sensor_code') if sensor_info else None
+        has_discharge_data = False # Flag
+        predicted_Q_values = None
 
         if sensor_code_plot and sensor_code_plot in RATING_CURVES:
-            # Calcola la portata per ogni H previsto
             predicted_H_values = predictions[:, i]
+            # Calcola Q, gestendo NaN/None in input e output
             predicted_Q_values = calculate_discharge_vectorized(sensor_code_plot, predicted_H_values)
+            valid_Q_mask = pd.notna(predicted_Q_values) # Maschera per Q validi
 
-            # Aggiungi traccia per la portata sul secondo asse Y
-            fig.add_trace(go.Scatter(
-                x=x_axis,
-                y=predicted_Q_values,
-                mode='lines',
-                name='Portata Prevista (Q)',
-                line=dict(color='firebrick', dash='dot'), # Colore e stile diversi
-                yaxis='y2' # Assegna al secondo asse Y
-            ))
+            # Aggiungi traccia Q solo se ci sono valori validi
+            if np.any(valid_Q_mask):
+                has_discharge_data = True
+                # Converti x_axis in array numpy se non lo è già
+                x_axis_np = np.array(x_axis)
+                # Aggiungi traccia per la portata sul secondo asse Y
+                fig.add_trace(go.Scatter(
+                    x=x_axis_np[valid_Q_mask], # Usa solo x corrispondenti a Q validi
+                    y=predicted_Q_values[valid_Q_mask], # Usa solo Q validi
+                    mode='lines',
+                    name='Portata Prevista (Q)',
+                    line=dict(color='firebrick', dash='dot'), # Colore e stile diversi
+                    yaxis='y2' # Assegna al secondo asse Y
+                ))
 
-            # Configura il secondo asse Y
-            fig.update_layout(
-                yaxis2=dict(
-                    title="Portata Prevista (m³/s)",
-                    titlefont=dict(color="firebrick"),
-                    tickfont=dict(color="firebrick"),
-                    overlaying="y",
-                    side="right",
-                    rangemode='tozero' # Anche asse portata parte da zero
-                ),
-                legend=dict(orientation="h", yanchor="bottom", y=-0.3) # Sposta legenda sotto
+        # --- Configurazione Layout Finale (Consolidata) ---
+        plot_title = f'Previsione {model_type} - {station_name_graph}<br><span style="font-size:10px;">{attribution_text}</span>'
+        layout_updates = {
+            "title": plot_title,
+            "xaxis": {"title": x_title}, # Usa dizionario per asse X
+            "yaxis": { # Configurazione asse Y1 (H)
+                "title": f"Livello Previsto ({y_axis_unit})",
+                "titlefont": {"color": "#1f77b4"},
+                "tickfont": {"color": "#1f77b4"},
+                "side": "left",
+                "rangemode": 'tozero'
+            },
+            "height": 400,
+            "margin": dict(l=60, r=60, t=70, b=50), # Margine destro già aumentato per potenziale y2
+            "hovermode": "x unified",
+            "template": "plotly_white",
+            # Legenda di default (verticale, in alto a dx)
+            "legend": dict(orientation="v", yanchor="top", y=1, xanchor="right", x=1)
+        }
+
+        # Aggiungi/Modifica layout se abbiamo aggiunto la portata
+        if has_discharge_data:
+            layout_updates["yaxis2"] = dict(
+                title="Portata Prevista (m³/s)",
+                titlefont=dict(color="firebrick"),
+                tickfont=dict(color="firebrick"),
+                overlaying="y", # Sovrappone a y1
+                side="right",
+                rangemode='tozero',
+                showgrid=False, # Opzionale: nasconde griglia per y2
             )
-            # Aggiusta margini se necessario per accomodare il secondo asse
-            fig.update_layout(margin=dict(r=60)) # Aumenta margine destro
+            # Aggiorna la legenda per posizionarla sotto quando c'è il secondo asse
+            layout_updates["legend"] = dict(
+                orientation="h",
+                yanchor="bottom",
+                y=-0.3, # Posiziona sotto l'asse X
+                xanchor="center",
+                x=0.5
+            )
+            # Il margine destro è già 60, potrebbe non servire aumentarlo ulteriormente
+            # layout_updates["margin"]["r"] = 70 # Opzionale: aumenta ancora se necessario
 
-        # --- FINE AGGIUNTA SECONDO ASSE Y ---
+        # Applica tutti gli aggiornamenti del layout in una volta
+        fig.update_layout(layout_updates)
+
+        # Applica formato tick X specifico se necessario (dopo update_layout)
+        if x_tick_format:
+            fig.update_xaxes(tickformat=x_tick_format)
 
         figs.append(fig)
+
     return figs
 
 # --- Funzioni Fetch Dati Google Sheet (Dashboard e Simulazione) ---
