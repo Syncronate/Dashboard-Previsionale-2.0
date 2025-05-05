@@ -1,0 +1,34 @@
+{
+    "model_type": "Seq2Seq",
+    "input_window_steps": 336,
+    "forecast_window_steps": 8,
+    "output_window_steps": 8,
+    "hidden_size": 64,
+    "num_layers": 2,
+    "dropout": 0.2,
+    "all_past_feature_columns": [
+        "Cumulata Sensore 1295 (Arcevia)",
+        "Cumulata Sensore 2637 (Bettolelle)",
+        "Cumulata Sensore 2858 (Barbara)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Cumulata Sensore 2964 (Corinaldo)"
+    ],
+    "forecast_input_columns": [
+        "Cumulata Sensore 1295 (Arcevia)",
+        "Cumulata Sensore 2637 (Bettolelle)",
+        "Cumulata Sensore 2858 (Barbara)",
+        "Cumulata Sensore 2964 (Corinaldo)"
+    ],
+    "target_columns": [
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)"
+    ],
+    "training_date": "2025-05-05T16:35:57.166448+02:00",
+    "val_split_percent": 15,
+    "learning_rate": 0.0007999999999999999,
+    "batch_size": 32,
+    "epochs": 25,
+    "display_name": "s2s_NoU_Bettolelle_336_8_050525"
+}
