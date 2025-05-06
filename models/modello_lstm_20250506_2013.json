@@ -1,0 +1,32 @@
+{
+    "model_type": "LSTM",
+    "input_window": 336,
+    "output_window": 6,
+    "hidden_size": 64,
+    "num_layers": 1,
+    "dropout": 0.25,
+    "feature_columns": [
+        "Cumulata Sensore 1295 (Arcevia)",
+        "Cumulata Sensore 2637 (Bettolelle)",
+        "Cumulata Sensore 2858 (Barbara)",
+        "Cumulata Sensore 2964 (Corinaldo)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)"
+    ],
+    "target_columns": [
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)"
+    ],
+    "training_date": "2025-05-06T20:14:51.897315+02:00",
+    "val_split_percent": 15,
+    "learning_rate": 0.0006999999999999999,
+    "batch_size": 64,
+    "epochs": 25,
+    "display_name": "modello_lstm_20250506_2013"
+}
