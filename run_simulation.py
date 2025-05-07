@@ -207,21 +207,19 @@ def append_predictions_to_gsheet(gc, sheet_id, predictions_sheet_name, predictio
         print(f"Foglio '{predictions_sheet_name}' trovato.")
     except gspread.exceptions.WorksheetNotFound:
         print(f"Foglio '{predictions_sheet_name}' non trovato. Creazione in corso...")
-        # Determina l'header in base a target_columns
         header_parts_targets = [f"Previsto: {target_col.split('[')[0].strip()}" for target_col in target_columns]
         header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Passo (Relativo)"] + header_parts_targets
-        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows="1", cols=len(header_row) + 5) 
-        worksheet.append_row(header_row, value_input_option='USER_ENTERED') # USER_ENTERED per formattazione corretta
+        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows="1", cols=len(header_row) + 5)
+        worksheet.append_row(header_row, value_input_option='USER_ENTERED')
         print(f"Foglio '{predictions_sheet_name}' creato con intestazione.")
 
     output_window_steps = config["output_window"]
     timestamp_esecuzione_dt = datetime.now(italy_tz)
     timestamp_esecuzione_str = timestamp_esecuzione_dt.strftime('%Y-%m-%d %H:%M:%S %Z')
     
-    # Valore di fallback per prediction_start_time se è None
     if prediction_start_time is None:
         print("Attenzione: prediction_start_time è None. Userò il timestamp di esecuzione meno la durata dell'input window come stima.")
-        input_duration_minutes = config["input_window"] * 30 # Assumendo step da 30 min
+        input_duration_minutes = config["input_window"] * 30
         prediction_start_time = timestamp_esecuzione_dt - timedelta(minutes=input_duration_minutes)
     
     prediction_start_time_str = prediction_start_time.strftime('%Y-%m-%d %H:%M:%S %Z')
@@ -229,18 +227,23 @@ def append_predictions_to_gsheet(gc, sheet_id, predictions_sheet_name, predictio
     rows_to_append = []
     for step_idx in range(output_window_steps):
         current_prediction_time_dt = prediction_start_time + timedelta(minutes=30 * (step_idx + 1))
-        # current_prediction_time_str = current_prediction_time_dt.strftime('%Y-%m-%d %H:%M:%S %Z') # Non più necessario per cella singola
         
         row_data_for_step = [
             timestamp_esecuzione_str,
-            prediction_start_time_str, # Timestamp di inizio della serie di input che ha generato questa previsione
+            prediction_start_time_str,
             f"T+{ (step_idx + 1) * 0.5 :.1f}h (per {current_prediction_time_dt.strftime('%H:%M %d/%m')})" 
         ]
-        for target_idx in range(predictions_np.shape[1]): # Itera sui target
-            row_data_for_step.append(f"{predictions_np[step_idx, target_idx]:.3f}")
+        for target_idx in range(predictions_np.shape[1]):
+            predicted_value = predictions_np[step_idx, target_idx]
+            # MODIFICA: Formatta con virgola come separatore decimale
+            formatted_value_str = f"{predicted_value:.3f}".replace('.', ',') 
+            row_data_for_step.append(formatted_value_str)
         rows_to_append.append(row_data_for_step)
     
     if rows_to_append:
+        # Quando si inviano stringhe che rappresentano numeri con la virgola, 
+        # 'USER_ENTERED' è cruciale per far sì che Google Sheets li interpreti correttamente
+        # in base alla localizzazione del foglio.
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
         print(f"Aggiunte {len(rows_to_append)} righe di previsione al foglio '{predictions_sheet_name}'.")
 
