@@ -1851,25 +1851,23 @@ elif page == 'Test Modello su Storico':
     else:
         st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe. Colonna data non valida o assente per range.")
 
-    # Definisci parametri modello
     target_columns_model_test = active_config['target_columns']
     if active_model_type == "Seq2Seq":
         input_steps_model_test = active_config['input_window_steps']
         output_steps_model_test = active_config['output_window_steps']
         past_feature_cols_model_test = active_config['all_past_feature_columns']
         forecast_feature_cols_model_test = active_config['forecast_input_columns']
-        forecast_steps_model_test = active_config['forecast_window_steps'] # Definito qui
+        forecast_steps_model_test = active_config['forecast_window_steps']
         required_len_for_test = input_steps_model_test + max(forecast_steps_model_test, output_steps_model_test)
         all_cols_needed_csv = list(set(past_feature_cols_model_test + forecast_feature_cols_model_test + target_columns_model_test))
     else: # LSTM
         feature_columns_model_test = active_config.get("feature_columns", st.session_state.feature_columns)
         input_steps_model_test = active_config['input_window']
         output_steps_model_test = active_config['output_window']
-        forecast_steps_model_test = 0 # MODIFICA: Inizializza per LSTM per evitare NameError se usato in f-string
+        forecast_steps_model_test = 0
         required_len_for_test = input_steps_model_test + output_steps_model_test
         all_cols_needed_csv = list(set(feature_columns_model_test + target_columns_model_test))
 
-    # Controllo colonne CSV
     missing_cols_in_csv_test = [col for col in all_cols_needed_csv if col not in df_current_csv.columns]
     if missing_cols_in_csv_test:
         st.error(f"Le seguenti colonne richieste dal modello non sono presenti nel file CSV: {', '.join(missing_cols_in_csv_test)}")
@@ -1879,119 +1877,181 @@ elif page == 'Test Modello su Storico':
         st.error(f"Dati CSV insufficienti ({len(df_current_csv)} righe) per il test. Richieste almeno {required_len_for_test} righe.")
         st.stop()
     
-    # --- MODIFICA: Selezione periodo tramite st.date_input ---
-    st.subheader("Selezione Periodo di Input dal CSV")
+    st.subheader("Selezione Data e Ora di Inizio per l'Input del Modello")
 
     if not pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
-        st.error(f"La colonna data '{date_col_name_csv}' non è in formato datetime valido nel CSV. Impossibile selezionare per data.")
+        st.error(f"La colonna data '{date_col_name_csv}' non è in formato datetime valido nel CSV. Impossibile selezionare per data e ora.")
         st.stop()
-
-    # Calcola date min/max valide per l'input picker
-    min_csv_date_picker = df_current_csv[date_col_name_csv].iloc[0].date()
     
-    # L'ultima data possibile per l'inizio della finestra di input del modello
+    # Determina il fuso orario del DataFrame CSV, se presente, altrimenti usa italy_tz come default
+    df_timezone = df_current_csv[date_col_name_csv].dt.tz
+    if df_timezone is None:
+        st.caption(f"Le date nel CSV ({date_col_name_csv}) non sembrano essere localizzate (timezone-aware). "
+                   f"Verranno interpretate come orari locali del fuso: {italy_tz}.")
+        # Non si localizza qui il df intero, ma si usa italy_tz per localizzare la selezione utente.
+        # La modifica al caricamento CSV dovrebbe già aver tentato la localizzazione.
+
+    # Calcola datetime min/max validi per l'input picker
+    min_csv_datetime_picker = df_current_csv[date_col_name_csv].iloc[0]
+    
     idx_max_valid_start_input = len(df_current_csv) - required_len_for_test
-    if idx_max_valid_start_input < 0: # Dovrebbe essere già gestito dal check precedente, ma per sicurezza
-        st.error("Errore calcolo date: Dati CSV insufficienti.")
+    if idx_max_valid_start_input < 0: # Controllo di sicurezza aggiuntivo
+        st.error("Errore calcolo date: Dati CSV insufficienti per qualsiasi test.")
         st.stop()
-    max_csv_date_picker = df_current_csv[date_col_name_csv].iloc[idx_max_valid_start_input].date()
+    max_csv_datetime_picker_for_input_start = df_current_csv[date_col_name_csv].iloc[idx_max_valid_start_input]
 
-    # Default start date per il picker: circa a metà del range possibile o l'ultima data possibile
-    default_start_date_idx_picker = max(0, idx_max_valid_start_input // 2)
-    default_test_start_date_picker_val = df_current_csv[date_col_name_csv].iloc[default_start_date_idx_picker].date()
+    # Valori di default per i picker (circa a metà del range valido)
+    default_start_datetime_idx_picker = max(0, idx_max_valid_start_input // 2)
+    default_test_start_datetime_val = df_current_csv[date_col_name_csv].iloc[default_start_datetime_idx_picker]
     
-    # Assicura che il default sia nel range valido
-    if default_test_start_date_picker_val < min_csv_date_picker:
-        default_test_start_date_picker_val = min_csv_date_picker
-    if default_test_start_date_picker_val > max_csv_date_picker:
-        default_test_start_date_picker_val = max_csv_date_picker
-        
-    selected_date_for_test_start = st.date_input(
-        "Seleziona la data di inizio per la finestra di input del modello:",
-        value=default_test_start_date_picker_val,
-        min_value=min_csv_date_picker,
-        max_value=max_csv_date_picker,
-        key="test_historical_start_date_picker",
-        help=f"La finestra di input del modello ({input_steps_model_test} steps) inizierà alla prima registrazione disponibile in questa data (o subito dopo) che consenta un test completo."
-    )
+    if default_test_start_datetime_val < min_csv_datetime_picker:
+        default_test_start_datetime_val = min_csv_datetime_picker
+    if default_test_start_datetime_val > max_csv_datetime_picker_for_input_start:
+        default_test_start_datetime_val = max_csv_datetime_picker_for_input_start
 
-    selected_start_index_test = -1 
+    col_date_test, col_time_test = st.columns(2)
+    with col_date_test:
+        selected_date_for_test_start_input = st.date_input(
+            "Seleziona la Data di inizio:",
+            value=default_test_start_datetime_val.date(),
+            min_value=min_csv_datetime_picker.date(),
+            max_value=max_csv_datetime_picker_for_input_start.date(),
+            key="test_historical_start_date_picker_input"
+        )
+    
+    min_time_for_selected_date = time.min
+    max_time_for_selected_date = time.max
+    if selected_date_for_test_start_input == min_csv_datetime_picker.date():
+        min_time_for_selected_date = min_csv_datetime_picker.time()
+    if selected_date_for_test_start_input == max_csv_datetime_picker_for_input_start.date():
+        max_time_for_selected_date = max_csv_datetime_picker_for_input_start.time()
+    
+    default_time_val_picker = default_test_start_datetime_val.time()
+    if default_time_val_picker < min_time_for_selected_date: default_time_val_picker = min_time_for_selected_date
+    if default_time_val_picker > max_time_for_selected_date: default_time_val_picker = max_time_for_selected_date
 
-    if selected_date_for_test_start:
-        start_of_selected_date_dt = datetime.combine(selected_date_for_test_start, time.min)
-        
-        # Rendi timezone-aware per confronto, se le date CSV lo sono
-        # Assumiamo che df_current_csv[date_col_name_csv] sia già localizzato a italy_tz (dalla modifica al caricamento CSV)
-        if df_current_csv[date_col_name_csv].dt.tz:
-             start_of_selected_date_dt = italy_tz.localize(start_of_selected_date_dt)
-        
-        candidate_indices = df_current_csv[df_current_csv[date_col_name_csv] >= start_of_selected_date_dt].index
-        
-        valid_index_found = False
-        for idx_candidate in candidate_indices:
-            if idx_candidate <= idx_max_valid_start_input:
-                selected_start_index_test = idx_candidate
-                valid_index_found = True
-                break
-        
-        if not valid_index_found:
-            # Se non si trova un indice (es. la data scelta è troppo vicina alla fine e non lascia spazio)
-            # Forziamo all'ultimo indice valido possibile se la data è compatibile
-            if selected_date_for_test_start >= df_current_csv[date_col_name_csv].iloc[idx_max_valid_start_input].date():
-                 selected_start_index_test = idx_max_valid_start_input
-                 st.info(f"La data selezionata non permette un test completo partendo da essa. Utilizzo l'ultima finestra possibile, che inizia il {df_current_csv[date_col_name_csv].iloc[idx_max_valid_start_input].strftime('%d/%m/%Y %H:%M')}.")
-            else:
-                 st.error(f"Non è stato possibile trovare una finestra di test valida a partire dalla data '{selected_date_for_test_start.strftime('%d/%m/%Y')}'. "
-                          f"L'ultima data possibile per iniziare un test è '{max_csv_date_picker.strftime('%d/%m/%Y')}' (riga {idx_max_valid_start_input}). "
-                          f"Prova a selezionare una data precedente o uguale a questa.")
+    with col_time_test:
+        selected_time_for_test_start_input = st.time_input(
+            "Seleziona l'Ora di inizio:",
+            value=default_time_val_picker,
+            step=timedelta(minutes=30),
+            key="test_historical_start_time_picker_input"
+        )
+
+    selected_start_datetime_user_naive = None
+    if selected_date_for_test_start_input and selected_time_for_test_start_input:
+        selected_start_datetime_user_naive = datetime.combine(selected_date_for_test_start_input, selected_time_for_test_start_input)
+
+    selected_start_index_test = -1
+    actual_start_datetime_from_csv_for_input = None
+
+    if selected_start_datetime_user_naive:
+        # Localizza la selezione utente (se il df ha timezone, altrimenti rimane naive ma si assume italy_tz)
+        target_tz_for_selection = df_timezone if df_timezone else italy_tz
+        selected_start_datetime_user_localized = None
+        try:
+            if target_tz_for_selection:
+                 selected_start_datetime_user_localized = target_tz_for_selection.localize(selected_start_datetime_user_naive, is_dst=None) # is_dst=None per far fallire su ore ambigue/non esistenti
+            else: # df è naive, la selezione utente rimane naive
+                 selected_start_datetime_user_localized = selected_start_datetime_user_naive
+        except pytz.exceptions.AmbiguousTimeError:
+            # Tentativo di disambiguare: scegli la prima occorrenza (solitamente prima del DST forward, o dopo il DST backward)
+            try:
+                selected_start_datetime_user_localized = target_tz_for_selection.localize(selected_start_datetime_user_naive, is_dst=False)
+                st.caption(f"L'ora selezionata ({selected_time_for_test_start_input.strftime('%H:%M')}) è ambigua (cambio ora). È stata usata la prima occorrenza.")
+            except Exception as e_dst: # Se anche is_dst=False fallisce (improbabile per localize normale)
+                 st.error(f"Ora ambigua e impossibile da risolvere: {e_dst}. Prova con l'ora successiva/precedente di 30 min.")
                  st.stop()
+
+        except pytz.exceptions.NonExistentTimeError:
+            st.error(f"L'ora {selected_time_for_test_start_input.strftime('%H:%M')} non esiste nella data {selected_date_for_test_start_input.strftime('%d/%m/%Y')} (probabilmente a causa del cambio ora legale/solare). Prova a selezionare un'ora diversa.")
+            st.stop()
+        
+        if selected_start_datetime_user_localized:
+            # Trova il primo indice nel df la cui data/ora è >= a quella localizzata selezionata dall'utente
+            candidate_indices = df_current_csv[df_current_csv[date_col_name_csv] >= selected_start_datetime_user_localized].index
+            
+            valid_index_found = False
+            if not candidate_indices.empty:
+                for idx_candidate in candidate_indices:
+                    if idx_candidate <= idx_max_valid_start_input:
+                        selected_start_index_test = idx_candidate
+                        actual_start_datetime_from_csv_for_input = df_current_csv.iloc[idx_candidate][date_col_name_csv]
+                        valid_index_found = True
+                        break 
+            
+            if not valid_index_found:
+                if selected_start_datetime_user_localized > max_csv_datetime_picker_for_input_start:
+                    st.warning(f"La data e ora selezionate ({selected_start_datetime_user_localized.strftime('%d/%m/%Y %H:%M %Z') if selected_start_datetime_user_localized.tzinfo else selected_start_datetime_user_localized.strftime('%d/%m/%Y %H:%M')}) sono troppo recenti. "
+                               f"L'ultima possibile data/ora per iniziare un test è {max_csv_datetime_picker_for_input_start.strftime('%d/%m/%Y %H:%M %Z') if max_csv_datetime_picker_for_input_start.tzinfo else max_csv_datetime_picker_for_input_start.strftime('%d/%m/%Y %H:%M')} (riga {idx_max_valid_start_input}). "
+                               f"Verrà utilizzato quest'ultimo.")
+                    selected_start_index_test = idx_max_valid_start_input
+                    actual_start_datetime_from_csv_for_input = df_current_csv.iloc[selected_start_index_test][date_col_name_csv]
+                else:
+                    st.error(f"Non è stato possibile trovare una finestra di test valida a partire dalla data e ora selezionate. "
+                             f"L'ultima data/ora di inizio possibile è {max_csv_datetime_picker_for_input_start.strftime('%d/%m/%Y %H:%M %Z') if max_csv_datetime_picker_for_input_start.tzinfo else max_csv_datetime_picker_for_input_start.strftime('%d/%m/%Y %H:%M')}. "
+                             f"Prova a selezionare una data/ora precedente o uguale.")
+                    st.stop()
     
-    if selected_start_index_test == -1:
-        st.error("Impossibile determinare un indice di inizio valido. Verifica la data e i dati CSV.")
+    if selected_start_index_test == -1 or actual_start_datetime_from_csv_for_input is None:
+        st.error("Impossibile determinare un indice di inizio valido. Verifica la data/ora selezionata e i dati CSV.")
         st.stop()
 
-    # Info per l'utente sull'intervallo selezionato
-    help_text_info_test = f"L'input del modello ({input_steps_model_test} steps) inizierà dalla riga **{selected_start_index_test}** del CSV. "
-    help_text_info_test += f"Saranno necessari altri {output_steps_model_test} steps dai dati CSV"
-    if active_model_type == "Seq2Seq":
-        help_text_info_test += f" (e {forecast_steps_model_test} steps per l'input del decoder Seq2Seq)"
-    help_text_info_test += " per il confronto con i dati reali."
-    st.info(help_text_info_test)
-    # --- FINE MODIFICA Selezione Periodo ---
-
+    st.info(f"Input del modello ({input_steps_model_test} steps) inizierà da: **{actual_start_datetime_from_csv_for_input.strftime('%d/%m/%Y %H:%M %Z') if actual_start_datetime_from_csv_for_input.tzinfo else actual_start_datetime_from_csv_for_input.strftime('%d/%m/%Y %H:%M')}** (riga CSV: **{selected_start_index_test}**).")
+    
     try:
-        start_dt_input_win = df_current_csv.iloc[selected_start_index_test][date_col_name_csv]
         end_dt_input_win = df_current_csv.iloc[selected_start_index_test + input_steps_model_test - 1][date_col_name_csv]
-        st.caption(f"Finestra di input per il modello: da **{start_dt_input_win.strftime('%d/%m/%Y %H:%M')}** (riga {selected_start_index_test}) a **{end_dt_input_win.strftime('%d/%m/%Y %H:%M')}** (riga {selected_start_index_test + input_steps_model_test - 1}).")
+        st.caption(f"Finestra di input per il modello: da **{actual_start_datetime_from_csv_for_input.strftime('%d/%m/%Y %H:%M %Z') if actual_start_datetime_from_csv_for_input.tzinfo else actual_start_datetime_from_csv_for_input.strftime('%d/%m/%Y %H:%M')}** (riga {selected_start_index_test}) a **{end_dt_input_win.strftime('%d/%m/%Y %H:%M %Z') if end_dt_input_win.tzinfo else end_dt_input_win.strftime('%d/%m/%Y %H:%M')}** (riga {selected_start_index_test + input_steps_model_test - 1}).")
 
         actual_data_start_idx_test = selected_start_index_test + input_steps_model_test
         actual_data_end_idx_test = actual_data_start_idx_test + output_steps_model_test - 1 
         start_dt_output_win = df_current_csv.iloc[actual_data_start_idx_test][date_col_name_csv]
         end_dt_output_win = df_current_csv.iloc[actual_data_end_idx_test][date_col_name_csv]
-        st.caption(f"Le previsioni ({output_steps_model_test} steps) saranno confrontate con i dati reali da **{start_dt_output_win.strftime('%d/%m/%Y %H:%M')}** (riga {actual_data_start_idx_test}) a **{end_dt_output_win.strftime('%d/%m/%Y %H:%M')}** (riga {actual_data_end_idx_test}).")
+        
+        output_info_text = (f"Le previsioni ({output_steps_model_test} steps) saranno confrontate con i dati reali da "
+                            f"**{start_dt_output_win.strftime('%d/%m/%Y %H:%M %Z') if start_dt_output_win.tzinfo else start_dt_output_win.strftime('%d/%m/%Y %H:%M')}** (riga {actual_data_start_idx_test}) a "
+                            f"**{end_dt_output_win.strftime('%d/%m/%Y %H:%M %Z') if end_dt_output_win.tzinfo else end_dt_output_win.strftime('%d/%m/%Y %H:%M')}** (riga {actual_data_end_idx_test}).")
+        
+        if active_model_type == "Seq2Seq" and forecast_steps_model_test > 0:
+            forecast_input_end_idx_test = actual_data_start_idx_test + forecast_steps_model_test - 1
+            # Assicurati che forecast_input_end_idx_test non superi la lunghezza del DataFrame
+            if forecast_input_end_idx_test < len(df_current_csv):
+                end_dt_forecast_input_win = df_current_csv.iloc[forecast_input_end_idx_test][date_col_name_csv]
+                output_info_text += (f"\nL'input per il decoder Seq2Seq ({forecast_steps_model_test} steps) verrà preso da "
+                                     f"**{start_dt_output_win.strftime('%d/%m/%Y %H:%M %Z') if start_dt_output_win.tzinfo else start_dt_output_win.strftime('%d/%m/%Y %H:%M')}** a "
+                                     f"**{end_dt_forecast_input_win.strftime('%d/%m/%Y %H:%M %Z') if end_dt_forecast_input_win.tzinfo else end_dt_forecast_input_win.strftime('%d/%m/%Y %H:%M')}**.")
+            else:
+                 output_info_text += (f"\nAttenzione: Non ci sono abbastanza dati per la finestra completa di input del decoder Seq2Seq ({forecast_steps_model_test} steps). "
+                                      f"L'ultimo dato disponibile è alla riga {len(df_current_csv)-1}. Il modello potrebbe non funzionare correttamente.")
+                 st.warning("Dati insufficienti per l'intera finestra di forecast del decoder Seq2Seq.")
+
+
+        st.caption(output_info_text)
+
     except IndexError:
-        st.error("Indice selezionato non valido o dati CSV insufficienti per il periodo. Riprova con una data diversa.")
+        st.error("Indice calcolato non valido o dati CSV insufficienti per il periodo. Riprova con una data/ora diversa.")
         st.stop()
     except Exception as e_dt_display:
         st.warning(f"Problema visualizzazione date di dettaglio: {e_dt_display}")
 
-
     if st.button("Esegui Test e Confronta su Storico", type="primary", key="run_historical_test_button"):
         predictions_test = None
         actual_target_data_np_test = None
-        prediction_start_time_test = None
+        prediction_start_time_test_for_plot = None # Questo sarà il timestamp di inizio della *finestra di output*
 
         with st.spinner("Estrazione dati ed esecuzione predizione..."):
             try:
-                # Estrarre dati di input per il modello
                 input_data_df_test = df_current_csv.iloc[selected_start_index_test : selected_start_index_test + input_steps_model_test]
 
                 if active_model_type == "Seq2Seq":
                     past_input_np_test = input_data_df_test[past_feature_cols_model_test].astype(float).values
                     
                     forecast_input_start_idx_test = selected_start_index_test + input_steps_model_test
-                    # Lunghezza forecast input è forecast_steps_model_test
                     future_forecast_df_test = df_current_csv.iloc[forecast_input_start_idx_test : forecast_input_start_idx_test + forecast_steps_model_test]
+                    if len(future_forecast_df_test) < forecast_steps_model_test:
+                        st.error(f"Errore critico: Dati insufficienti per l'input del forecast del decoder Seq2Seq. "
+                                 f"Necessari {forecast_steps_model_test} steps, disponibili {len(future_forecast_df_test)}.")
+                        st.stop()
                     future_forecast_np_test = future_forecast_df_test[forecast_feature_cols_model_test].astype(float).values
                     
                     predictions_test = predict_seq2seq(active_model, past_input_np_test, future_forecast_np_test, active_scalers, active_config, active_device)
@@ -1999,25 +2059,26 @@ elif page == 'Test Modello su Storico':
                     input_features_np_test = input_data_df_test[feature_columns_model_test].astype(float).values
                     predictions_test = predict(active_model, input_features_np_test, active_scalers[0], active_scalers[1], active_config, active_device)
 
-                # Estrarre dati reali per il confronto (lunghezza output_steps_model_test)
                 actual_data_df_test = df_current_csv.iloc[actual_data_start_idx_test : actual_data_start_idx_test + output_steps_model_test]
+                if len(actual_data_df_test) < output_steps_model_test:
+                    st.error(f"Errore critico: Dati insufficienti per il confronto con i dati reali. "
+                                 f"Necessari {output_steps_model_test} steps, disponibili {len(actual_data_df_test)}.")
+                    st.stop()
                 actual_target_data_np_test = actual_data_df_test[target_columns_model_test].astype(float).values
                 
-                # Tempo di inizio per i grafici (primo step della finestra di output/confronto)
-                prediction_start_time_test = df_current_csv.iloc[actual_data_start_idx_test][date_col_name_csv]
+                prediction_start_time_test_for_plot = df_current_csv.iloc[actual_data_start_idx_test][date_col_name_csv]
 
             except Exception as e_pred_test:
                 st.error(f"Errore durante l'estrazione dati o la predizione: {e_pred_test}")
                 st.error(traceback.format_exc())
+                predictions_test = None # Assicura che non si proceda se c'è errore
 
         if predictions_test is not None and actual_target_data_np_test is not None:
             st.subheader("Risultati del Test su Dati Storici")
-
-            # Tabella comparativa
             df_results_display_test = pd.DataFrame()
-            if prediction_start_time_test:
-                pred_times_test_dt = [prediction_start_time_test + timedelta(minutes=30 * step) for step in range(output_steps_model_test)]
-                df_results_display_test['Ora'] = [t.strftime('%d/%m %H:%M') for t in pred_times_test_dt]
+            if prediction_start_time_test_for_plot:
+                pred_times_test_dt = [prediction_start_time_test_for_plot + timedelta(minutes=30 * step) for step in range(output_steps_model_test)]
+                df_results_display_test['Ora'] = [t.strftime('%d/%m %H:%M %Z') if t.tzinfo else t.strftime('%d/%m %H:%M') for t in pred_times_test_dt]
             else:
                 df_results_display_test['Passo'] = [f"T+{step+1}" for step in range(output_steps_model_test)]
 
@@ -2034,7 +2095,7 @@ elif page == 'Test Modello su Storico':
             figs_test = plot_predictions(
                 predictions_test, 
                 active_config, 
-                start_time=prediction_start_time_test, 
+                start_time=prediction_start_time_test_for_plot, 
                 actual_data=actual_target_data_np_test,
                 actual_data_label="Reale CSV" 
             )
