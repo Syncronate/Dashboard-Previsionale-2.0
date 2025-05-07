@@ -1,11 +1,12 @@
 import os
 import json
-# import base64 # Non più necessario per le credenziali
+# import base64 # Non più necessario per le credenziali se usi il file
 from datetime import datetime, timedelta
 import pytz
 
 import gspread
-from google.oauth2.service_account import Credentials # Manteniamo questo per il tipo
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build # NUOVA IMPORTAZIONE
 import joblib
 import torch
 import torch.nn as nn
@@ -27,7 +28,6 @@ italy_tz = pytz.timezone('Europe/Rome')
 
 # --- Definizione Modello LSTM (invariata) ---
 class HydroLSTM(nn.Module):
-    # ... (codice del modello come prima) ...
     def __init__(self, input_size, hidden_size, output_size, output_window, num_layers=2, dropout=0.2):
         super(HydroLSTM, self).__init__()
         self.hidden_size = hidden_size
@@ -46,8 +46,7 @@ class HydroLSTM(nn.Module):
         out = out.view(out.size(0), self.output_window, self.output_size)
         return out
 
-# --- Funzioni Utilità (load_model_and_scalers, fetch_input_data_from_gsheet, predict_with_model, append_predictions_to_gsheet - invariate rispetto alla mia risposta precedente, ma verifica il mapping colonne in fetch_input_data) ---
-# ... (copia queste funzioni dalla mia risposta precedente, assicurandoti che siano corrette) ...
+# --- Funzioni Utilità (load_model_and_scalers, fetch_input_data_from_gsheet, predict_with_model - invariate) ---
 def load_model_and_scalers(model_base_name, models_dir):
     """Carica il modello, la configurazione e gli scaler."""
     config_path = os.path.join(models_dir, f"{model_base_name}.json")
@@ -62,13 +61,12 @@ def load_model_and_scalers(model_base_name, models_dir):
         config = json.load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     if "feature_columns" not in config:
-        # !! IMPORTANTE: Adatta questa lista alle feature ESATTE del tuo modello !!
-        config["feature_columns"] = [ 
+        config["feature_columns"] = [
             'Cumulata Sensore 1295 (Arcevia)', 'Cumulata Sensore 2637 (Bettolelle)',
             'Cumulata Sensore 2858 (Barbara)', 'Cumulata Sensore 2964 (Corinaldo)',
-            HUMIDITY_COL_NAME_INPUT, 
+            HUMIDITY_COL_NAME_INPUT,
             'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
             'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
             'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
@@ -79,7 +77,7 @@ def load_model_and_scalers(model_base_name, models_dir):
 
     input_size = len(config["feature_columns"])
     output_size = len(config["target_columns"])
-    
+
     model = HydroLSTM(
         input_size,
         config["hidden_size"],
@@ -93,7 +91,7 @@ def load_model_and_scalers(model_base_name, models_dir):
 
     scaler_features = joblib.load(scaler_features_path)
     scaler_targets = joblib.load(scaler_targets_path)
-    
+
     print(f"Modello '{model_base_name}' e scaler caricati su {device}.")
     return model, scaler_features, scaler_targets, config, device
 
@@ -104,21 +102,20 @@ def fetch_input_data_from_gsheet(gc, sheet_id, data_sheet_name, config, column_m
 
     sh = gc.open_by_key(sheet_id)
     worksheet = sh.worksheet(data_sheet_name)
-    
+
     all_values = worksheet.get_all_values()
     if not all_values or len(all_values) < 2:
         raise ValueError(f"Foglio Google '{data_sheet_name}' vuoto o con solo intestazione.")
 
     headers_gsheet = all_values[0]
-    num_rows_to_fetch = input_window_steps + 20 
+    # Recupera più dati per avere margine per ffill/bfill e per input_window
+    num_rows_to_fetch = input_window_steps + 20 # Aumentato per sicurezza
     start_index = max(1, len(all_values) - num_rows_to_fetch)
     data_rows = all_values[start_index:]
     df_gsheet_raw = pd.DataFrame(data_rows, columns=headers_gsheet)
 
-    # Nomi colonne GSheet che ci servono dal mapping (devono esistere nel GSheet)
-    required_gsheet_cols_from_mapping = [col for col in column_mapping.keys() if col != GSHEET_DATE_COL_INPUT] # Escludi data per ora
-    
-    # Aggiungi colonna data se non già considerata come una feature
+    required_gsheet_cols_from_mapping = [col for col in column_mapping.keys() if col != GSHEET_DATE_COL_INPUT]
+
     cols_to_select_in_gsheet = []
     if GSHEET_DATE_COL_INPUT in headers_gsheet:
         cols_to_select_in_gsheet.append(GSHEET_DATE_COL_INPUT)
@@ -130,8 +127,8 @@ def fetch_input_data_from_gsheet(gc, sheet_id, data_sheet_name, config, column_m
             cols_to_select_in_gsheet.append(gsheet_col_name)
         else:
             print(f"Attenzione: Colonna GSheet '{gsheet_col_name}' specificata nel mapping ma non trovata nel foglio '{data_sheet_name}'.")
-    
-    df_subset = df_gsheet_raw[list(set(cols_to_select_in_gsheet))].copy() # set per evitare duplicati
+
+    df_subset = df_gsheet_raw[list(set(cols_to_select_in_gsheet))].copy()
     df_mapped = df_subset.rename(columns=column_mapping)
     date_col_model_name = column_mapping.get(GSHEET_DATE_COL_INPUT, GSHEET_DATE_COL_INPUT)
     latest_valid_timestamp = None
@@ -148,8 +145,9 @@ def fetch_input_data_from_gsheet(gc, sheet_id, data_sheet_name, config, column_m
             except Exception as e_date:
                 print(f"Errore conversione data per colonna '{col}': {e_date}. Sarà NaT.")
                 df_mapped[col] = pd.NaT
-        elif col in model_feature_columns:
+        elif col in model_feature_columns: # Processa solo colonne feature del modello per la conversione numerica
             try:
+                # Sostituisci virgola con punto per decimali e gestisci 'N/A' o stringhe vuote
                 if pd.api.types.is_object_dtype(df_mapped[col]) or pd.api.types.is_string_dtype(df_mapped[col]):
                     col_str = df_mapped[col].astype(str).str.replace(',', '.', regex=False).str.strip()
                     df_mapped[col] = col_str.replace(['N/A', '', '-', ' ', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
@@ -157,7 +155,7 @@ def fetch_input_data_from_gsheet(gc, sheet_id, data_sheet_name, config, column_m
             except Exception as e_num:
                 print(f"Errore conversione numerica per colonna '{col}': {e_num}. Sarà NaN.")
                 df_mapped[col] = np.nan
-    
+
     if date_col_model_name in df_mapped.columns and pd.api.types.is_datetime64_any_dtype(df_mapped[date_col_model_name]):
         df_mapped = df_mapped.sort_values(by=date_col_model_name)
         valid_dates = df_mapped[date_col_model_name].dropna()
@@ -166,21 +164,22 @@ def fetch_input_data_from_gsheet(gc, sheet_id, data_sheet_name, config, column_m
     else:
         raise ValueError(f"Colonna data '{date_col_model_name}' non trovata o non valida dopo mappatura/conversione.")
 
-    df_features_selected = pd.DataFrame() # Inizia vuoto
+    df_features_selected = pd.DataFrame()
     for m_col in model_feature_columns:
         if m_col in df_mapped.columns:
             df_features_selected[m_col] = df_mapped[m_col]
         else:
             print(f"Attenzione: Colonna feature modello '{m_col}' non presente in df_mapped. Sarà riempita con NaN.")
-            df_features_selected[m_col] = np.nan 
+            df_features_selected[m_col] = np.nan # Crea la colonna con NaN
 
-    df_features_filled = df_features_selected[model_feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0) # Assicura ordine e fill
-    
+    # Assicura che le colonne siano nell'ordine corretto e fai fill
+    df_features_filled = df_features_selected[model_feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
+
     if len(df_features_filled) < input_window_steps:
         raise ValueError(f"Dati insufficienti nel GSheet ({len(df_features_filled)} righe valide) per l'input del modello (richiesti {input_window_steps}).")
-    
+
     input_data = df_features_filled.iloc[-input_window_steps:]
-    
+
     for col in input_data.columns:
         if not pd.api.types.is_numeric_dtype(input_data[col]):
             raise TypeError(f"La colonna '{col}' nei dati di input finali non è numerica (tipo: {input_data[col].dtype}).")
@@ -199,54 +198,194 @@ def predict_with_model(model, input_data_np, scaler_features, scaler_targets, de
     predictions_scaled_back = scaler_targets.inverse_transform(output_np)
     return predictions_scaled_back
 
-def append_predictions_to_gsheet(gc, sheet_id, predictions_sheet_name, predictions_np, target_columns, prediction_start_time, config):
-    """Aggiunge le previsioni a un nuovo foglio Google."""
-    sh = gc.open_by_key(sheet_id)
+# --- MODIFICATA ---
+def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, target_columns, prediction_start_time, config):
+    """Aggiunge le previsioni e un grafico a un foglio Google."""
+    sh = gc.open_by_key(sheet_id_str)
+    worksheet_created = False
     try:
         worksheet = sh.worksheet(predictions_sheet_name)
-        print(f"Foglio '{predictions_sheet_name}' trovato.")
+        print(f"Foglio '{predictions_sheet_name}' trovato. Cancello il contenuto precedente.")
+        worksheet.clear() # Cancella tutto il contenuto per ricominciare
+        worksheet_created = False # Non è stata creata ora, ma esisteva e l'abbiamo svuotata
     except gspread.exceptions.WorksheetNotFound:
         print(f"Foglio '{predictions_sheet_name}' non trovato. Creazione in corso...")
-        header_parts_targets = [f"Previsto: {target_col.split('[')[0].strip()}" for target_col in target_columns]
-        header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Passo (Relativo)"] + header_parts_targets
-        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows="1", cols=len(header_row) + 5)
-        worksheet.append_row(header_row, value_input_option='USER_ENTERED')
-        print(f"Foglio '{predictions_sheet_name}' creato con intestazione.")
+        # Le colonne del grafico saranno fisse, quindi possiamo definire una dimensione iniziale
+        # Header + output_window righe, 3 + num_targets colonne + spazio per grafico
+        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=config["output_window"] + 10, cols=len(target_columns) + 10)
+        worksheet_created = True
+
+    # Intestazione
+    header_parts_targets = [f"Previsto: {target_col.split('[')[0].strip()}" for target_col in target_columns]
+    # Le colonne sono: Timestamp Esecuzione, Timestamp Inizio Serie, Passo, Target1, Target2, ...
+    # Colonna A: Timestamp Esecuzione (idx 0)
+    # Colonna B: Timestamp Inizio Serie (idx 1)
+    # Colonna C: Passo (Relativo) (idx 2) --> Asse X del grafico
+    # Colonna D: Target1 (idx 3) --> Serie 1 del grafico
+    # Colonna E: Target2 (idx 4) --> Serie 2 del grafico
+    # ...
+    header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Passo (Relativo)"] + header_parts_targets
+    worksheet.append_row(header_row, value_input_option='USER_ENTERED')
+    print(f"Intestazione aggiunta al foglio '{predictions_sheet_name}'.")
+
 
     output_window_steps = config["output_window"]
     timestamp_esecuzione_dt = datetime.now(italy_tz)
     timestamp_esecuzione_str = timestamp_esecuzione_dt.strftime('%Y-%m-%d %H:%M:%S %Z')
-    
+
     if prediction_start_time is None:
         print("Attenzione: prediction_start_time è None. Userò il timestamp di esecuzione meno la durata dell'input window come stima.")
-        input_duration_minutes = config["input_window"] * 30
+        input_duration_minutes = config["input_window"] * 30 # Assumendo 30 min per step di input
         prediction_start_time = timestamp_esecuzione_dt - timedelta(minutes=input_duration_minutes)
-    
+
     prediction_start_time_str = prediction_start_time.strftime('%Y-%m-%d %H:%M:%S %Z')
 
     rows_to_append = []
     for step_idx in range(output_window_steps):
         current_prediction_time_dt = prediction_start_time + timedelta(minutes=30 * (step_idx + 1))
-        
         row_data_for_step = [
             timestamp_esecuzione_str,
             prediction_start_time_str,
-            f"T+{ (step_idx + 1) * 0.5 :.1f}h (per {current_prediction_time_dt.strftime('%H:%M %d/%m')})" 
+            f"T+{(step_idx + 1) * 0.5:.1f}h ({current_prediction_time_dt.strftime('%H:%M %d/%m')})"
         ]
         for target_idx in range(predictions_np.shape[1]):
             predicted_value = predictions_np[step_idx, target_idx]
-            # MODIFICA: Formatta con virgola come separatore decimale
-            formatted_value_str = f"{predicted_value:.3f}".replace('.', ',') 
+            formatted_value_str = f"{predicted_value:.3f}".replace('.', ',')
             row_data_for_step.append(formatted_value_str)
         rows_to_append.append(row_data_for_step)
-    
+
     if rows_to_append:
-        # Quando si inviano stringhe che rappresentano numeri con la virgola, 
-        # 'USER_ENTERED' è cruciale per far sì che Google Sheets li interpreti correttamente
-        # in base alla localizzazione del foglio.
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
         print(f"Aggiunte {len(rows_to_append)} righe di previsione al foglio '{predictions_sheet_name}'.")
 
+        # --- AGGIUNTA GRAFICO ---
+        try:
+            print("Tentativo di aggiungere/aggiornare il grafico...")
+            service = build('sheets', 'v4', credentials=gc.auth)
+            spreadsheet_id = sh.id
+            sheet_id_numeric = worksheet.id # ID numerico del foglio
+
+            # 1. Rimuovi grafici esistenti (se presenti) per evitare duplicati
+            # Questo richiede prima di ottenere gli ID dei grafici
+            sheet_info = service.spreadsheets().get(spreadsheetId=spreadsheet_id, fields='sheets(properties,charts)').execute()
+            delete_chart_requests = []
+            for s_info in sheet_info.get('sheets', []):
+                if s_info.get('properties', {}).get('sheetId') == sheet_id_numeric:
+                    for chart in s_info.get('charts', []):
+                        # Potresti voler filtrare per titolo se hai altri grafici che non vuoi eliminare
+                        # if chart.get('spec', {}).get('title', '').startswith("Previsioni"):
+                        delete_chart_requests.append({
+                            "deleteEmbeddedObject": {
+                                "objectId": chart['chartId']
+                            }
+                        })
+                    break
+            if delete_chart_requests:
+                service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={"requests": delete_chart_requests}
+                ).execute()
+                print(f"Eliminati {len(delete_chart_requests)} grafici esistenti dal foglio '{predictions_sheet_name}'.")
+
+
+            # 2. Definisci il nuovo grafico
+            # Gli indici delle colonne sono 0-based per l'API
+            # Colonna C (Passo) è l'indice 2
+            # Colonna D (Prima previsione) è l'indice 3
+            domain_column_index = 2 # "Passo (Relativo)"
+            first_series_column_index = 3 # La prima colonna "Previsto: ..."
+
+            # Le righe dei dati iniziano dalla riga 2 (indice 1 per l'API, dopo l'header)
+            # L'header è la riga 1 (indice 0 per API)
+            start_row_index_api = 1 # Dati iniziano alla riga 2 del foglio (0-indexed API)
+            # end_row_index_api è esclusivo, quindi num_data_rows + start_row_index_api
+            end_row_index_api = start_row_index_api + len(rows_to_append)
+
+            chart_series_requests = []
+            for i, target_name in enumerate(header_parts_targets): # Usa header_parts_targets per i nomi delle serie
+                series_column_idx_api = first_series_column_index + i
+                chart_series_requests.append({
+                    "series": {
+                        "sourceRange": {
+                            "sources": [{
+                                "sheetId": sheet_id_numeric,
+                                "startRowIndex": start_row_index_api,
+                                "endRowIndex": end_row_index_api,
+                                "startColumnIndex": series_column_idx_api,
+                                "endColumnIndex": series_column_idx_api + 1
+                            }]
+                        }
+                    },
+                    "targetAxis": "LEFT_AXIS",
+                    # Puoi aggiungere qui colori specifici per serie se vuoi
+                    # "colorStyle": {"rgbColor": {"red": R, "green": G, "blue": B}} # R, G, B da 0 a 1
+                })
+
+            chart_request = {
+                "addChart": {
+                    "chart": {
+                        "spec": {
+                            "title": f"Previsioni Modello ({timestamp_esecuzione_str})",
+                            "basicChart": {
+                                "chartType": "LINE", # o "COMBO" se hai tipi misti
+                                "legendPosition": "BOTTOM_LEGEND",
+                                "axis": [
+                                    { # Asse X (Orizzontale - Dominio)
+                                        "position": "BOTTOM_AXIS",
+                                        "title": "Passo Temporale Futuro"
+                                    },
+                                    { # Asse Y (Verticale - Serie)
+                                        "position": "LEFT_AXIS",
+                                        "title": "Valore Previsto"
+                                    }
+                                ],
+                                "domains": [{ # Definisce l'asse X
+                                    "domain": {
+                                        "sourceRange": {
+                                            "sources": [{
+                                                "sheetId": sheet_id_numeric,
+                                                "startRowIndex": start_row_index_api,
+                                                "endRowIndex": end_row_index_api,
+                                                "startColumnIndex": domain_column_index, # Colonna "Passo (Relativo)"
+                                                "endColumnIndex": domain_column_index + 1
+                                            }]
+                                        }
+                                    }
+                                }],
+                                "series": chart_series_requests,
+                                "headerCount": 0 # I nostri sourceRange non includono header di per sé
+                            }
+                        },
+                        "position": {
+                            "overlayPosition": {
+                                "anchorCell": { # Dove ancorare l'angolo superiore sx del grafico
+                                    "sheetId": sheet_id_numeric,
+                                    "rowIndex": 0, # In alto, vicino all'header
+                                     # A destra delle colonne dati
+                                    "columnIndex": len(header_row) + 1
+                                },
+                                "offsetXPixels": 10,
+                                "offsetYPixels": 10,
+                                "widthPixels": 650, # Larghezza del grafico
+                                "heightPixels": 400 # Altezza del grafico
+                            }
+                        }
+                    }
+                }
+            }
+
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [chart_request]}
+            ).execute()
+            print(f"Grafico aggiunto/aggiornato con successo al foglio '{predictions_sheet_name}'.")
+
+        except Exception as e_chart:
+            print(f"Errore durante la creazione/aggiornamento del grafico: {e_chart}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"Nessuna riga di previsione da aggiungere al foglio '{predictions_sheet_name}'.")
 
 def main():
     print(f"Avvio simulazione script alle {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -256,14 +395,11 @@ def main():
         return
 
     try:
-        # --- MODIFICA AUTENTICAZIONE ---
-        # Lo script GitHub Actions creerà un file 'credentials.json'
-        # nella directory di lavoro del workflow.
-        credentials_path = "credentials.json" 
+        credentials_path = "credentials.json"
         if not os.path.exists(credentials_path):
-            # Se si esegue localmente e si vuole usare il Base64 per test, si può aggiungere un fallback
-            gcp_sa_key_b64 = os.environ.get("GCP_SA_KEY_BASE64_FALLBACK") # Nome diverso per fallback locale
+            gcp_sa_key_b64 = os.environ.get("GCP_SA_KEY_BASE64_FALLBACK")
             if gcp_sa_key_b64:
+                import base64 # Importa solo se necessario per fallback
                 print("Uso GCP_SA_KEY_BASE64_FALLBACK per le credenziali (test locale).")
                 credentials_json_str = base64.b64decode(gcp_sa_key_b64).decode('utf-8')
                 credentials_dict = json.loads(credentials_json_str)
@@ -271,18 +407,16 @@ def main():
                     scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
             else:
                  raise FileNotFoundError(f"File '{credentials_path}' non trovato e GCP_SA_KEY_BASE64_FALLBACK non impostato.")
-        else: # Metodo preferito per GitHub Actions
+        else:
             credentials = Credentials.from_service_account_file(
                 credentials_path,
                 scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             )
-        gc = gspread.authorize(credentials)
+        gc = gspread.authorize(credentials) # gc è il client gspread
         print("Autenticazione Google Sheets riuscita.")
-        # --- FINE MODIFICA AUTENTICAZIONE ---
 
         model, scaler_features, scaler_targets, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
 
-        # !! IMPORTANTE: Rivedi e adatta questo mapping !!
         column_mapping_gsheet_to_model = {
             'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
             'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
@@ -294,24 +428,17 @@ def main():
             'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
             'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
             'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-            GSHEET_DATE_COL_INPUT: GSHEET_DATE_COL_INPUT 
+            GSHEET_DATE_COL_INPUT: GSHEET_DATE_COL_INPUT
         }
-        
+
         missing_features_in_mapping = []
         for fc in config["feature_columns"]:
-            is_mapped = False
-            for model_name_in_map_val in column_mapping_gsheet_to_model.values():
-                if fc == model_name_in_map_val:
-                    is_mapped = True
-                    break
-            if not is_mapped:
-                missing_features_in_mapping.append(fc)
-        
+            if fc not in column_mapping_gsheet_to_model.values():
+                 missing_features_in_mapping.append(fc)
+
         if missing_features_in_mapping:
             print(f"ATTENZIONE CRITICA: Le seguenti feature del modello NON sono mappate da alcuna colonna GSheet nel 'column_mapping_gsheet_to_model': {missing_features_in_mapping}")
             print("Queste colonne saranno riempite con NaN e poi con 0, il che potrebbe portare a previsioni errate.")
-            # raise ValueError(f"Feature modello non mappate: {missing_features_in_mapping}") # Scommenta per far fallire
-
 
         input_data_np, last_input_timestamp = fetch_input_data_from_gsheet(
             gc, GSHEET_ID, GSHEET_DATA_SHEET_NAME, config, column_mapping_gsheet_to_model
@@ -319,11 +446,11 @@ def main():
 
         predictions_np = predict_with_model(model, input_data_np, scaler_features, scaler_targets, device)
         print(f"Previsioni generate. Shape: {predictions_np.shape}")
-        
-        prediction_start_for_series = last_input_timestamp 
-        
+
+        prediction_start_for_series = last_input_timestamp
+
         append_predictions_to_gsheet(
-            gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions_np, 
+            gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions_np,
             config["target_columns"], prediction_start_for_series, config
         )
 
@@ -336,8 +463,8 @@ def main():
     except TypeError as e:
         print(f"Errore Tipo: {e}")
     except gspread.exceptions.APIError as e:
-        print(f"Errore API Google Sheets: {e}")
-    except Exception as e:
+        print(f"Errore API Google Sheets (gspread): {e}")
+    except Exception as e: # Cattura anche errori da googleapiclient
         print(f"Errore imprevisto durante la simulazione: {e}")
         import traceback
         traceback.print_exc()
