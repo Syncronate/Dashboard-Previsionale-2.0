@@ -1173,7 +1173,7 @@ with st.sidebar:
     except Exception as e: st.warning(f"Impossibile caricare il logo: {e}")
     st.header('Impostazioni')
 
-    st.subheader('Dati Storici (per Analisi/Training/Test)')
+    st.subheader('Dati Storici (per Analisi/Training/Test)') # Modificato
     uploaded_data_file = st.file_uploader('Carica CSV Dati Storici', type=['csv'], key="data_uploader", help="File CSV con dati storici, separatore ';', decimale ','")
     df = None; df_load_error = None; data_source_info = ""
     data_path_to_load = None; is_uploaded = False
@@ -1201,67 +1201,36 @@ with st.sidebar:
                      except UnicodeDecodeError: continue
                      except Exception as read_e: raise read_e
                 if df_temp is None: raise ValueError(f"Impossibile leggere CSV con encodings: {encodings_to_try}")
-                
                 date_col_csv = st.session_state.date_col_name_csv
                 if date_col_csv not in df_temp.columns: raise ValueError(f"Colonna data CSV '{date_col_csv}' mancante.")
-                
-                try: 
-                    df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%Y %H:%M', errors='raise')
+                try: df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%Y %H:%M', errors='raise')
                 except ValueError:
-                     try: 
-                         df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], errors='coerce')
-                         st.caption(f"Formato data CSV non standard ('{date_col_csv}'). Tentativo di inferenza.")
-                     except Exception as e_date_csv_infer: 
-                         raise ValueError(f"Errore conversione data CSV '{date_col_csv}': {e_date_csv_infer}")
-                
+                     try: df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], errors='coerce'); st.caption(f"Formato data CSV non standard ('{date_col_csv}'). Tentativo di inferenza.")
+                     except Exception as e_date_csv_infer: raise ValueError(f"Errore conversione data CSV '{date_col_csv}': {e_date_csv_infer}")
                 df_temp = df_temp.dropna(subset=[date_col_csv])
                 if df_temp.empty: raise ValueError("Nessuna riga valida dopo pulizia data CSV.")
-
-                # MODIFICA: Localizzazione date CSV
-                if pd.api.types.is_datetime64_any_dtype(df_temp[date_col_csv]):
-                    if df_temp[date_col_csv].dt.tz is None:
-                        try:
-                            df_temp[date_col_csv] = df_temp[date_col_csv].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
-                            # st.caption(f"Date CSV localizzate a {italy_tz}.") # Opzionale: log/caption
-                        except Exception as e_tz_localize:
-                            st.warning(f"Attenzione: Impossibile localizzare le date del CSV a {italy_tz}: {e_tz_localize}. Le date rimarranno naive, il che potrebbe influire sulla selezione per data.")
-                    else:
-                        try:
-                            df_temp[date_col_csv] = df_temp[date_col_csv].dt.tz_convert(italy_tz)
-                            # st.caption(f"Date CSV convertite a {italy_tz}.") # Opzionale: log/caption
-                        except Exception as e_tz_convert:
-                            st.warning(f"Attenzione: Impossibile convertire le date del CSV a {italy_tz}: {e_tz_convert}.")
-                # FINE MODIFICA
-
                 df_temp = df_temp.sort_values(by=date_col_csv).reset_index(drop=True)
                 features_to_clean = [col for col in df_temp.columns if col != date_col_csv]
                 for col in features_to_clean:
                     if pd.api.types.is_object_dtype(df_temp[col]) or pd.api.types.is_string_dtype(df_temp[col]):
                          col_str = df_temp[col].astype(str).str.strip().replace(['N/A', '', '-', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
-                         if '.' in col_str.unique() and ',' in col_str.unique(): col_str = col_str.str.replace('.', '', regex=False) # Gestione separatori migliaia
+                         if '.' in col_str.unique() and ',' in col_str.unique(): col_str = col_str.str.replace('.', '', regex=False)
                          col_str = col_str.str.replace(',', '.', regex=False)
                          df_temp[col] = pd.to_numeric(col_str, errors='coerce')
                     elif pd.api.types.is_numeric_dtype(df_temp[col]): pass
                     else: df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce')
-                
                 numeric_cols = df_temp.select_dtypes(include=np.number).columns
                 n_nan_before_fill = df_temp[numeric_cols].isnull().sum().sum()
                 if n_nan_before_fill > 0:
                      st.caption(f"Trovati {n_nan_before_fill} NaN/non numerici nel CSV. Eseguito ffill/bfill.")
                      df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(method='ffill').fillna(method='bfill')
                      n_nan_after_fill = df_temp[numeric_cols].isnull().sum().sum()
-                     if n_nan_after_fill > 0: 
-                         st.warning(f"NaN residui ({n_nan_after_fill}) dopo fill CSV. Riempiti con 0.")
-                         df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(0)
-                
+                     if n_nan_after_fill > 0: st.warning(f"NaN residui ({n_nan_after_fill}) dopo fill CSV. Riempiti con 0."); df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(0)
                 st.session_state.df = df_temp
                 if is_uploaded: st.session_state['uploaded_file_processed'] = uploaded_data_file.name
                 else: st.session_state['uploaded_file_processed'] = True
                 st.success(f"Dati CSV caricati ({len(st.session_state.df)} righe)."); df = st.session_state.df
-            except Exception as e: 
-                df = None; st.session_state.df = None; st.session_state['uploaded_file_processed'] = None
-                df_load_error = f'Errore caricamento/processamento CSV: {e}'; 
-                st.error(f"Errore CSV: {df_load_error}"); print(traceback.format_exc())
+            except Exception as e: df = None; st.session_state.df = None; st.session_state['uploaded_file_processed'] = None; df_load_error = f'Errore caricamento/processamento CSV: {e}'; st.error(f"Errore CSV: {df_load_error}"); print(traceback.format_exc())
 
     if df is None and 'df' in st.session_state and st.session_state.df is not None:
         df = st.session_state.df
@@ -1269,7 +1238,7 @@ with st.sidebar:
             if st.session_state.get('uploaded_file_processed') and isinstance(st.session_state.get('uploaded_file_processed'), str): data_source_info = f"File caricato: **{st.session_state['uploaded_file_processed']}** (da sessione)"
             elif st.session_state.get('uploaded_file_processed') == True: data_source_info = f"File default: **{DEFAULT_DATA_PATH}** (da sessione)"
     if data_source_info: st.caption(data_source_info)
-    if df_load_error and not data_source_info: st.error(df_load_error) # Mostra errore solo se non c'è altra info
+    if df_load_error and not data_source_info: st.error(df_load_error)
     data_ready_csv = df is not None
     st.divider()
 
@@ -1844,38 +1813,32 @@ elif page == 'Test Modello su Storico':
         st.stop()
 
     st.info(f"Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
-    
-    # Mostra informazioni sul range di date del CSV, se possibile
-    date_col_valid_for_range_display = False
     if date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]) and not df_current_csv.empty:
-        try:
-            min_date_csv_str = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
-            max_date_csv_str = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
-            st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe, dal {min_date_csv_str} al {max_date_csv_str}")
-            date_col_valid_for_range_display = True
-        except Exception:
-            st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe. Impossibile determinare il range di date.")
+        min_date_csv_str = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
+        max_date_csv_str = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
+        st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe, dal {min_date_csv_str} al {max_date_csv_str}")
     else:
-        st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe. Colonna data '{date_col_name_csv}' non trovata o non in formato datetime per visualizzare il range.")
+        st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe. Colonna data non valida o assente per range.")
 
-    # Definisci parametri modello (come prima)
+    # Definisci parametri modello
     target_columns_model_test = active_config['target_columns']
     if active_model_type == "Seq2Seq":
         input_steps_model_test = active_config['input_window_steps']
         output_steps_model_test = active_config['output_window_steps']
         past_feature_cols_model_test = active_config['all_past_feature_columns']
         forecast_feature_cols_model_test = active_config['forecast_input_columns']
-        forecast_steps_model_test = active_config['forecast_window_steps']
+        forecast_steps_model_test = active_config['forecast_window_steps'] # Variabile che causava errore
         required_len_for_test = input_steps_model_test + max(forecast_steps_model_test, output_steps_model_test)
         all_cols_needed_csv = list(set(past_feature_cols_model_test + forecast_feature_cols_model_test + target_columns_model_test))
     else: # LSTM
         feature_columns_model_test = active_config.get("feature_columns", st.session_state.feature_columns)
         input_steps_model_test = active_config['input_window']
         output_steps_model_test = active_config['output_window']
-        forecast_steps_model_test = 0 # Inizializzato per LSTM
+        forecast_steps_model_test = "N/A" # <<< MODIFICA APPORTATA QUI PER RISOLVERE NameError
         required_len_for_test = input_steps_model_test + output_steps_model_test
         all_cols_needed_csv = list(set(feature_columns_model_test + target_columns_model_test))
 
+    # Controllo colonne CSV
     missing_cols_in_csv_test = [col for col in all_cols_needed_csv if col not in df_current_csv.columns]
     if missing_cols_in_csv_test:
         st.error(f"Le seguenti colonne richieste dal modello non sono presenti nel file CSV: {', '.join(missing_cols_in_csv_test)}")
@@ -1884,85 +1847,53 @@ elif page == 'Test Modello su Storico':
     if len(df_current_csv) < required_len_for_test:
         st.error(f"Dati CSV insufficienti ({len(df_current_csv)} righe) per il test. Richieste almeno {required_len_for_test} righe.")
         st.stop()
-    
-    st.subheader("Selezione Periodo di Input dal CSV (tramite Indice Riga)")
 
     max_start_index_test = len(df_current_csv) - required_len_for_test
     
-    # Costruzione della stringa di aiuto per lo slider
-    help_text_slider = f"L'input del modello ({input_steps_model_test} steps) inizierà dalla riga CSV selezionata. "
-    help_text_slider += f"Saranno necessarie altre {output_steps_model_test} righe/steps dai dati CSV"
-    if active_model_type == "Seq2Seq":
-        help_text_slider += f" (e {forecast_steps_model_test} righe/steps per l'input del decoder Seq2Seq)"
-    help_text_slider += " per il confronto con i dati reali."
-
+    st.subheader("Selezione Periodo di Input dal CSV")
     selected_start_index_test = st.slider(
         "Seleziona l'indice della riga di inizio per i dati di input nel CSV:",
         min_value=0,
         max_value=max_start_index_test,
-        value=max(0, max_start_index_test // 2), # Default a metà o inizio
+        value=max(0, max_start_index_test // 2),
         step=1,
         key="test_historical_start_index_slider",
-        help=help_text_slider
+        help=f"L'input del modello ({input_steps_model_test} steps) inizierà da questa riga. Saranno necessari altri {output_steps_model_test} steps (e {forecast_steps_model_test} per Seq2Seq) per il confronto/forecast."
     )
-    
-    st.info(f"Riga CSV selezionata per l'inizio dell'input del modello: **{selected_start_index_test}**.")
 
-    # Mostra le date corrispondenti agli indici, se la colonna data è valida
-    if date_col_valid_for_range_display:
-        try:
-            start_dt_input_win = df_current_csv.iloc[selected_start_index_test][date_col_name_csv]
-            end_dt_input_win = df_current_csv.iloc[selected_start_index_test + input_steps_model_test - 1][date_col_name_csv]
-            st.caption(f"Finestra di input per il modello: da **{start_dt_input_win.strftime('%d/%m/%Y %H:%M')}** (riga {selected_start_index_test}) a **{end_dt_input_win.strftime('%d/%m/%Y %H:%M')}** (riga {selected_start_index_test + input_steps_model_test - 1}).")
+    try:
+        start_dt_input_win = df_current_csv.iloc[selected_start_index_test][date_col_name_csv]
+        end_dt_input_win = df_current_csv.iloc[selected_start_index_test + input_steps_model_test - 1][date_col_name_csv]
+        st.caption(f"Finestra di input per il modello: righe da **{selected_start_index_test}** ({start_dt_input_win.strftime('%d/%m/%Y %H:%M')}) a **{selected_start_index_test + input_steps_model_test - 1}** ({end_dt_input_win.strftime('%d/%m/%Y %H:%M')}).")
 
-            actual_data_start_idx_test_local = selected_start_index_test + input_steps_model_test
-            actual_data_end_idx_test_local = actual_data_start_idx_test_local + output_steps_model_test - 1 
-            start_dt_output_win = df_current_csv.iloc[actual_data_start_idx_test_local][date_col_name_csv]
-            end_dt_output_win = df_current_csv.iloc[actual_data_end_idx_test_local][date_col_name_csv]
-            
-            output_info_text = (f"Le previsioni ({output_steps_model_test} steps) saranno confrontate con i dati reali da "
-                                f"**{start_dt_output_win.strftime('%d/%m/%Y %H:%M')}** (riga {actual_data_start_idx_test_local}) a "
-                                f"**{end_dt_output_win.strftime('%d/%m/%Y %H:%M')}** (riga {actual_data_end_idx_test_local}).")
-            
-            if active_model_type == "Seq2Seq" and forecast_steps_model_test > 0:
-                forecast_input_end_idx_test = actual_data_start_idx_test_local + forecast_steps_model_test - 1
-                if forecast_input_end_idx_test < len(df_current_csv):
-                    end_dt_forecast_input_win = df_current_csv.iloc[forecast_input_end_idx_test][date_col_name_csv]
-                    output_info_text += (f"\nL'input per il decoder Seq2Seq ({forecast_steps_model_test} steps) verrà preso da "
-                                         f"**{start_dt_output_win.strftime('%d/%m/%Y %H:%M')}** a "
-                                         f"**{end_dt_forecast_input_win.strftime('%d/%m/%Y %H:%M')}**.")
-            st.caption(output_info_text)
-
-        except IndexError:
-            st.error("Indice selezionato non valido o dati CSV insufficienti per il periodo. Questo non dovrebbe accadere con lo slider.")
-            st.stop()
-        except Exception as e_dt_display:
-            st.warning(f"Problema visualizzazione date di dettaglio: {e_dt_display}")
-    else:
-        st.caption("La colonna data non è disponibile o non è valida per mostrare le date corrispondenti agli indici.")
+        actual_data_start_idx_test = selected_start_index_test + input_steps_model_test
+        actual_data_end_idx_test = actual_data_start_idx_test + output_steps_model_test -1 # -1 perché l'indice finale è escluso da iloc slice
+        start_dt_output_win = df_current_csv.iloc[actual_data_start_idx_test][date_col_name_csv]
+        end_dt_output_win = df_current_csv.iloc[actual_data_end_idx_test][date_col_name_csv]
+        st.caption(f"Le previsioni ({output_steps_model_test} steps) saranno confrontate con i dati reali da riga **{actual_data_start_idx_test}** ({start_dt_output_win.strftime('%d/%m/%Y %H:%M')}) a riga **{actual_data_end_idx_test}** ({end_dt_output_win.strftime('%d/%m/%Y %H:%M')}).")
+    except IndexError:
+        st.error("Indice selezionato non valido o dati CSV insufficienti per il periodo.")
+        st.stop()
+    except Exception as e_dt_display:
+        st.warning(f"Problema visualizzazione date: {e_dt_display}")
 
 
     if st.button("Esegui Test e Confronta su Storico", type="primary", key="run_historical_test_button"):
         predictions_test = None
         actual_target_data_np_test = None
-        prediction_start_time_test_for_plot = None 
+        prediction_start_time_test = None
 
         with st.spinner("Estrazione dati ed esecuzione predizione..."):
             try:
-                # Dati di input per il modello
+                # Estrarre dati di input per il modello
                 input_data_df_test = df_current_csv.iloc[selected_start_index_test : selected_start_index_test + input_steps_model_test]
-
-                # Indice di inizio per i dati reali e per l'input del forecast (se Seq2Seq)
-                actual_and_forecast_input_start_idx = selected_start_index_test + input_steps_model_test
 
                 if active_model_type == "Seq2Seq":
                     past_input_np_test = input_data_df_test[past_feature_cols_model_test].astype(float).values
                     
-                    future_forecast_df_test = df_current_csv.iloc[actual_and_forecast_input_start_idx : actual_and_forecast_input_start_idx + forecast_steps_model_test]
-                    if len(future_forecast_df_test) < forecast_steps_model_test:
-                        st.error(f"Errore critico: Dati insufficienti per l'input del forecast del decoder Seq2Seq. "
-                                 f"Necessari {forecast_steps_model_test} steps, disponibili {len(future_forecast_df_test)} a partire dalla riga {actual_and_forecast_input_start_idx}.")
-                        st.stop()
+                    forecast_input_start_idx_test = selected_start_index_test + input_steps_model_test
+                    forecast_input_end_idx_test = forecast_input_start_idx_test + forecast_steps_model_test # Usa forecast_steps_model_test qui
+                    future_forecast_df_test = df_current_csv.iloc[forecast_input_start_idx_test : forecast_input_end_idx_test]
                     future_forecast_np_test = future_forecast_df_test[forecast_feature_cols_model_test].astype(float).values
                     
                     predictions_test = predict_seq2seq(active_model, past_input_np_test, future_forecast_np_test, active_scalers, active_config, active_device)
@@ -1970,37 +1901,26 @@ elif page == 'Test Modello su Storico':
                     input_features_np_test = input_data_df_test[feature_columns_model_test].astype(float).values
                     predictions_test = predict(active_model, input_features_np_test, active_scalers[0], active_scalers[1], active_config, active_device)
 
-                # Dati reali per il confronto
-                actual_data_df_test = df_current_csv.iloc[actual_and_forecast_input_start_idx : actual_and_forecast_input_start_idx + output_steps_model_test]
-                if len(actual_data_df_test) < output_steps_model_test:
-                    st.error(f"Errore critico: Dati insufficienti per il confronto con i dati reali. "
-                                 f"Necessari {output_steps_model_test} steps, disponibili {len(actual_data_df_test)} a partire dalla riga {actual_and_forecast_input_start_idx}.")
-                    st.stop()
+                # Estrarre dati reali per il confronto
+                actual_data_df_test = df_current_csv.iloc[actual_data_start_idx_test : actual_data_start_idx_test + output_steps_model_test]
                 actual_target_data_np_test = actual_data_df_test[target_columns_model_test].astype(float).values
                 
                 # Tempo di inizio per i grafici (primo step della finestra di output/confronto)
-                if date_col_valid_for_range_display: # Solo se la colonna data è valida
-                    prediction_start_time_test_for_plot = df_current_csv.iloc[actual_and_forecast_input_start_idx][date_col_name_csv]
-                else:
-                    prediction_start_time_test_for_plot = None # Non usare timestamp se la colonna data non è valida
-
+                prediction_start_time_test = df_current_csv.iloc[actual_data_start_idx_test][date_col_name_csv]
 
             except Exception as e_pred_test:
                 st.error(f"Errore durante l'estrazione dati o la predizione: {e_pred_test}")
                 st.error(traceback.format_exc())
-                predictions_test = None 
 
         if predictions_test is not None and actual_target_data_np_test is not None:
             st.subheader("Risultati del Test su Dati Storici")
+
+            # Tabella comparativa
             df_results_display_test = pd.DataFrame()
-            
-            # Creazione colonna tempo per la tabella dei risultati
-            if prediction_start_time_test_for_plot: # Se abbiamo un timestamp di inizio valido
-                pred_times_test_dt = [prediction_start_time_test_for_plot + timedelta(minutes=30 * step) for step in range(output_steps_model_test)]
-                # Formattazione con fuso orario se presente nel timestamp originale
-                time_format_str = '%d/%m %H:%M %Z' if prediction_start_time_test_for_plot.tzinfo else '%d/%m %H:%M'
-                df_results_display_test['Ora'] = [t.strftime(time_format_str) for t in pred_times_test_dt]
-            else: # Altrimenti, usa i passi relativi
+            if prediction_start_time_test:
+                pred_times_test_dt = [prediction_start_time_test + timedelta(minutes=30 * step) for step in range(output_steps_model_test)]
+                df_results_display_test['Ora'] = [t.strftime('%d/%m %H:%M') for t in pred_times_test_dt]
+            else:
                 df_results_display_test['Passo'] = [f"T+{step+1}" for step in range(output_steps_model_test)]
 
             for i, col_name in enumerate(target_columns_model_test):
@@ -2009,19 +1929,19 @@ elif page == 'Test Modello su Storico':
                 df_results_display_test[f'{label} Reale'] = actual_target_data_np_test[:, i]
             
             st.dataframe(df_results_display_test.round(3), hide_index=True, use_container_width=True)
-            st.markdown(get_table_download_link(df_results_display_test, f"test_storico_confronto_{st.session_state.active_model_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "Scarica Tabella Confronto (CSV)"), unsafe_allow_html=True)
+            st.markdown(get_table_download_link(df_results_display_test, f"test_storico_confronto_{st.session_state.active_model_name}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "Scarica Tabella Confronto (CSV)"), unsafe_allow_html=True)
             
             st.divider()
             st.subheader("Grafici di Confronto: Previsto vs. Reale (Storico CSV)")
             figs_test = plot_predictions(
                 predictions_test, 
                 active_config, 
-                start_time=prediction_start_time_test_for_plot, # Passa il timestamp di inizio (o None)
+                start_time=prediction_start_time_test, 
                 actual_data=actual_target_data_np_test,
                 actual_data_label="Reale CSV" 
             )
             
-            num_graph_cols_test = min(len(figs_test), 2) 
+            num_graph_cols_test = min(len(figs_test), 2) # Max 2 grafici per riga
             graph_cols_test = st.columns(num_graph_cols_test)
             for i_fig, fig_test in enumerate(figs_test):
                 with graph_cols_test[i_fig % num_graph_cols_test]:
@@ -2030,7 +1950,7 @@ elif page == 'Test Modello su Storico':
                     filename_base_test_ind = f"grafico_test_storico_{s_name_file_test}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                     st.plotly_chart(fig_test, use_container_width=True)
                     st.markdown(get_plotly_download_link(fig_test, filename_base_test_ind), unsafe_allow_html=True)
-        elif st.session_state.get("run_historical_test_button"): 
+        elif st.session_state.get("run_historical_test_button"): # Se bottone premuto ma risultati None
             st.error("Esecuzione del test fallita. Controllare i log o i dati di input.")
 
 
