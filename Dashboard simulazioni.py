@@ -2758,7 +2758,7 @@ elif page == 'Allenamento Modello':
 
                  try:
                      base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_lstm.state_dict(), m_path); sf_path = f"{base_path}_features.joblib"; joblib.dump(sc_f, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_t, st_path); c_path = f"{base_path}.json"
-                                      config_save_lstm = {
+config_save_lstm = {
                      "model_type": "LSTM", "input_window": X_scaled_full_lstm.shape[1], "output_window": ow_t_lstm_steps, # Salva steps effettivi
                      "hidden_size": hs_t_lstm, "num_layers": nl_t_lstm, "dropout": dr_t_lstm, 
                      "feature_columns": selected_features_train_lstm, # These are original features before engineering
