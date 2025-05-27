@@ -1,0 +1,5 @@
+[server]
+# Disabilita il monitoraggio delle directory da parte di Streamlit.
+# Questo impedisce a Streamlit di ispezionare le librerie come PyTorch,
+# risolvendo l'errore torch._classes.
+watch_dirs = []
