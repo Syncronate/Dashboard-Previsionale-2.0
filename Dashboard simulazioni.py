@@ -930,8 +930,10 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
                 save_strategy='migliore', preferred_device='auto'):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM Standard...")
-    if output_window_steps <= 0:
-        st.error("output_window_steps deve essere maggiore di 0 per train_model.")
+    # I controlli per input_size, output_size e output_window_steps > 0 sono stati spostati prima della chiamata a questa funzione.
+    # Tuttavia, è buona pratica mantenerli minimi qui se la funzione fosse riutilizzata altrove.
+    if input_size <= 0 or output_size <= 0 or output_window_steps <= 0:
+        st.error(f"Errore: Parametri modello LSTM non validi: input_size={input_size}, output_size={output_size}, output_window_steps={output_window_steps}")
         return None, ([], []), ([], [])
 
     if preferred_device == 'auto': device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -1070,9 +1072,14 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_
                         encoder, decoder, output_window_steps, epochs=50, batch_size=32, learning_rate=0.001,
                         save_strategy='migliore', preferred_device='auto', teacher_forcing_ratio_schedule=None):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq...")
+    # I controlli per output_window_steps > 0 e dimensioni input/output sono stati spostati prima della chiamata.
     if output_window_steps <= 0:
         st.error("output_window_steps deve essere maggiore di 0 per train_model_seq2seq.")
         return None, ([], []), ([], [])
+    if encoder.lstm.input_size <= 0 or decoder.forecast_input_size <= 0 or decoder.output_size <= 0:
+        st.error(f"Errore: Parametri modello Seq2Seq non validi: Encoder_input_size={encoder.lstm.input_size}, Decoder_input_size={decoder.forecast_input_size}, Decoder_output_size={decoder.output_size}")
+        return None, ([], []), ([], [])
+
 
     if preferred_device == 'auto': device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     else: device = torch.device('cpu')
@@ -1697,6 +1704,7 @@ if page == 'Dashboard':
             sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
             default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2]
             selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
+            selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare] # Added for clarity
             if selected_labels_compare:
                 fig_compare = go.Figure(); x_axis_data = df_dashboard[GSHEET_DATE_COL]
                 for col in selected_cols_compare: fig_compare.add_trace(go.Scatter(x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True)))
@@ -2215,60 +2223,69 @@ elif page == 'Allenamento Modello':
         st.divider()
         ready_to_train_lstm = bool(save_name and selected_features_train_lstm and selected_targets_train_lstm and ow_t_lstm_steps > 0)
         if st.button("Avvia Addestramento LSTM", type="primary", disabled=not ready_to_train_lstm, key="train_run_lstm"):
+             # --- INIZIO BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
+             if not selected_features_train_lstm:
+                 st.error("Seleziona almeno una colonna per le 'Feature Input LSTM'.")
+                 st.stop()
+             if not selected_targets_train_lstm:
+                 st.error("Seleziona almeno una colonna per le 'Target Output LSTM'.")
+                 st.stop()
              if ow_t_lstm_steps <= 0:
                  st.error("Output Window (steps da 30min) deve essere maggiore di 0.")
-             else:
-                st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
-                # iw_t_lstm_hours è in ore, ow_t_lstm_steps è già in steps (mezz'ore)
-                # prepare_training_data si aspetta input_window e output_window in ORE
-                # HydroLSTM si aspetta output_window in STEPS (mezz'ore)
-                output_window_hours_lstm = ow_t_lstm_steps / 2.0 # Converti steps in ore per prepare_training_data
-                with st.spinner("Preparazione dati LSTM..."):
-                    X_tr, y_tr, X_v, y_v, sc_f, sc_t = prepare_training_data(
-                        df_current_csv.copy(), selected_features_train_lstm, selected_targets_train_lstm,
-                        iw_t_lstm_hours, int(output_window_hours_lstm), vs_t_lstm # Passa ore
-                    )
-                if X_tr is None or sc_f is None or sc_t is None: st.error("Preparazione dati LSTM fallita."); st.stop()
+                 st.stop()
+             # --- FINE BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
                 
-                trained_model_lstm, train_histories_lstm, val_histories_lstm = train_model(
-                    X_tr, y_tr, X_v, y_v, 
-                    len(selected_features_train_lstm), len(selected_targets_train_lstm), 
-                    ow_t_lstm_steps, # Passa steps (mezz'ore) al modello
-                    hs_t_lstm, nl_t_lstm, ep_t_lstm, bs_t_lstm, lr_t_lstm, dr_t_lstm, 
-                    ('migliore' if 'Migliore' in save_choice_lstm else 'finale'), 
-                    ('auto' if 'Auto' in device_option_lstm else 'cpu')
-                )
-                
-                if trained_model_lstm:
-                    st.success("Addestramento LSTM completato!")
-                    train_loss_scalar_hist_lstm, train_loss_per_step_hist_lstm = train_histories_lstm
-                    val_loss_scalar_hist_lstm, val_loss_per_step_hist_lstm = (None, None)
-                    if val_histories_lstm and val_histories_lstm[0] is not None :
-                         val_loss_scalar_hist_lstm, val_loss_per_step_hist_lstm = val_histories_lstm
+             st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
+             # iw_t_lstm_hours è in ore, ow_t_lstm_steps è già in steps (mezz'ore)
+             # prepare_training_data si aspetta input_window e output_window in ORE
+             # HydroLSTM si aspetta output_window in STEPS (mezz'ore)
+             output_window_hours_lstm = ow_t_lstm_steps / 2.0 # Converti steps in ore per prepare_training_data
+             with st.spinner("Preparazione dati LSTM..."):
+                 X_tr, y_tr, X_v, y_v, sc_f, sc_t = prepare_training_data(
+                     df_current_csv.copy(), selected_features_train_lstm, selected_targets_train_lstm,
+                     iw_t_lstm_hours, int(output_window_hours_lstm), vs_t_lstm # Passa ore
+                 )
+             if X_tr is None or sc_f is None or sc_t is None: st.error("Preparazione dati LSTM fallita."); st.stop()
+             
+             trained_model_lstm, train_histories_lstm, val_histories_lstm = train_model(
+                 X_tr, y_tr, X_v, y_v, 
+                 len(selected_features_train_lstm), len(selected_targets_train_lstm), 
+                 ow_t_lstm_steps, # Passa steps (mezz'ore) al modello
+                 hs_t_lstm, nl_t_lstm, ep_t_lstm, bs_t_lstm, lr_t_lstm, dr_t_lstm, 
+                 ('migliore' if 'Migliore' in save_choice_lstm else 'finale'), 
+                 ('auto' if 'Auto' in device_option_lstm else 'cpu')
+             )
+             
+             if trained_model_lstm:
+                 st.success("Addestramento LSTM completato!")
+                 train_loss_scalar_hist_lstm, train_loss_per_step_hist_lstm = train_histories_lstm
+                 val_loss_scalar_hist_lstm, val_loss_per_step_hist_lstm = (None, None)
+                 if val_histories_lstm and val_histories_lstm[0] is not None :
+                      val_loss_scalar_hist_lstm, val_loss_per_step_hist_lstm = val_histories_lstm
 
-                    if train_loss_per_step_hist_lstm and len(train_loss_per_step_hist_lstm) > 0:
-                        st.write("Loss per step finale (Train LSTM):")
-                        st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(train_loss_per_step_hist_lstm[-1])})
-                    if val_loss_per_step_hist_lstm is not None and len(val_loss_per_step_hist_lstm) > 0 and not np.all(np.isnan(val_loss_per_step_hist_lstm[-1])):
-                        st.write("Loss per step finale (Validation LSTM):")
-                        st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(val_loss_per_step_hist_lstm[-1])})
+                 if train_loss_per_step_hist_lstm and len(train_loss_per_step_hist_lstm) > 0:
+                     st.write("Loss per step finale (Train LSTM):")
+                     st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(train_loss_per_step_hist_lstm[-1])})
+                 if val_loss_per_step_hist_lstm is not None and len(val_loss_per_step_hist_lstm) > 0 and not np.all(np.isnan(val_loss_per_step_hist_lstm[-1])):
+                     st.write("Loss per step finale (Validation LSTM):")
+                     st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(val_loss_per_step_hist_lstm[-1])})
 
-                    try:
-                        base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_lstm.state_dict(), m_path); sf_path = f"{base_path}_features.joblib"; joblib.dump(sc_f, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_t, st_path); c_path = f"{base_path}.json"
-                        config_save_lstm = {
-                            "model_type": "LSTM", "input_window": X_tr.shape[1], "output_window": ow_t_lstm_steps, # Salva steps effettivi
-                            "hidden_size": hs_t_lstm, "num_layers": nl_t_lstm, "dropout": dr_t_lstm, 
-                            "feature_columns": selected_features_train_lstm, "target_columns": selected_targets_train_lstm, 
-                            "training_date": datetime.now(italy_tz).isoformat(), "val_split_percent": vs_t_lstm, 
-                            "learning_rate": lr_t_lstm, "batch_size": bs_t_lstm, "epochs": ep_t_lstm, "display_name": save_name
-                        }
-                        with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_lstm, f, indent=4)
-                        st.success(f"Modello LSTM '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader("Download File Modello LSTM"); col_dl_lstm1, col_dl_lstm2 = st.columns(2)
-                        with col_dl_lstm1: st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path, "Scaler Features (.joblib)"), unsafe_allow_html=True)
-                        with col_dl_lstm2: st.markdown(get_download_link_for_file(c_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path, "Scaler Target (.joblib)"), unsafe_allow_html=True)
-                        find_available_models.clear()
-                    except Exception as e_save: st.error(f"Errore salvataggio modello LSTM: {e_save}"); st.error(traceback.format_exc())
-                else: st.error("Addestramento LSTM fallito. Modello non salvato.")
+                 try:
+                     base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_lstm.state_dict(), m_path); sf_path = f"{base_path}_features.joblib"; joblib.dump(sc_f, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_t, st_path); c_path = f"{base_path}.json"
+                     config_save_lstm = {
+                         "model_type": "LSTM", "input_window": X_tr.shape[1], "output_window": ow_t_lstm_steps, # Salva steps effettivi
+                         "hidden_size": hs_t_lstm, "num_layers": nl_t_lstm, "dropout": dr_t_lstm, 
+                         "feature_columns": selected_features_train_lstm, "target_columns": selected_targets_train_lstm, 
+                         "training_date": datetime.now(italy_tz).isoformat(), "val_split_percent": vs_t_lstm, 
+                         "learning_rate": lr_t_lstm, "batch_size": bs_t_lstm, "epochs": ep_t_lstm, "display_name": save_name
+                     }
+                     with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_lstm, f, indent=4)
+                     st.success(f"Modello LSTM '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader("Download File Modello LSTM"); col_dl_lstm1, col_dl_lstm2 = st.columns(2)
+                     with col_dl_lstm1: st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path, "Scaler Features (.joblib)"), unsafe_allow_html=True)
+                     with col_dl_lstm2: st.markdown(get_download_link_for_file(c_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path, "Scaler Target (.joblib)"), unsafe_allow_html=True)
+                     find_available_models.clear()
+                 except Exception as e_save: st.error(f"Errore salvataggio modello LSTM: {e_save}"); st.error(traceback.format_exc())
+             else: st.error("Addestramento LSTM fallito. Modello non salvato.")
     elif train_model_type == "Seq2Seq (Encoder-Decoder)":
          st.markdown("**1. Seleziona Feature (Seq2Seq)**"); features_present_in_csv_s2s = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist(); default_past_features_s2s = [f for f in st.session_state.feature_columns if f in features_present_in_csv_s2s]; selected_past_features_s2s = st.multiselect("Feature Storiche (Input Encoder):", options=features_present_in_csv_s2s, default=default_past_features_s2s, key="train_s2s_past_feat")
          options_forecast = selected_past_features_s2s; default_forecast_cols = [f for f in options_forecast if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]; selected_forecast_features_s2s = st.multiselect("Feature Forecast (Input Decoder):", options=options_forecast, default=default_forecast_cols, key="train_s2s_forecast_feat")
@@ -2286,50 +2303,63 @@ elif page == 'Allenamento Modello':
          st.divider()
          ready_to_train_s2s = bool(save_name and selected_past_features_s2s and selected_forecast_features_s2s and selected_targets_s2s and ow_steps_s2s > 0)
          if st.button("Avvia Addestramento Seq2Seq", type="primary", disabled=not ready_to_train_s2s, key="train_run_s2s"):
+            # --- INIZIO BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
+            if not selected_past_features_s2s:
+                st.error("Seleziona almeno una colonna per le 'Feature Storiche (Input Encoder)'.")
+                st.stop()
+            if not selected_forecast_features_s2s:
+                st.error("Seleziona almeno una colonna per le 'Feature Forecast (Input Decoder)'.")
+                st.stop()
+            if not selected_targets_s2s:
+                st.error("Seleziona almeno una colonna per le 'Target Output (Livelli)'.")
+                st.stop()
             if ow_steps_s2s <= 0:
                 st.error("Output Previsione (steps da 30min) deve essere maggiore di 0.")
-            else:
-                st.info(f"Avvio addestramento Seq2Seq per '{save_name}'...");
-                with st.spinner("Preparazione dati Seq2Seq..."): data_tuple = prepare_training_data_seq2seq(df_current_csv.copy(), selected_past_features_s2s, selected_forecast_features_s2s, selected_targets_s2s, iw_steps_s2s, fw_steps_s2s, ow_steps_s2s, vs_t_s2s)
-                if data_tuple is None or len(data_tuple) != 9 or data_tuple[0] is None: st.error("Preparazione dati Seq2Seq fallita."); st.stop()
-                (X_enc_tr, X_dec_tr, y_tar_tr, X_enc_v, X_dec_v, y_tar_v, sc_past, sc_fore, sc_tar) = data_tuple
-                if not all([sc_past, sc_fore, sc_tar]): st.error("Errore: Scaler Seq2Seq non generati."); st.stop()
-                try: enc = EncoderLSTM(len(selected_past_features_s2s), hs_t_s2s, nl_t_s2s, dr_t_s2s); dec = DecoderLSTM(len(selected_forecast_features_s2s), hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
-                except Exception as e_init: st.error(f"Errore inizializzazione modello Seq2Seq: {e_init}"); st.stop()
+                st.stop()
+            # --- FINE BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
+
+            st.info(f"Avvio addestramento Seq2Seq per '{save_name}'...");
+            with st.spinner("Preparazione dati Seq2Seq..."): data_tuple = prepare_training_data_seq2seq(df_current_csv.copy(), selected_past_features_s2s, selected_forecast_features_s2s, selected_targets_s2s, iw_steps_s2s, fw_steps_s2s, ow_steps_s2s, vs_t_s2s)
+            if data_tuple is None or len(data_tuple) != 9 or data_tuple[0] is None: st.error("Preparazione dati Seq2Seq fallita."); st.stop()
+            (X_enc_tr, X_dec_tr, y_tar_tr, X_enc_v, X_dec_v, y_tar_v, sc_past, sc_fore, sc_tar) = data_tuple
+            if not all([sc_past, sc_fore, sc_tar]): st.error("Errore: Scaler Seq2Seq non generati."); st.stop()
+            try: enc = EncoderLSTM(len(selected_past_features_s2s), hs_t_s2s, nl_t_s2s, dr_t_s2s); dec = DecoderLSTM(len(selected_forecast_features_s2s), hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
+            except Exception as e_init: st.error(f"Errore inizializzazione modello Seq2Seq: {e_init}"); st.stop()
+            
+            trained_model_s2s, train_histories_s2s, val_histories_s2s = train_model_seq2seq(
+                X_enc_tr, X_dec_tr, y_tar_tr, X_enc_v, X_dec_v, y_tar_v, 
+                enc, dec, ow_steps_s2s, ep_t_s2s, bs_t_s2s, lr_t_s2s, 
+                ('migliore' if 'Migliore' in save_choice_s2s else 'finale'), 
+                ('auto' if 'Auto' in device_option_s2s else 'cpu'), 
+                [0.6, 0.1]
+            )
+
+            if trained_model_s2s:
+                st.success("Addestramento Seq2Seq completato!")
+                train_loss_scalar_hist_s2s, train_loss_per_step_hist_s2s = train_histories_s2s
+                val_loss_scalar_hist_s2s, val_loss_per_step_hist_s2s = (None, None)
+                if val_histories_s2s and val_histories_s2s[0] is not None:
+                    val_loss_scalar_hist_s2s, val_loss_per_step_hist_s2s = val_histories_s2s
                 
-                trained_model_s2s, train_histories_s2s, val_histories_s2s = train_model_seq2seq(
-                    X_enc_tr, X_dec_tr, y_tar_tr, X_enc_v, X_dec_v, y_tar_v, 
-                    enc, dec, ow_steps_s2s, ep_t_s2s, bs_t_s2s, lr_t_s2s, 
-                    ('migliore' if 'Migliore' in save_choice_s2s else 'finale'), 
-                    ('auto' if 'Auto' in device_option_s2s else 'cpu'), 
-                    [0.6, 0.1]
-                )
+                if train_loss_per_step_hist_s2s and len(train_loss_per_step_hist_s2s) > 0:
+                    st.write("Loss per step finale (Train Seq2Seq):")
+                    st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(train_loss_per_step_hist_s2s[-1])})
+                if val_loss_per_step_hist_s2s is not None and len(val_loss_per_step_hist_s2s) > 0 and not np.all(np.isnan(val_loss_per_step_hist_s2s[-1])):
+                    st.write("Loss per step finale (Validation Seq2Seq):")
+                    st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(val_loss_per_step_hist_s2s[-1])})
 
-                if trained_model_s2s:
-                    st.success("Addestramento Seq2Seq completato!")
-                    train_loss_scalar_hist_s2s, train_loss_per_step_hist_s2s = train_histories_s2s
-                    val_loss_scalar_hist_s2s, val_loss_per_step_hist_s2s = (None, None)
-                    if val_histories_s2s and val_histories_s2s[0] is not None:
-                        val_loss_scalar_hist_s2s, val_loss_per_step_hist_s2s = val_histories_s2s
-                    
-                    if train_loss_per_step_hist_s2s and len(train_loss_per_step_hist_s2s) > 0:
-                        st.write("Loss per step finale (Train Seq2Seq):")
-                        st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(train_loss_per_step_hist_s2s[-1])})
-                    if val_loss_per_step_hist_s2s is not None and len(val_loss_per_step_hist_s2s) > 0 and not np.all(np.isnan(val_loss_per_step_hist_s2s[-1])):
-                        st.write("Loss per step finale (Validation Seq2Seq):")
-                        st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(val_loss_per_step_hist_s2s[-1])})
-
-                    try:
-                        base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_s2s.state_dict(), m_path); sp_path = f"{base_path}_past_features.joblib"; joblib.dump(sc_past, sp_path); sf_path = f"{base_path}_forecast_features.joblib"; joblib.dump(sc_fore, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_tar, st_path); c_path = f"{base_path}.json"
-                        config_save_s2s = {"model_type": "Seq2Seq", "input_window_steps": iw_steps_s2s, "forecast_window_steps": fw_steps_s2s, "output_window_steps": ow_steps_s2s, "hidden_size": hs_t_s2s, "num_layers": nl_t_s2s, "dropout": dr_t_s2s, "all_past_feature_columns": selected_past_features_s2s, "forecast_input_columns": selected_forecast_features_s2s, "target_columns": selected_targets_s2s, "training_date": datetime.now(italy_tz).isoformat(), "val_split_percent": vs_t_s2s, "learning_rate": lr_t_s2s, "batch_size": bs_t_s2s, "epochs": ep_t_s2s, "display_name": save_name}
-                        with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_s2s, f, indent=4)
-                        st.success(f"Modello Seq2Seq '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader("Download File Modello Seq2Seq"); col_dl_s2s_1, col_dl_s2s_2 = st.columns(2)
-                        with col_dl_s2s_1: st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sp_path,"Scaler Passato (.joblib)"), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path,"Scaler Target (.joblib)"), unsafe_allow_html=True)
-                        with col_dl_s2s_2: st.markdown(get_download_link_for_file(c_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path,"Scaler Forecast (.joblib)"), unsafe_allow_html=True)
-                        find_available_models.clear()
-                    except Exception as e_save_s2s: st.error(f"Errore salvataggio modello Seq2Seq: {e_save_s2s}"); st.error(traceback.format_exc())
-                else: st.error("Addestramento Seq2Seq fallito. Modello non salvato.")
+                try:
+                    base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_s2s.state_dict(), m_path); sp_path = f"{base_path}_past_features.joblib"; joblib.dump(sc_past, sp_path); sf_path = f"{base_path}_forecast_features.joblib"; joblib.dump(sc_fore, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_tar, st_path); c_path = f"{base_path}.json"
+                    config_save_s2s = {"model_type": "Seq2Seq", "input_window_steps": iw_steps_s2s, "forecast_window_steps": fw_steps_s2s, "output_window_steps": ow_steps_s2s, "hidden_size": hs_t_s2s, "num_layers": nl_t_s2s, "dropout": dr_t_s2s, "all_past_feature_columns": selected_past_features_s2s, "forecast_input_columns": selected_forecast_features_s2s, "target_columns": selected_targets_s2s, "training_date": datetime.now(italy_tz).isoformat(), "val_split_percent": vs_t_s2s, "learning_rate": lr_t_s2s, "batch_size": bs_t_s2s, "epochs": ep_t_s2s, "display_name": save_name}
+                    with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_s2s, f, indent=4)
+                    st.success(f"Modello Seq2Seq '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader("Download File Modello Seq2Seq"); col_dl_s2s_1, col_dl_s2s_2 = st.columns(2)
+                    with col_dl_s2s_1: st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sp_path,"Scaler Passato (.joblib)"), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path,"Scaler Target (.joblib)"), unsafe_allow_html=True)
+                    with col_dl_s2s_2: st.markdown(get_download_link_for_file(c_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path,"Scaler Forecast (.joblib)"), unsafe_allow_html=True)
+                    find_available_models.clear()
+                except Exception as e_save_s2s: st.error(f"Errore salvataggio modello Seq2Seq: {e_save_s2s}"); st.error(traceback.format_exc())
+            else: st.error("Addestramento Seq2Seq fallito. Modello non salvato.")
 
 # --- Footer ---
 st.sidebar.divider()
 st.sidebar.caption(f'Modello Predittivo Idrologico © {datetime.now().year}')
+```
