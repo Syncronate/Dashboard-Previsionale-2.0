@@ -2759,18 +2759,18 @@ elif page == 'Allenamento Modello':
                  try:
                      base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_lstm.state_dict(), m_path); sf_path = f"{base_path}_features.joblib"; joblib.dump(sc_f, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_t, st_path); c_path = f"{base_path}.json"
                   config_save_lstm = {
-                     "model_type": "LSTM", "input_window": X_scaled_full_lstm.shape[1], "output_window": ow_t_lstm_steps, # Salva steps effettivi
-                     "hidden_size": hs_t_lstm, "num_layers": nl_t_lstm, "dropout": dr_t_lstm, 
-                     "feature_columns": selected_features_train_lstm, # These are original features before engineering
-                     "target_columns": selected_targets_train_lstm, 
-                     "lag_config": lag_config_lstm, # NEW: Save lag config
-                     "cumulative_config": cumulative_config_lstm, # NEW: Save cumulative config
-                     "training_date": datetime.now(italy_tz).isoformat(), 
-                     # "val_split_percent": vs_t_lstm, # This was removed in previous commit, ensure it's not re-added
-                     "n_splits_cv": n_splits_cv_lstm, # Added in previous commit
-                     "loss_function": loss_choice_lstm, # Added in previous commit
-                     "learning_rate": lr_t_lstm, "batch_size": bs_t_lstm, "epochs": ep_t_lstm, "display_name": save_name
-                 }
+                         "model_type": "LSTM", "input_window": X_tr.shape[1], "output_window": ow_t_lstm_steps, # Salva steps effettivi
+                         "hidden_size": hs_t_lstm, "num_layers": nl_t_lstm, "dropout": dr_t_lstm, 
+                         "feature_columns": selected_features_train_lstm, # These are original features before engineering
+                         "target_columns": selected_targets_train_lstm, 
+                         "lag_config": lag_config_lstm, # NEW: Save lag config
+                         "cumulative_config": cumulative_config_lstm, # NEW: Save cumulative config
+                         "training_date": datetime.now(italy_tz).isoformat(), 
+                         # "val_split_percent": vs_t_lstm, # This was removed in previous commit, ensure it's not re-added
+                         "n_splits_cv": n_splits_cv_lstm, # Added in previous commit
+                         "loss_function": loss_choice_lstm, # Added in previous commit
+                         "learning_rate": lr_t_lstm, "batch_size": bs_t_lstm, "epochs": ep_t_lstm, "display_name": save_name
+                     }
                      with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_lstm, f, indent=4)
                      st.success(f"Modello LSTM '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader("Download File Modello LSTM"); col_dl_lstm1, col_dl_lstm2 = st.columns(2)
                      with col_dl_lstm1: st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path, "Scaler Features (.joblib)"), unsafe_allow_html=True)
