@@ -948,7 +948,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size, output_size, output_
 
     criterion = nn.MSELoss(reduction='none') # MODIFICA 1
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=False)
+    # MODIFICA: Rimosso verbose=False
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # MODIFICA 2: Strutture per storicizzare le loss
     train_losses_scalar_history, val_losses_scalar_history = [], []
@@ -1093,7 +1094,8 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_
     
     criterion = nn.MSELoss(reduction='none') # MODIFICA 1 (Seq2Seq)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=False)
+    # MODIFICA: Rimosso verbose=False
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # MODIFICA 2 (Seq2Seq): Strutture per storicizzare
     train_losses_scalar_history, val_losses_scalar_history = [], []
@@ -1641,7 +1643,7 @@ if page == 'Dashboard':
     with col_status:
         last_fetch_dt_sess = st.session_state.get('last_dashboard_fetch_time')
         if last_fetch_dt_sess:
-             fetch_time_ago = datetime.now(italy_tz) - last_fetch_dt_sess; fetch_secs_ago = int(fetch_time_ago.total_seconds())
+             fetch_time_ago = datetime.now(italy_tz) - last_fetch_dt_sess; fetch_secs_ago = int(fetch_time_ago.total_seconds() // 60)
              status_text = f"{data_source_mode}. Aggiornato alle {last_fetch_dt_sess.strftime('%H:%M:%S')} ({fetch_secs_ago}s fa)."
              if not st.session_state.dash_custom_range_check: status_text += f" Refresh auto ogni {DASHBOARD_REFRESH_INTERVAL_SECONDS}s."
              st.caption(status_text)
@@ -1918,8 +1920,10 @@ elif page == 'Simulazione':
              sim_data_input_lstm_gs = None; sim_start_time_lstm_gs = None
              if isinstance(imported_df_lstm_gs, pd.DataFrame):
                  try:
-                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_model]; sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values; sim_start_time_lstm_gs = st.session_state.get("imported_sim_start_time_gs_lstm", datetime.now(italy_tz))
-                     if sim_data_input_lstm_gs.shape[0] != input_steps_model: st.warning(f"Numero righe dati GSheet ({sim_data_input_lstm_gs.shape[0]}) diverso da richiesto ({input_steps_model}). Uso i dati disponibili.")
+                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_model]; sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values; last_csv_timestamp = df_current_csv[date_col_name_csv].iloc[-1]
+                     if pd.notna(last_csv_timestamp) and isinstance(last_csv_timestamp, pd.Timestamp): sim_start_time_lstm_gs = last_csv_timestamp.tz_localize(italy_tz) if last_csv_timestamp.tz is None else last_csv_timestamp.tz_convert(italy_tz)
+                     else: sim_start_time_lstm_gs = datetime.now(italy_tz)
+                     st.caption("Dati LSTM pronti per la simulazione."); st.expander("Mostra dati LSTM utilizzati (Input LSTM)").dataframe(imported_df_lstm_gs.round(3))
                      if np.isnan(sim_data_input_lstm_gs).any(): st.error("Trovati valori NaN nei dati GSheet importati. Impossibile procedere."); sim_data_input_lstm_gs = None
                  except KeyError as e_key_gs: st.error(f"Colonna mancante nei dati LSTM GSheet: {e_key_gs}"); sim_data_input_lstm_gs = None
                  except Exception as e_prep_gs: st.error(f"Errore preparazione dati LSTM GSheet: {e_prep_gs}"); sim_data_input_lstm_gs = None
@@ -2164,7 +2168,7 @@ elif page == 'Test Modello su Storico':
 # --- PAGINA ANALISI DATI STORICI ---
 elif page == 'Analisi Dati Storici':
     st.header('Analisi Dati Storici (da file CSV)')
-    if not data_ready_csv: st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar per l'analisi.")
+    if not data_ready_csv: st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar per l'analisi."); st.stop()
     else:
         st.info(f"Dataset CSV caricato: **{len(df_current_csv)}** righe.")
         if date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
