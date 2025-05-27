@@ -2371,7 +2371,6 @@ elif page == 'Test Modello su Storico':
         default_stride = output_steps_model_test if 'output_steps_model_test' in locals() and output_steps_model_test > 0 else 1
         stride_between_periods = st.number_input("Passo tra Periodi di Test (numero di righe/steps):", min_value=1, value=default_stride, step=1, key="wf_stride", help="Numero di righe da saltare per iniziare il periodo di input successivo.")
 
-    # Dynamic calculation of maximum possible start index for the first period
     max_first_start_idx = len(df_current_csv) - (required_len_for_test + (num_evaluation_periods - 1) * stride_between_periods)
     if first_input_start_index > max_first_start_idx :
         st.warning(f"L'indice di inizio ({first_input_start_index}) con i periodi e lo stride scelti supera la lunghezza dei dati. Max indice di inizio possibile: {max(0, max_first_start_idx)}. Riduci il numero di periodi, lo stride, o l'indice di inizio.")
@@ -2390,7 +2389,6 @@ elif page == 'Test Modello su Storico':
         for i_period in range(num_evaluation_periods):
             current_input_start_index = first_input_start_index + (i_period * stride_between_periods)
             
-            # --- Rigorous Boundary Checks ---
             period_valid = True
             if current_input_start_index < 0:
                 st.warning(f"Periodo {i_period+1}: Indice di inizio input ({current_input_start_index}) non valido. Periodo saltato.")
@@ -2415,12 +2413,14 @@ elif page == 'Test Modello su Storico':
                     period_valid = False
             
             if not period_valid:
-                if i_period == 0: # If even the first period is invalid, stop
+                if i_period == 0: 
                     st.error("Impossibile eseguire il primo periodo di valutazione con le impostazioni correnti. Controlla gli indici e la lunghezza del CSV.")
-                    st.stop()
-                break # Stop further periods if one is invalid to avoid cascading errors or misleading results
+                    # Imposta evaluation_results_list a None o un valore che faccia scattare l'errore specifico dopo il loop
+                    # Per evitare che il codice proceda con una lista vuota come se nulla fosse.
+                    # Tuttavia, il `break` è sufficiente per uscire dal loop.
+                    # Il controllo `if not evaluation_results_list:` dopo il loop gestirà il messaggio.
+                break 
 
-            # --- Data Extraction and Prediction for the current period ---
             with st.spinner(f"Periodo {i_period+1}: Estrazione dati e predizione..."):
                 predictions_test_period = None
                 actual_target_data_np_test_period = None
@@ -2436,7 +2436,7 @@ elif page == 'Test Modello su Storico':
 
                     if active_model_type == "Seq2Seq":
                         past_input_np_test_period = input_data_df_test_period[past_feature_cols_model_test].astype(float).values
-                        future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf] # Use already calculated end index
+                        future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf] 
                         future_forecast_np_test_period = future_forecast_df_test_period[forecast_feature_cols_model_test].astype(float).values
                         predictions_test_period = predict_seq2seq(active_model, past_input_np_test_period, future_forecast_np_test_period, active_scalers, active_config, active_device)
                     else: # LSTM
@@ -2444,8 +2444,15 @@ elif page == 'Test Modello su Storico':
                         predictions_test_period = predict(active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], active_config, active_device)
 
                     if predictions_test_period is not None and actual_target_data_np_test_period is not None:
+                        # Assicurati che le predizioni abbiano la stessa lunghezza degli attuali per il confronto MSE
+                        # predictions_test_period può essere più lungo di output_steps_model_test se il modello Seq2Seq
+                        # è addestrato per un output_window_steps più lungo di quello usato per il confronto.
+                        # Ma plot_predictions e il calcolo MSE dovrebbero usare solo output_steps_model_test.
+                        # Il codice MSE sotto già usa output_steps_model_test per fare lo slice delle predizioni se necessario.
+                        len_to_compare = min(predictions_test_period.shape[0], actual_target_data_np_test_period.shape[0], output_steps_model_test)
+
                         for k_target, target_col_name in enumerate(target_columns_model_test):
-                            mse_val = mean_squared_error(actual_target_data_np_test_period[:, k_target], predictions_test_period[:output_steps_model_test, k_target])
+                            mse_val = mean_squared_error(actual_target_data_np_test_period[:len_to_compare, k_target], predictions_test_period[:len_to_compare, k_target])
                             period_mses[target_col_name] = mse_val
                             all_period_mses[target_col_name].append(mse_val)
                         successfully_evaluated_periods +=1
@@ -2454,22 +2461,27 @@ elif page == 'Test Modello su Storico':
                         "period_num": i_period + 1,
                         "input_df_slice": input_data_df_test_period,
                         "output_df_slice": actual_data_for_comparison_df_period,
-                        "predictions": predictions_test_period,
-                        "actuals": actual_target_data_np_test_period,
+                        "predictions": predictions_test_period, # Intere predizioni
+                        "actuals": actual_target_data_np_test_period, # Interi dati attuali per confronto
                         "start_time": prediction_start_time_test_period,
-                        "mses": period_mses
+                        "mses": period_mses,
+                        "len_compared": len_to_compare # Lunghezza effettiva usata per MSE
                     })
 
                 except Exception as e_pred_test_period:
                     st.error(f"Errore durante predizione per periodo {i_period+1}: {e_pred_test_period}")
                     st.error(traceback.format_exc())
-                    # Optionally break or continue based on desired strictness
                     break 
         
         # --- Display Results ---
+        # MODIFICA INIZIA QUI
         if not evaluation_results_list:
-            st.warning("Nessun periodo di valutazione completato con successo.")
-        else:
+            # Questo blocco viene eseguito se evaluation_results_list è vuota.
+            # Lo stato del bottone è già controllato dal fatto che siamo dentro `if st.button(...)`
+            # quindi st.session_state.get("run_walk_forward_test_button") sarà True qui.
+            st.error("Esecuzione del test walk-forward fallita o nessun periodo valido trovato.")
+        # FINE MODIFICA (il `elif` originale è rimosso)
+        else: # evaluation_results_list NON è vuota
             st.success(f"Completati {successfully_evaluated_periods} periodi di valutazione walk-forward.")
             
             for result in evaluation_results_list:
@@ -2483,16 +2495,19 @@ elif page == 'Test Modello su Storico':
                 st.caption(f"Input: {input_start_display} - {input_end_display} | Output Confrontato: {output_start_display} - {output_end_display}")
 
                 df_results_display_period = pd.DataFrame()
+                # Usa result['len_compared'] per la lunghezza dei dati da mostrare nella tabella
+                len_display = result.get('len_compared', output_steps_model_test)
+
                 if result['start_time']:
-                    pred_times_test_dt_period = [result['start_time'] + timedelta(minutes=30 * step) for step in range(output_steps_model_test)]
+                    pred_times_test_dt_period = [result['start_time'] + timedelta(minutes=30 * step) for step in range(len_display)]
                     df_results_display_period['Ora'] = [t.strftime('%d/%m %H:%M') for t in pred_times_test_dt_period]
                 else:
-                    df_results_display_period['Passo'] = [f"T+{step+1}" for step in range(output_steps_model_test)]
+                    df_results_display_period['Passo'] = [f"T+{step+1}" for step in range(len_display)]
 
                 for i_col, col_name_target in enumerate(target_columns_model_test):
                     label = get_station_label(col_name_target, short=True)
-                    df_results_display_period[f'{label} Previsto'] = result['predictions'][:output_steps_model_test, i_col]
-                    df_results_display_period[f'{label} Reale'] = result['actuals'][:output_steps_model_test, i_col]
+                    df_results_display_period[f'{label} Previsto'] = result['predictions'][:len_display, i_col]
+                    df_results_display_period[f'{label} Reale'] = result['actuals'][:len_display, i_col]
                 
                 st.dataframe(df_results_display_period.round(3), hide_index=True, use_container_width=True)
                 st.markdown(get_table_download_link(df_results_display_period, f"test_storico_periodo_{result['period_num']}_{st.session_state.active_model_name.replace(' ', '_')}.csv", f"Scarica Tabella Periodo {result['period_num']} (CSV)"), unsafe_allow_html=True)
@@ -2503,10 +2518,10 @@ elif page == 'Test Modello su Storico':
 
                 st.markdown("**Grafici di Confronto per il Periodo:**")
                 figs_test_period = plot_predictions(
-                    result['predictions'][:output_steps_model_test, :],
+                    result['predictions'][:len_display, :], # Usa len_display
                     active_config, 
                     start_time=result['start_time'], 
-                    actual_data=result['actuals'][:output_steps_model_test, :],
+                    actual_data=result['actuals'][:len_display, :], # Usa len_display
                     actual_data_label="Reale CSV" 
                 )
                 num_graph_cols_test_period = min(len(figs_test_period), 2)
@@ -2525,7 +2540,7 @@ elif page == 'Test Modello su Storico':
                 st.subheader("Metriche Medie su Tutti i Periodi di Valutazione")
                 avg_mses_data = []
                 for target_col, mses_list in all_period_mses.items():
-                    if mses_list: # Only average if there are MSEs for this target
+                    if mses_list: 
                         avg_mse = np.mean(mses_list)
                         avg_mses_data.append({'Sensore Target': get_station_label(target_col, short=False), 'MSE Medio': avg_mse})
                 
@@ -2534,10 +2549,10 @@ elif page == 'Test Modello su Storico':
                     st.dataframe(avg_mse_df.round(5), hide_index=True, use_container_width=True)
                     st.markdown(get_table_download_link(avg_mse_df, f"test_storico_medie_mse_{st.session_state.active_model_name.replace(' ', '_')}.csv", "Scarica Tabella MSE Medi (CSV)"), unsafe_allow_html=True)
                 else:
-                    st.info("Nessuna metrica MSE calcolata (potrebbe essere dovuto a errori nei periodi).")
-        
-        elif st.session_state.get("run_walk_forward_test_button"): # If button was pressed but list is empty
-             st.error("Esecuzione del test walk-forward fallita o nessun periodo valido trovato.")
+                    st.info("Nessuna metrica MSE media calcolata (potrebbe essere dovuto a errori nei periodi o nessun dato MSE).")
+            else: 
+                st.info("Nessun periodo valutato con successo per calcolare medie MSE.")
+        # La riga `elif st.session_state.get("run_walk_forward_test_button")` è stata rimossa.
 
 
 # --- PAGINA ANALISI DATI STORICI ---
