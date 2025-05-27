@@ -2362,4 +2362,3 @@ elif page == 'Allenamento Modello':
 # --- Footer ---
 st.sidebar.divider()
 st.sidebar.caption(f'Modello Predittivo Idrologico © {datetime.now().year}')
-```
