@@ -311,29 +311,54 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
     current_feature_columns = original_feature_columns + engineered_feature_names
     
     if engineered_feature_names:
-        cols_to_fill_na = current_feature_columns + target_columns # Include targets just in case, though less likely to have new NaNs here
+        cols_to_fill_na = current_feature_columns + target_columns 
         cols_present_in_df_to_fill = [c for c in cols_to_fill_na if c in df.columns]
         
-        nan_count_before_bfill = df[cols_present_in_df_to_fill].isnull().sum().sum()
+        # Calcola nan_count_before_bfill SULLE COLONNE CHE EFFETTIVAMENTE ESISTONO E SARANNO RIEMPITE
+        if cols_present_in_df_to_fill: # Solo se ci sono colonne da riempire
+            nan_count_before_bfill = df[cols_present_in_df_to_fill].isnull().sum().sum()
+        else:
+            nan_count_before_bfill = 0
+
         if nan_count_before_bfill > 0:
-            df[cols_present_in_df_to_fill] = df[cols_present_in_df_to_fill].fillna(method='bfill')
-            nan_count_after_bfill = df[cols_present_in_df_to_fill].isnull().sum().sum()
-            st.warning(f"NaNs from feature engineering: {nan_count_before_bfill} before bfill, {nan_count_after_bfill} after bfill. "
+            # st.warning(f"NaNs from feature engineering: {nan_count_before_bfill} before bfill. Applying bfill.") # Rimosso per ridurre verbosità, già coperto dal warning dopo.
+            # --- MODIFICA INIZIO ---
+            try:
+                for col_to_fill in cols_present_in_df_to_fill:
+                    # Applica fillna solo se la colonna esiste ancora e ha NaN
+                    if col_to_fill in df.columns and df[col_to_fill].isnull().any():
+                        df[col_to_fill] = df[col_to_fill].fillna(method='bfill')
+                
+            except ValueError as e_fillna: # Cattura specificamente ValueError
+                st.error(f"ValueError durante il bfill iterativo in prepare_training_data: {e_fillna}")
+                st.error(f"Colonna problematica potrebbe essere una tra: {cols_present_in_df_to_fill}")
+                st.error(traceback.format_exc())
+                return None, None, None, None # Fallimento critico
+            except Exception as e_fillna_generic:
+                st.error(f"Errore generico durante il bfill iterativo in prepare_training_data: {e_fillna_generic}")
+                st.error(traceback.format_exc())
+                return None, None, None, None # Fallimento critico
+            # --- MODIFICA FINE ---
+
+            if cols_present_in_df_to_fill: # Ricalcola solo se ci sono colonne
+                nan_count_after_bfill = df[cols_present_in_df_to_fill].isnull().sum().sum()
+            else:
+                nan_count_after_bfill = 0
+            
+            # Mostra warning solo se effettivamente c'erano NaN e ne rimangono alcuni
+            if nan_count_before_bfill > 0 and nan_count_after_bfill > 0 :
+                 st.warning(f"NaNs from feature engineering: {nan_count_before_bfill} before bfill, {nan_count_after_bfill} after bfill. "
                        f"Prime righe potrebbero essere inutilizzabili se i NaN persistono all'inizio.")
-            # It's possible some NaNs remain at the very start if bfill can't fill them
-            # These will be caught by the isnull().any().any() check below or lead to issues in scaling/training
-    # --- Feature Engineering End ---
+            elif nan_count_before_bfill > 0 and nan_count_after_bfill == 0:
+                 st.caption(f"NaNs from feature engineering ({nan_count_before_bfill}) riempiti con bfill.")
+
+
+    # --- Feature Engineering End --- # Spostato il commento per chiarezza
 
     try:
         # Use current_feature_columns which includes engineered features
         missing_features = [col for col in current_feature_columns if col not in df.columns]
         missing_targets = [col for col in target_columns if col not in df.columns]
-        if missing_features:
-            st.error(f"Errore: Feature columns (originali o ingegnerizzate) mancanti nel DataFrame: {missing_features}")
-            return None, None, None, None, None, None
-        if missing_targets:
-            st.error(f"Errore: Target columns mancanti nel DataFrame: {missing_targets}")
-            return None, None, None, None, None, None
         
         # Check NaNs in the relevant slice of data that will be used for sequences
         # This check is now more critical after potential bfill
