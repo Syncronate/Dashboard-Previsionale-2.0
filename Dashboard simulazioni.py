@@ -2333,32 +2333,3 @@ elif page == 'Allenamento Modello':
 # --- Footer ---
 st.sidebar.divider()
 st.sidebar.caption(f'Modello Predittivo Idrologico © {datetime.now().year}')
-
-```
-
-**Principali modifiche e note:**
-
-1.  **Funzioni di Training (`train_model`, `train_model_seq2seq`):**
-    *   `nn.MSELoss(reduction='none')` è usato per ottenere la loss per ogni elemento.
-    *   Vengono calcolate e storicizzate sia la loss scalare media (per la backpropagation, lo scheduler e il grafico principale) sia la loss media per ogni timestep di output.
-    *   Il `status_text` in Streamlit ora mostra entrambe: la loss scalare e un array di loss per step (es. `[0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6]`). Ho usato `st.markdown` con `<br>` e `&nbsp;` per una formattazione migliore del testo multi-riga.
-    *   Le funzioni restituiscono storie separate per le loss scalari e per step.
-
-2.  **Pagina "Allenamento Modello":**
-    *   Quando si avvia l'allenamento, viene recuperata la storia dettagliata delle loss.
-    *   Alla fine dell'allenamento, vengono stampate le loss per step dell'ultima epoca (sia training che validation, se disponibile) in formato JSON per una facile lettura.
-    *   Ho aggiunto un controllo per assicurare che `ow_t_lstm_steps` e `ow_steps_s2s` (le finestre di output in steps) siano maggiori di 0 prima di procedere, per evitare errori.
-    *   Per `train_model` (LSTM standard):
-        *   `iw_t_lstm_hours` è l'input per `prepare_training_data` (in ore).
-        *   `ow_t_lstm_steps` è l'input per `HydroLSTM` e per la logica di calcolo della loss per step (in steps da 30 min).
-        *   Ho convertito `ow_t_lstm_steps` in `output_window_hours_lstm` per `prepare_training_data`.
-        *   Nella configurazione salvata, `input_window` ora riflette gli steps effettivi usati (`X_tr.shape[1]`) e `output_window` riflette `ow_t_lstm_steps`.
-
-3.  **Chiamata `model.forward` nel Seq2Seq:**
-    *   Nella validazione di `train_model_seq2seq`, ora chiamo `model(x_enc_vb, x_dec_vb, teacher_forcing_ratio=0.0)` per coerenza, assumendo che il forward gestisca il TF (anche se per TF=0 non cambia molto rispetto al loop manuale senza TF).
-    *   Nel loop di training di `train_model_seq2seq`, ho mantenuto il loop esplicito per step del decoder per chiarezza su come `outputs_train_epoch` viene costruito e come il `teacher_forcing_ratio` (sebbene non direttamente usato per modificare `decoder_input_step` in questa particolare configurazione del decoder) viene gestito. La loss è calcolata sull'output aggregato `outputs_train_epoch`.
-
-4.  **Test Modello su Storico (Seq2Seq):**
-    *   Ho chiarito la logica per `future_forecast_np_test` nella pagina "Test Modello su Storico" per Seq2Seq, assicurandomi che la lunghezza sia appropriata (`num_rows_decoder_input_test`).
-
-Spero che questo sia quello che cercavi! Fammi sapere se hai bisogno di ulteriori aggiustamenti.
