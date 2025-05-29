@@ -1065,7 +1065,8 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
                 input_size, output_size, output_window_steps,
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
                 save_strategy='migliore', preferred_device='auto', 
-                n_splits_cv=3, loss_function_name="MSELoss"): # NEW: n_splits_cv, loss_function_name
+                n_splits_cv=3, loss_function_name="MSELoss",
+                _model_to_continue_train=None): # NEW: _model_to_continue_train
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM Standard con TimeSeriesSplit (n_splits={n_splits_cv}, loss={loss_function_name})...")
     
     if input_size <= 0 or output_size <= 0 or output_window_steps <= 0:
@@ -1084,7 +1085,23 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
         criterion = nn.MSELoss(reduction='none')
         print("Using MSELoss")
     
-    model = HydroLSTM(input_size, hidden_size, output_size, output_window_steps, num_layers, dropout).to(device)
+    if _model_to_continue_train is not None:
+        model = _model_to_continue_train.to(device)
+        print("Continuo training da modello LSTM esistente.")
+        # Verifica parametri modello esistente
+        if model.lstm.input_size != input_size:
+            st.warning(f"Mismatch input_size: Modello esistente ({model.lstm.input_size}) vs Richiesto ({input_size}). Training interrotto.")
+            return None, ([], []), ([], [])
+        if model.output_size != output_size:
+            st.warning(f"Mismatch output_size: Modello esistente ({model.output_size}) vs Richiesto ({output_size}). Training interrotto.")
+            return None, ([], []), ([], [])
+        if model.output_window != output_window_steps:
+            st.warning(f"Mismatch output_window: Modello esistente ({model.output_window}) vs Richiesto ({output_window_steps}). Training interrotto.")
+            return None, ([], []), ([], [])
+    else:
+        model = HydroLSTM(input_size, hidden_size, output_size, output_window_steps, num_layers, dropout).to(device)
+        print("Creato nuovo modello LSTM per training.")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
@@ -1842,7 +1859,7 @@ with st.sidebar:
 
     st.header('Menu Navigazione')
     model_ready = active_model_sess is not None and active_config_sess is not None
-    radio_options = ['Dashboard', 'Simulazione', 'Test Modello su Storico', 'Analisi Dati Storici', 'Allenamento Modello']
+    radio_options = ['Dashboard', 'Simulazione', 'Test Modello su Storico', 'Analisi Dati Storici', 'Allenamento Modello', 'Post-Training Modello'] # MODIFIED
     radio_captions = []; disabled_options = []; default_page_idx = 0
     for i, opt in enumerate(radio_options):
         caption = ""; disabled = False
@@ -1860,6 +1877,11 @@ with st.sidebar:
         elif opt == 'Allenamento Modello':
             if not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
             else: caption = "Allena un nuovo modello"
+        elif opt == 'Post-Training Modello': # NEW
+            caption = "Affina un modello esistente con nuovi dati"
+            if not model_ready: caption = "Richiede Modello attivo"; disabled = True
+            elif not data_ready_csv: caption = "Richiede Dati CSV per post-training"; disabled = True
+            # Ulteriore logica di disabilitazione specifica per Post-Training (es. tipo modello) potrebbe essere aggiunta qui
         radio_captions.append(caption); disabled_options.append(disabled)
         if opt == 'Dashboard': default_page_idx = i
 
@@ -2952,6 +2974,438 @@ elif page == 'Allenamento Modello':
                     find_available_models.clear()
                 except Exception as e_save_s2s: st.error(f"Errore salvataggio modello Seq2Seq: {e_save_s2s}"); st.error(traceback.format_exc())
             else: st.error("Addestramento Seq2Seq fallito. Modello non salvato.")
+
+# --- INIZIO BLOCCO NUOVO CODICE PER POST-TRAINING ---
+# --- PAGINA POST-TRAINING MODELLO ---
+elif page == 'Post-Training Modello':
+    st.header('Post-Training Modello Esistente')
+
+    if not data_ready_csv: # data_ready_csv si riferisce al file caricato nella sidebar
+        st.warning("Dati Storici CSV (per il post-training) non disponibili. Caricane uno dalla sidebar.")
+        st.stop()
+    else:
+        st.info(f"Nuovo Dataset CSV caricato per post-training: **{len(df_current_csv)}** righe.")
+        if date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
+            try:
+                if not df_current_csv.empty:
+                    min_date_str_pt = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
+                    max_date_str_pt = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
+                    st.caption(f"Periodo nuovi dati (usati per post-training): da **{min_date_str_pt}** a **{max_date_str_pt}**")
+            except Exception as e_date_pt:
+                st.warning(f"Impossibile determinare il periodo dei nuovi dati CSV: {e_date_pt}")
+        else:
+            st.warning(f"Colonna data '{date_col_name_csv}' non trovata o non valida nei nuovi dati.")
+
+    st.subheader("1. Modello da Affinare")
+    if not model_ready: # model_ready si riferisce al modello selezionato nella sidebar principale
+        st.warning("Seleziona un Modello esistente dalla sidebar per caricarlo e poi procedere con il post-training.")
+        st.stop()
+
+    st.info(f"Modello selezionato per post-training: **{st.session_state.active_model_name}** (Tipo: {active_model_type})")
+    
+    original_config = st.session_state.active_config
+    model_to_fine_tune_state_dict = st.session_state.active_model.state_dict() # Salva lo state_dict
+    original_scalers = st.session_state.active_scalers
+    
+    st.subheader("2. Configurazione Post-Training")
+    
+    default_save_name_pt = f"{original_config.get('config_name', 'modello')}_posttrained_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
+    save_name_input_pt = st.text_input("Nome base per salvare il modello affinato e i file associati:", default_save_name_pt, key="pt_save_filename")
+    save_name_pt = re.sub(r'[^\w-]', '_', save_name_input_pt).strip('_') or "modello_posttrained_default"
+    if save_name_pt != save_name_input_pt:
+        st.caption(f"Nome file valido per il salvataggio: `{save_name_pt}`")
+
+    with st.expander("Parametri di Fine-Tuning", expanded=True):
+        c1_pt, c2_pt, c3_pt = st.columns(3)
+        with c1_pt:
+            ep_pt = st.number_input("Numero Epoche Aggiuntive:", min_value=1, value=10, step=1, key="pt_epochs")
+            n_splits_cv_pt = st.number_input(
+                "Numero di Fold CV (sui *nuovi* dati per Post-Training):", 
+                min_value=1,
+                value=max(1, original_config.get('n_splits_cv', 3)),
+                step=1, 
+                key="pt_n_splits_cv",
+                help="Numero di fold per TimeSeriesSplit da usare sui *nuovi* dati. Min 2 per CV, 1 per train/val semplice sull'ultimo blocco dei nuovi dati."
+            )
+            if n_splits_cv_pt < 2: st.caption("Nota: Con n_splits < 2, si usa solo l'ultimo blocco dei nuovi dati per validazione (nessun CV completo).")
+
+
+        with c2_pt:
+            lr_pt_default = original_config.get('learning_rate', 0.001)
+            lr_pt = st.number_input("Learning Rate per Post-Training:", 
+                                    min_value=1e-7, 
+                                    value=lr_pt_default / 10 if lr_pt_default > 1e-6 else lr_pt_default, # Riduci LR se non è già troppo piccolo
+                                    format="%.6f", 
+                                    step=1e-5, 
+                                    key="pt_lr", 
+                                    help="Spesso un LR più basso è utile per il fine-tuning.")
+            bs_pt = st.select_slider("Batch Size per Post-Training:", 
+                                     options=[8, 16, 32, 64, 128, 256], 
+                                     value=original_config.get('batch_size', 32), 
+                                     key="pt_batch_size")
+        
+        with c3_pt:
+            loss_choice_pt = st.selectbox("Funzione di Loss (Post-Training):", 
+                                          ["MSELoss", "HuberLoss"], 
+                                          index=["MSELoss", "HuberLoss"].index(original_config.get('loss_function', 'MSELoss')), 
+                                          key="pt_loss_choice", 
+                                          help="Idealmente, usa la stessa loss function del training originale.")
+            save_choice_pt = st.radio("Strategia Salvataggio (Post-Training):", 
+                                      ['Migliore (su Validazione nuovi dati)', 'Modello Finale (dopo epoche aggiuntive)'], 
+                                      index=0, key='pt_save_choice', horizontal=True)
+    
+    st.divider()
+    
+    can_start_post_training = all([
+        save_name_pt,
+        df_current_csv is not None and not df_current_csv.empty, # df_current_csv sono i nuovi dati
+        model_to_fine_tune_state_dict is not None,
+        original_config is not None,
+        original_scalers is not None
+    ])
+
+    if st.button("Avvia Post-Training", type="primary", disabled=not can_start_post_training, key="run_post_training_button"):
+        st.info(f"Avvio post-training per il modello '{st.session_state.active_model_name}' con nome salvataggio '{save_name_pt}'...")
+        
+        current_device_pt = st.session_state.active_device # Device del modello originale
+
+        if active_model_type == "LSTM":
+            feature_cols_orig_lstm = original_config.get("feature_columns")
+            target_cols_orig_lstm = original_config.get("target_columns")
+            
+            # Le config input_window e output_window sono in numero di steps (mezz'ore)
+            input_steps_orig_lstm = original_config.get("input_window") 
+            output_steps_orig_lstm = original_config.get("output_window")
+
+            lag_config_orig_lstm = original_config.get("lag_config", {})
+            cumulative_config_orig_lstm = original_config.get("cumulative_config", {})
+
+            with st.spinner("Preparazione nuovi dati per post-training LSTM..."):
+                df_new_pt_lstm = df_current_csv.copy() # Nuovi dati CSV
+                
+                current_feature_cols_pt_lstm = list(feature_cols_orig_lstm) # Inizia con le feature originali
+                engineered_feature_names_pt_lstm = []
+
+                if lag_config_orig_lstm:
+                    for col, lag_periods_hours in lag_config_orig_lstm.items():
+                        if col in df_new_pt_lstm.columns:
+                            for lag_hr in lag_periods_hours:
+                                lag_steps = lag_hr * 2 
+                                new_col_name = f"{col}_lag{lag_hr}h"
+                                df_new_pt_lstm[new_col_name] = df_new_pt_lstm[col].shift(lag_steps)
+                                if new_col_name not in current_feature_cols_pt_lstm: engineered_feature_names_pt_lstm.append(new_col_name)
+                if cumulative_config_orig_lstm:
+                    for col, window_periods_hours in cumulative_config_orig_lstm.items():
+                        if col in df_new_pt_lstm.columns:
+                            for win_hr in window_periods_hours:
+                                window_steps = win_hr * 2
+                                new_col_name = f"{col}_cum{win_hr}h"
+                                df_new_pt_lstm[new_col_name] = df_new_pt_lstm[col].rolling(window=window_steps, min_periods=1).sum()
+                                if new_col_name not in current_feature_cols_pt_lstm: engineered_feature_names_pt_lstm.append(new_col_name)
+                
+                current_feature_cols_pt_lstm.extend(engineered_feature_names_pt_lstm)
+                
+                cols_to_fill_na_pt_lstm = list(set(current_feature_cols_pt_lstm + target_cols_orig_lstm))
+                cols_present_in_df_to_fill_pt_lstm = [c for c in cols_to_fill_na_pt_lstm if c in df_new_pt_lstm.columns]
+
+                nan_count_before_bfill_pt = df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].isnull().sum().sum()
+                if nan_count_before_bfill_pt > 0:
+                    df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm] = df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].fillna(method='bfill')
+                    nan_count_after_bfill_pt = df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].isnull().sum().sum()
+                    if nan_count_after_bfill_pt > 0:
+                        st.warning(f"NaN ({nan_count_after_bfill_pt}) residui dopo bfill nei nuovi dati LSTM. Tentativo di ffill.")
+                        df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm] = df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].fillna(method='ffill')
+                        if df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].isnull().sum().sum() > 0:
+                            st.error("NaN persistono dopo bfill e ffill nei nuovi dati LSTM. Impossibile procedere.")
+                            st.stop()
+
+                X_new_pt_lstm, y_new_pt_lstm = [], []
+                required_len_pt_lstm = input_steps_orig_lstm + output_steps_orig_lstm
+
+                if len(df_new_pt_lstm) < required_len_pt_lstm:
+                    st.error(f"Nuovi dati LSTM insufficienti ({len(df_new_pt_lstm)}) per sequenze (richieste {required_len_pt_lstm}).")
+                    st.stop()
+
+                for i in range(len(df_new_pt_lstm) - required_len_pt_lstm + 1):
+                    feature_window_data_pt_lstm = df_new_pt_lstm.iloc[i : i + input_steps_orig_lstm][current_feature_cols_pt_lstm]
+                    target_window_data_pt_lstm = df_new_pt_lstm.iloc[i + input_steps_orig_lstm : i + required_len_pt_lstm][target_cols_orig_lstm]
+                    if feature_window_data_pt_lstm.isnull().any().any() or target_window_data_pt_lstm.isnull().any().any():
+                        continue
+                    X_new_pt_lstm.append(feature_window_data_pt_lstm.values)
+                    y_new_pt_lstm.append(target_window_data_pt_lstm.values)
+
+                if not X_new_pt_lstm or not y_new_pt_lstm:
+                    st.error("Nessuna sequenza LSTM valida creata dai nuovi dati per post-training."); st.stop()
+                
+                X_new_pt_np_lstm = np.array(X_new_pt_lstm, dtype=np.float32)
+                y_new_pt_np_lstm = np.array(y_new_pt_lstm, dtype=np.float32)
+
+                scaler_features_orig_lstm, scaler_targets_orig_lstm = original_scalers
+                
+                num_sequences_new_lstm, seq_len_in_new_lstm, num_features_X_new_lstm = X_new_pt_np_lstm.shape
+                X_new_flat_pt_lstm = X_new_pt_np_lstm.reshape(-1, num_features_X_new_lstm)
+                
+                try:
+                    if hasattr(scaler_features_orig_lstm, 'n_features_in_') and num_features_X_new_lstm != scaler_features_orig_lstm.n_features_in_:
+                        st.error(f"LSTM Post-Train: Discordanza feature ({num_features_X_new_lstm}) vs scaler originale ({scaler_features_orig_lstm.n_features_in_}). Nomi attesi: {getattr(scaler_features_orig_lstm, 'feature_names_in_', 'N/A')}")
+                        st.stop()
+                    X_new_scaled_flat_pt_lstm = scaler_features_orig_lstm.transform(X_new_flat_pt_lstm)
+                except Exception as e_scale_feat_pt_lstm:
+                    st.error(f"Errore scaling feature nuovi dati LSTM: {e_scale_feat_pt_lstm}"); st.stop()
+                
+                num_sequences_y_new_lstm, seq_len_out_new_lstm, num_targets_y_new_lstm = y_new_pt_np_lstm.shape
+                y_new_flat_pt_lstm = y_new_pt_np_lstm.reshape(-1, num_targets_y_new_lstm)
+                try:
+                    if hasattr(scaler_targets_orig_lstm, 'n_features_in_') and num_targets_y_new_lstm != scaler_targets_orig_lstm.n_features_in_:
+                         st.error(f"LSTM Post-Train: Discordanza target ({num_targets_y_new_lstm}) vs scaler originale ({scaler_targets_orig_lstm.n_features_in_})."); st.stop()
+                    y_new_scaled_flat_pt_lstm = scaler_targets_orig_lstm.transform(y_new_flat_pt_lstm)
+                except Exception as e_scale_targ_pt_lstm:
+                    st.error(f"Errore scaling target nuovi dati LSTM: {e_scale_targ_pt_lstm}"); st.stop()
+
+                X_new_scaled_pt_lstm = X_new_scaled_flat_pt_lstm.reshape(num_sequences_new_lstm, seq_len_in_new_lstm, num_features_X_new_lstm)
+                y_new_scaled_pt_lstm = y_new_scaled_flat_pt_lstm.reshape(num_sequences_y_new_lstm, seq_len_out_new_lstm, num_targets_y_new_lstm)
+                
+                st.success(f"Nuovi dati LSTM pronti: X_shape={X_new_scaled_pt_lstm.shape}, y_shape={y_new_scaled_pt_lstm.shape}")
+
+            if X_new_scaled_pt_lstm.shape[0] == 0 :
+                 st.error("Nessun campione di training generato dai nuovi dati LSTM. Controlla la lunghezza dei dati e le finestre.")
+                 st.stop()
+            if X_new_scaled_pt_lstm.shape[0] < n_splits_cv_pt:
+                st.error(f"Nuovi dati LSTM ({X_new_scaled_pt_lstm.shape[0]} campioni) insuff. per {n_splits_cv_pt} splits CV. Riduci o fornisci più dati.")
+                st.stop()
+            
+            # Istanziare il modello LSTM con i parametri originali e caricare lo state_dict
+            model_instance_for_pt_lstm = HydroLSTM(
+                input_size=X_new_scaled_pt_lstm.shape[2], # Deve corrispondere a scaler_features_orig_lstm.n_features_in_
+                hidden_size=original_config.get("hidden_size"),
+                output_size=len(target_cols_orig_lstm),
+                output_window=output_steps_orig_lstm, # In steps
+                num_layers=original_config.get("num_layers"),
+                dropout=original_config.get("dropout")
+            ).to(current_device_pt)
+            model_instance_for_pt_lstm.load_state_dict(model_to_fine_tune_state_dict)
+
+            fine_tuned_model_lstm, train_hist_pt_lstm, val_hist_pt_lstm = train_model(
+                _model_to_continue_train=model_instance_for_pt_lstm, # Passa il modello con i pesi caricati
+                X_scaled_full=X_new_scaled_pt_lstm, 
+                y_scaled_full=y_new_scaled_pt_lstm,
+                input_size=X_new_scaled_pt_lstm.shape[2], # Questi parametri devono corrispondere al modello istanziato
+                output_size=len(target_cols_orig_lstm),
+                output_window_steps=output_steps_orig_lstm,
+                hidden_size=original_config.get("hidden_size"), 
+                num_layers=original_config.get("num_layers"), 
+                epochs=ep_pt, 
+                batch_size=bs_pt, 
+                learning_rate=lr_pt, 
+                dropout=original_config.get("dropout"), # Questo dropout è quello usato se _model_to_continue_train è None
+                save_strategy=('migliore' if 'Migliore' in save_choice_pt else 'finale'),
+                preferred_device=current_device_pt.type,
+                n_splits_cv=n_splits_cv_pt, 
+                loss_function_name=loss_choice_pt
+            )
+
+            if fine_tuned_model_lstm:
+                st.success("Post-Training LSTM completato!")
+                try:
+                    base_path_pt_lstm = os.path.join(MODELS_DIR, save_name_pt)
+                    m_path_pt_lstm = f"{base_path_pt_lstm}.pth"; torch.save(fine_tuned_model_lstm.state_dict(), m_path_pt_lstm)
+                    sf_path_pt_lstm = f"{base_path_pt_lstm}_features.joblib"; joblib.dump(scaler_features_orig_lstm, sf_path_pt_lstm)
+                    st_path_pt_lstm = f"{base_path_pt_lstm}_targets.joblib"; joblib.dump(scaler_targets_orig_lstm, st_path_pt_lstm)
+                    c_path_pt_lstm = f"{base_path_pt_lstm}.json"
+                    
+                    config_save_pt_lstm = original_config.copy()
+                    config_save_pt_lstm["display_name"] = save_name_pt
+                    config_save_pt_lstm["config_name"] = save_name_pt # Usato per trovare i file .joblib
+                    config_save_pt_lstm["post_training_info"] = {
+                        "date": datetime.now(italy_tz).isoformat(), "epochs": ep_pt, "lr": lr_pt,
+                        "batch_size": bs_pt, "loss_function": loss_choice_pt,
+                        "new_data_source_name": uploaded_data_file.name if uploaded_data_file else DEFAULT_DATA_PATH, # Nome del file CSV usato per post-training
+                        "new_data_rows_used": len(X_new_scaled_pt_lstm)
+                    }
+                    # Le feature_columns, lag_config, cumulative_config rimangono quelle originali perché definiscono la struttura
+                    
+                    with open(c_path_pt_lstm, 'w', encoding='utf-8') as f: json.dump(config_save_pt_lstm, f, indent=4)
+                    
+                    st.success(f"Modello LSTM affinato '{save_name_pt}' salvato."); st.subheader("Download File Modello LSTM Affinato")
+                    col_dl_pt_lstm1, col_dl_pt_lstm2 = st.columns(2)
+                    with col_dl_pt_lstm1: st.markdown(get_download_link_for_file(m_path_pt_lstm), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path_pt_lstm, "Scaler Features (.joblib)"), unsafe_allow_html=True)
+                    with col_dl_pt_lstm2: st.markdown(get_download_link_for_file(c_path_pt_lstm), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path_pt_lstm, "Scaler Target (.joblib)"), unsafe_allow_html=True)
+                    find_available_models.clear()
+                except Exception as e_save_pt_lstm: st.error(f"Errore salvataggio LSTM affinato: {e_save_pt_lstm}"); st.error(traceback.format_exc())
+            else: st.error("Post-Training LSTM fallito. Modello non salvato.")
+
+        elif active_model_type == "Seq2Seq":
+            past_feature_cols_orig_s2s = original_config.get("all_past_feature_columns")
+            forecast_feature_cols_orig_s2s = original_config.get("forecast_input_columns")
+            target_cols_orig_s2s = original_config.get("target_columns")
+            
+            input_window_steps_s2s_pt = original_config.get("input_window_steps")
+            forecast_window_steps_s2s_pt = original_config.get("forecast_window_steps")
+            output_window_steps_s2s_pt = original_config.get("output_window_steps")
+
+            lag_config_past_orig_s2s = original_config.get("lag_config_past", {})
+            cumulative_config_past_orig_s2s = original_config.get("cumulative_config_past", {})
+
+            with st.spinner("Preparazione nuovi dati per post-training Seq2Seq..."):
+                df_new_pt_s2s = df_current_csv.copy()
+
+                current_past_feature_cols_pt_s2s = list(past_feature_cols_orig_s2s)
+                engineered_past_feature_names_pt_s2s = []
+                if lag_config_past_orig_s2s:
+                    for col, lag_periods_hours in lag_config_past_orig_s2s.items():
+                        if col in df_new_pt_s2s.columns:
+                            for lag_hr in lag_periods_hours:
+                                lag_steps = lag_hr * 2
+                                new_col_name = f"{col}_lag{lag_hr}h"
+                                df_new_pt_s2s[new_col_name] = df_new_pt_s2s[col].shift(lag_steps)
+                                if new_col_name not in current_past_feature_cols_pt_s2s: engineered_past_feature_names_pt_s2s.append(new_col_name)
+                if cumulative_config_past_orig_s2s:
+                    for col, window_periods_hours in cumulative_config_past_orig_s2s.items():
+                        if col in df_new_pt_s2s.columns:
+                            for win_hr in window_periods_hours:
+                                window_steps = win_hr * 2
+                                new_col_name = f"{col}_cum{win_hr}h"
+                                df_new_pt_s2s[new_col_name] = df_new_pt_s2s[col].rolling(window=window_steps, min_periods=1).sum()
+                                if new_col_name not in current_past_feature_cols_pt_s2s: engineered_past_feature_names_pt_s2s.append(new_col_name)
+                current_past_feature_cols_pt_s2s.extend(engineered_past_feature_names_pt_s2s)
+                
+                all_needed_cols_pt_s2s = list(set(current_past_feature_cols_pt_s2s + forecast_feature_cols_orig_s2s + target_cols_orig_s2s))
+                cols_present_for_fillna_pt_s2s = [c for c in all_needed_cols_pt_s2s if c in df_new_pt_s2s.columns]
+                if df_new_pt_s2s[cols_present_for_fillna_pt_s2s].isnull().sum().sum() > 0:
+                    df_new_pt_s2s[cols_present_for_fillna_pt_s2s] = df_new_pt_s2s[cols_present_for_fillna_pt_s2s].fillna(method='bfill').fillna(method='ffill')
+                    if df_new_pt_s2s[cols_present_for_fillna_pt_s2s].isnull().sum().sum() > 0:
+                        st.error("NaN persistono nei nuovi dati Seq2Seq dopo fill. Impossibile procedere."); st.stop()
+
+                X_enc_new_pt, X_dec_new_pt, y_tar_new_pt = [], [], []
+                required_len_pt_s2s = input_window_steps_s2s_pt + max(forecast_window_steps_s2s_pt, output_window_steps_s2s_pt)
+                if len(df_new_pt_s2s) < required_len_pt_s2s:
+                    st.error(f"Nuovi dati Seq2Seq ({len(df_new_pt_s2s)}) insuff. per sequenze (richieste {required_len_pt_s2s})."); st.stop()
+
+                for i in range(len(df_new_pt_s2s) - required_len_pt_s2s + 1):
+                    enc_end = i + input_window_steps_s2s_pt
+                    past_feature_window_data_pt = df_new_pt_s2s.iloc[i : enc_end][current_past_feature_cols_pt_s2s]
+                    dec_start = enc_end
+                    dec_end_forecast = dec_start + forecast_window_steps_s2s_pt
+                    forecast_feature_window_data_pt = df_new_pt_s2s.iloc[dec_start : dec_end_forecast][forecast_feature_cols_orig_s2s]
+                    target_end = dec_start + output_window_steps_s2s_pt
+                    target_window_data_pt = df_new_pt_s2s.iloc[dec_start : target_end][target_cols_orig_s2s]
+
+                    if past_feature_window_data_pt.isnull().any().any() or \
+                       forecast_feature_window_data_pt.isnull().any().any() or \
+                       target_window_data_pt.isnull().any().any():
+                        continue
+                    X_enc_new_pt.append(past_feature_window_data_pt.values)
+                    X_dec_new_pt.append(forecast_feature_window_data_pt.values)
+                    y_tar_new_pt.append(target_window_data_pt.values)
+
+                if not X_enc_new_pt: st.error("Nessuna sequenza Seq2Seq valida creata dai nuovi dati."); st.stop()
+
+                X_enc_new_pt_np = np.array(X_enc_new_pt, dtype=np.float32)
+                X_dec_new_pt_np = np.array(X_dec_new_pt, dtype=np.float32)
+                y_tar_new_pt_np = np.array(y_tar_new_pt, dtype=np.float32)
+                
+                scaler_past_orig_s2s = original_scalers["past"]
+                scaler_forecast_orig_s2s = original_scalers["forecast"]
+                scaler_targets_orig_s2s = original_scalers["targets"]
+                num_seq_new_s2s = X_enc_new_pt_np.shape[0]
+                
+                try:
+                    if hasattr(scaler_past_orig_s2s, 'n_features_in_') and X_enc_new_pt_np.shape[2] != scaler_past_orig_s2s.n_features_in_:
+                        st.error(f"S2S Post-Train: Discordanza feat encoder ({X_enc_new_pt_np.shape[2]}) vs scaler ({scaler_past_orig_s2s.n_features_in_}). Nomi: {getattr(scaler_past_orig_s2s, 'feature_names_in_', 'N/A')}"); st.stop()
+                    X_enc_scaled_new_pt = scaler_past_orig_s2s.transform(X_enc_new_pt_np.reshape(-1, X_enc_new_pt_np.shape[2])).reshape(num_seq_new_s2s, input_window_steps_s2s_pt, -1)
+                    
+                    if hasattr(scaler_forecast_orig_s2s, 'n_features_in_') and X_dec_new_pt_np.shape[2] != scaler_forecast_orig_s2s.n_features_in_:
+                         st.error(f"S2S Post-Train: Discordanza feat decoder ({X_dec_new_pt_np.shape[2]}) vs scaler ({scaler_forecast_orig_s2s.n_features_in_})."); st.stop()
+                    X_dec_scaled_new_pt = scaler_forecast_orig_s2s.transform(X_dec_new_pt_np.reshape(-1, X_dec_new_pt_np.shape[2])).reshape(num_seq_new_s2s, forecast_window_steps_s2s_pt, -1)
+                    
+                    if hasattr(scaler_targets_orig_s2s, 'n_features_in_') and y_tar_new_pt_np.shape[2] != scaler_targets_orig_s2s.n_features_in_:
+                         st.error(f"S2S Post-Train: Discordanza feat target ({y_tar_new_pt_np.shape[2]}) vs scaler ({scaler_targets_orig_s2s.n_features_in_})."); st.stop()
+                    y_tar_scaled_new_pt = scaler_targets_orig_s2s.transform(y_tar_new_pt_np.reshape(-1, y_tar_new_pt_np.shape[2])).reshape(num_seq_new_s2s, output_window_steps_s2s_pt, -1)
+                except Exception as e_scale_s2s_pt: st.error(f"Errore scaling nuovi dati S2S: {e_scale_s2s_pt}"); st.stop()
+
+                st.success(f"Nuovi dati S2S pronti: X_enc={X_enc_scaled_new_pt.shape}, X_dec={X_dec_scaled_new_pt.shape}, y_tar={y_tar_scaled_new_pt.shape}")
+            
+            if X_enc_scaled_new_pt.shape[0] == 0 :
+                 st.error("Nessun campione di training generato dai nuovi dati Seq2Seq.")
+                 st.stop()
+            if X_enc_scaled_new_pt.shape[0] < n_splits_cv_pt:
+                st.error(f"Nuovi dati S2S ({X_enc_scaled_new_pt.shape[0]} campioni) insuff. per {n_splits_cv_pt} splits CV. Riduci o fornisci più dati.")
+                st.stop()
+
+            # Istanziare encoder e decoder con parametri originali e caricare state_dict
+            enc_instance_pt_s2s = EncoderLSTM(
+                input_size=X_enc_scaled_new_pt.shape[2], # Da nuovi dati (dovrebbe corrispondere a scaler_past_orig_s2s.n_features_in_)
+                hidden_size=original_config.get("hidden_size"),
+                num_layers=original_config.get("num_layers"),
+                dropout=original_config.get("dropout")
+            ).to(current_device_pt)
+            # Carica i pesi dall'encoder del modello originale (st.session_state.active_model)
+            enc_instance_pt_s2s.load_state_dict(st.session_state.active_model.encoder.state_dict())
+
+
+            dec_instance_pt_s2s = DecoderLSTM(
+                forecast_input_size=X_dec_scaled_new_pt.shape[2], # Da nuovi dati (dovrebbe corrispondere a scaler_forecast_orig_s2s.n_features_in_)
+                hidden_size=original_config.get("hidden_size"),
+                output_size=len(target_cols_orig_s2s),
+                num_layers=original_config.get("num_layers"),
+                dropout=original_config.get("dropout")
+            ).to(current_device_pt)
+            dec_instance_pt_s2s.load_state_dict(st.session_state.active_model.decoder.state_dict())
+
+            fine_tuned_model_s2s, train_hist_pt_s2s, val_hist_pt_s2s = train_model_seq2seq(
+                X_enc_scaled_full=X_enc_scaled_new_pt, 
+                X_dec_scaled_full=X_dec_scaled_new_pt, 
+                y_tar_scaled_full=y_tar_scaled_new_pt,
+                encoder=enc_instance_pt_s2s, # Encoder con pesi caricati
+                decoder=dec_instance_pt_s2s, # Decoder con pesi caricati
+                output_window_steps=output_window_steps_s2s_pt,
+                epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt,
+                save_strategy=('migliore' if 'Migliore' in save_choice_pt else 'finale'),
+                preferred_device=current_device_pt.type,
+                teacher_forcing_ratio_schedule=[0.3, 0.0], # Esempio, potrebbe essere diverso per fine-tuning
+                n_splits_cv=n_splits_cv_pt,
+                loss_function_name=loss_choice_pt
+            )
+
+            if fine_tuned_model_s2s:
+                st.success("Post-Training Seq2Seq completato!")
+                try:
+                    base_path_pt_s2s = os.path.join(MODELS_DIR, save_name_pt)
+                    m_path_pt_s2s = f"{base_path_pt_s2s}.pth"; torch.save(fine_tuned_model_s2s.state_dict(), m_path_pt_s2s)
+                    joblib.dump(scaler_past_orig_s2s, f"{base_path_pt_s2s}_past_features.joblib")
+                    joblib.dump(scaler_forecast_orig_s2s, f"{base_path_pt_s2s}_forecast_features.joblib")
+                    joblib.dump(scaler_targets_orig_s2s, f"{base_path_pt_s2s}_targets.joblib")
+                    c_path_pt_s2s = f"{base_path_pt_s2s}.json"
+                    
+                    config_save_pt_s2s = original_config.copy()
+                    config_save_pt_s2s["display_name"] = save_name_pt
+                    config_save_pt_s2s["config_name"] = save_name_pt
+                    config_save_pt_s2s["post_training_info"] = {
+                        "date": datetime.now(italy_tz).isoformat(), "epochs": ep_pt, "lr": lr_pt,
+                        "batch_size": bs_pt, "loss_function": loss_choice_pt,
+                        "new_data_source_name": uploaded_data_file.name if uploaded_data_file else DEFAULT_DATA_PATH,
+                        "new_data_rows_used": len(X_enc_scaled_new_pt)
+                    }
+                    with open(c_path_pt_s2s, 'w', encoding='utf-8') as f: json.dump(config_save_pt_s2s, f, indent=4)
+
+                    st.success(f"Modello S2S affinato '{save_name_pt}' salvato."); st.subheader("Download File Modello S2S Affinato")
+                    c1_dl, c2_dl = st.columns(2)
+                    with c1_dl:
+                        st.markdown(get_download_link_for_file(m_path_pt_s2s), unsafe_allow_html=True)
+                        st.markdown(get_download_link_for_file(f"{base_path_pt_s2s}_past_features.joblib", "Scaler Passato"), unsafe_allow_html=True)
+                        st.markdown(get_download_link_for_file(f"{base_path_pt_s2s}_targets.joblib", "Scaler Target"), unsafe_allow_html=True)
+                    with c2_dl:
+                        st.markdown(get_download_link_for_file(c_path_pt_s2s), unsafe_allow_html=True)
+                        st.markdown(get_download_link_for_file(f"{base_path_pt_s2s}_forecast_features.joblib", "Scaler Forecast"), unsafe_allow_html=True)
+                    find_available_models.clear()
+                except Exception as e_save_pt_s2s: st.error(f"Errore salvataggio S2S affinato: {e_save_pt_s2s}"); st.error(traceback.format_exc())
+            else: st.error("Post-Training Seq2Seq fallito. Modello non salvato.")
+        
+        else:
+            st.error(f"Tipo modello '{active_model_type}' non supportato per il post-training.")
+            st.stop()
+
+# --- FINE BLOCCO NUOVO CODICE PER POST-TRAINING ---
 
 # --- Footer ---
 st.sidebar.divider()
