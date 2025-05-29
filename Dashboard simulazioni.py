@@ -767,7 +767,22 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
         else: st.warning("Colonna data GSheet non trovata per ordinamento.")
         error_message = "Attenzione conversione dati GSheet: " + " | ".join(error_parsing) if error_parsing else None
         return df, error_message, actual_fetch_time
-    except gspread.exceptions.APIError as api_e: error_msg = str(api_e); try: error_details = api_e.response.json(); error_msg = error_details.get('error', {}).get('message', str(api_e)); status = error_details.get('error', {}).get('code', 'N/A'); error_msg = f"Codice {status}: {error_msg}"; except: pass; return None, f"Errore API Google Sheets: {error_msg}", actual_fetch_time
+    except gspread.exceptions.APIError as api_e:
+        error_message_content = str(api_e)  # Messaggio di default
+        error_status_code = 'N/A'       # Codice di stato di default
+        try:
+            # Tenta di ottenere dettagli dalla risposta JSON dell'API
+            error_response_details = api_e.response.json()
+            # Estrai il messaggio di errore specifico, altrimenti usa il messaggio di default già impostato
+            error_message_content = error_response_details.get('error', {}).get('message', error_message_content)
+            # Estrai il codice di errore specifico
+            error_status_code = error_response_details.get('error', {}).get('code', 'N/A')
+        except Exception:  # Cattura errori durante il parsing JSON o l'accesso ai campi
+            # Se il parsing fallisce, error_message_content e error_status_code mantengono i loro valori precedenti
+            pass
+        # Costruisci il messaggio di errore finale
+        formatted_api_error = f"Codice {error_status_code}: {error_message_content}"
+        return None, f"Errore API Google Sheets: {formatted_api_error}", actual_fetch_time
     except gspread.exceptions.SpreadsheetNotFound: return None, f"Errore: Foglio Google non trovato (ID: '{sheet_id}').", actual_fetch_time
     except Exception as e: return None, f"Errore imprevisto recupero dati GSheet: {type(e).__name__} - {e}\n{traceback.format_exc()}", actual_fetch_time
 
@@ -816,7 +831,22 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
         try: df_final = df_final[required_model_cols_fetch]
         except KeyError as e_final_order: missing_final = [c for c in required_model_cols_fetch if c not in df_final.columns]; return None, f"Errore: Colonne modello ({missing_final}) mancanti prima del return finale.", None
         return df_final, None, last_valid_timestamp
-    except gspread.exceptions.APIError as api_e_sim: error_msg = str(api_e_sim); try: error_details = api_e_sim.response.json(); error_msg = error_details.get('error', {}).get('message', str(api_e_sim)); status = error_details.get('error', {}).get('code', 'N/A'); error_msg = f"Codice {status}: {error_msg}"; except: pass; return None, f"Errore API Google Sheets: {error_msg}", None
+    except gspread.exceptions.APIError as api_e_sim:
+        error_message_content_sim = str(api_e_sim)  # Messaggio di default
+        error_status_code_sim = 'N/A'           # Codice di stato di default
+        try:
+            # Tenta di ottenere dettagli dalla risposta JSON dell'API
+            error_response_details_sim = api_e_sim.response.json()
+            # Estrai il messaggio di errore specifico, altrimenti usa il messaggio di default già impostato
+            error_message_content_sim = error_response_details_sim.get('error', {}).get('message', error_message_content_sim)
+            # Estrai il codice di errore specifico
+            error_status_code_sim = error_response_details_sim.get('error', {}).get('code', 'N/A')
+        except Exception:  # Cattura errori durante il parsing JSON o l'accesso ai campi
+            # Se il parsing fallisce, error_message_content_sim e error_status_code_sim mantengono i loro valori precedenti
+            pass
+        # Costruisci il messaggio di errore finale
+        formatted_api_error_sim = f"Codice {error_status_code_sim}: {error_message_content_sim}"
+        return None, f"Errore API Google Sheets: {formatted_api_error_sim}", None
     except gspread.exceptions.SpreadsheetNotFound: return None, f"Errore: Foglio Google simulazione non trovato (ID: '{sheet_id_fetch}').", None
     except Exception as e_sim_fetch: st.error(traceback.format_exc()); return None, f"Errore imprevisto importazione GSheet per simulazione: {type(e_sim_fetch).__name__} - {e_sim_fetch}", None
 
@@ -1629,7 +1659,6 @@ if page == 'Dashboard':
             sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
             default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2]
             selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
-            selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare]
             if selected_labels_compare:
                 fig_compare = go.Figure(); x_axis_data = df_dashboard[GSHEET_DATE_COL]
                 for col in selected_cols_compare: fig_compare.add_trace(go.Scatter(x=x_axis_data, y=df_dashboard[col], mode='lines', name=get_station_label(col, short=True)))
