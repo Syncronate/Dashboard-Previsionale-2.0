@@ -1205,20 +1205,57 @@ def get_download_link_for_file(filepath, link_text=None):
     except Exception as e: st.error(f"Errore generazione link per {filename}: {e}"); return f"<i>Errore link</i>"
 
 # --- Funzione Estrazione ID GSheet & Etichetta Stazione ---
-def extract_sheet_id(url): patterns = [r'/spreadsheets/d/([a-zA-Z0-9-_]+)', r'/d/([a-zA-Z0-9-_]+)/'];
-                        for pattern in patterns: match = re.search(pattern, url);
-                        if match: return match.group(1); return None
+def extract_sheet_id(url):
+    """Estrae l'ID di un foglio Google da un URL."""
+    patterns = [
+        r'/spreadsheets/d/([a-zA-Z0-9-_]+)',  # Formato standard
+        r'/d/([a-zA-Z0-9-_]+)/'               # Altro formato comune
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)  # Se trova una corrispondenza, restituisce l'ID ed esce
+    return None  # Se il ciclo finisce senza trovare nulla, restituisce None
+
 def get_station_label(col_name, short=False):
+    """Genera un'etichetta pulita e leggibile per una colonna del sensore."""
     if col_name in STATION_COORDS:
-        info = STATION_COORDS[col_name]; loc_id = info.get('location_id'); s_type = info.get('type', ''); name = info.get('name', loc_id or col_name)
+        info = STATION_COORDS[col_name]
+        loc_id = info.get('location_id')
+        s_type = info.get('type', '')
+        name = info.get('name', loc_id or col_name)
         if short and loc_id:
             sensors_at_loc = [sc['type'] for sc_name, sc in STATION_COORDS.items() if sc.get('location_id') == loc_id]
-            if len(sensors_at_loc) > 1: type_abbr = {'Pioggia': 'P', 'Livello': 'L', 'Umidità': 'U'}.get(s_type, '?'); label = f"{loc_id} ({type_abbr})"
-            else: label = loc_id
-            label = re.sub(r'\s*\(.*?\)\s*', '', label).strip(); return label[:20] + ('...' if len(label) > 20 else '')
-        else: return name
-    label = col_name; label = re.sub(r'\s*\[.*?\]|\s*\(.*?\)', '', label).strip(); label = label.replace('Sensore ', '').replace('Livello Idrometrico ', '').replace(' - Pioggia Ora', '').replace(' - Livello Misa', '').replace(' - Livello Nevola', ''); parts = label.split(' '); label = ' '.join(parts[:2])
-    return label[:20] + ('...' if len(label) > 20 else '') if short else label
+            if len(sensors_at_loc) > 1:
+                type_abbr = {'Pioggia': 'P', 'Livello': 'L', 'Umidità': 'U'}.get(s_type, '?')
+                label = f"{loc_id} ({type_abbr})"
+            else:
+                label = loc_id
+            label = re.sub(r'\s*\(.*?\)\s*', '', label).strip()
+            return label[:20] + ('...' if len(label) > 20 else '')
+        else:
+            return name
+    
+    # Logica di fallback se la colonna non è in STATION_COORDS
+    label = col_name
+    label = re.sub(r'\s*\[.*?\]|\s*\(.*?\)', '', label).strip()
+    replacements = {
+        'Sensore ': '',
+        'Livello Idrometrico ': '',
+        ' - Pioggia Ora': '',
+        ' - Livello Misa': '',
+        ' - Livello Nevola': ''
+    }
+    for old, new in replacements.items():
+        label = label.replace(old, new)
+    
+    parts = label.split(' ')
+    label = ' '.join(parts[:2])
+    
+    if short:
+        return label[:20] + ('...' if len(label) > 20 else '')
+    else:
+        return label
 
 # --- Inizializzazione Session State ---
 if 'active_model_name' not in st.session_state: st.session_state.active_model_name = None
