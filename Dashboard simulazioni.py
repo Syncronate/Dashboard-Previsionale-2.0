@@ -836,7 +836,7 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
     for i, sensor in enumerate(target_cols):
         fig = go.Figure()
         if start_time:
-            time_steps_datetime = [start_time + timedelta(minutes=30 * (step)) for step in range(output_steps)] # start_time è il primo punto di previsione
+            time_steps_datetime = [start_time + timedelta(minutes=30 * (step + 1)) for step in range(output_steps)] # start_time è il primo punto di previsione
             x_axis, x_title = time_steps_datetime, "Data e Ora"
             x_tick_format = "%d/%m %H:%M"
         else:
@@ -2393,9 +2393,83 @@ elif page == 'Test Modello su Storico':
         default_stride = output_steps_model_test if 'output_steps_model_test' in locals() and output_steps_model_test > 0 else 1
         stride_between_periods = st.number_input("Passo tra Periodi di Test (numero di righe/steps):", min_value=1, value=default_stride, step=1, key="wf_stride", help="Numero di righe da saltare per iniziare il periodo di input successivo.")
 
+    # --- ANTEPRIMA DATE PRIMO PERIODO ---
+    st.markdown("--- \n**Anteprima Date Primo Periodo di Test:**")
+    if df_current_csv is not None and not df_current_csv.empty and date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
+        current_input_start_index_preview = first_input_start_index # Valore corrente dall'input UI
+        input_data_end_index_preview = current_input_start_index_preview + input_steps_model_test
+        actual_data_start_idx_test_preview = current_input_start_index_preview + input_steps_model_test
+        actual_data_end_idx_test_preview = actual_data_start_idx_test_preview + output_steps_model_test
+
+        # Calcolo del massimo indice di inizio ammissibile per l'intero test walk-forward
+        max_permissible_overall_start_idx = len(df_current_csv) - (required_len_for_test + (num_evaluation_periods - 1) * stride_between_periods)
+
+        preview_possible_for_first_period = True
+        if not (current_input_start_index_preview >= 0):
+            st.caption("- Input Start Index non valido (negativo).")
+            preview_possible_for_first_period = False
+        if not (input_data_end_index_preview <= len(df_current_csv)):
+            st.caption(f"- Fine Input Data ({input_data_end_index_preview}) supera lunghezza CSV ({len(df_current_csv)}).")
+            preview_possible_for_first_period = False
+        if not (actual_data_end_idx_test_preview <= len(df_current_csv)):
+            st.caption(f"- Fine Target Data ({actual_data_end_idx_test_preview}) supera lunghezza CSV ({len(df_current_csv)}).")
+            preview_possible_for_first_period = False
+
+        if active_model_type == "Seq2Seq":
+            # forecast_steps_model_test è l'input al decoder, output_steps_model_test è l'output del modello
+            # Il confronto con i dati reali avviene per output_steps_model_test
+            # L'input al decoder richiede max(forecast_steps_model_test, output_steps_model_test) se il forward lo gestisce,
+            # o forecast_steps_model_test se il forward si aspetta esattamente quello.
+            # Per l'anteprima, consideriamo la finestra di dati reali che serve per l'input del decoder.
+            # La lunghezza dei dati per l'input del decoder è forecast_steps_model_test.
+            # Tuttavia, la finestra di confronto è output_steps_model_test.
+            # La finestra di dati futuri che il modello Seq2Seq necessita per il suo input decoder
+            # è `forecast_steps_model_test`.
+            # E la finestra di dati reali per il confronto è `output_steps_model_test`.
+            # Il `required_len_for_test` per Seq2Seq è input_steps + max(forecast_steps, output_steps)
+            # Questo significa che il CSV deve contenere dati sufficienti per coprire questo.
+            # Per l'anteprima del *primo periodo*:
+            # L'input al decoder (future_forecast_data) inizia da actual_data_start_idx_test_preview
+            # e dura per forecast_steps_model_test.
+            future_forecast_data_end_idx_wf_preview = actual_data_start_idx_test_preview + forecast_steps_model_test
+            if not (future_forecast_data_end_idx_wf_preview <= len(df_current_csv)):
+                st.caption(f"- Fine Dati Input Decoder ({future_forecast_data_end_idx_wf_preview}) supera lunghezza CSV ({len(df_current_csv)}).")
+                preview_possible_for_first_period = False
+        
+        if first_input_start_index > max_permissible_overall_start_idx:
+            st.warning(f"Attenzione: L'indice di inizio ({first_input_start_index}) con {num_evaluation_periods} periodi e stride {stride_between_periods} non è valido per l'intero test walk-forward (max indice di inizio consentito: {max(0, max_permissible_overall_start_idx)}). L'anteprima sotto è solo per il primo periodo con l'indice attuale.")
+
+        if preview_possible_for_first_period:
+            try:
+                input_start_str = df_current_csv[date_col_name_csv].iloc[current_input_start_index_preview].strftime('%d/%m/%Y %H:%M')
+                input_end_str = df_current_csv[date_col_name_csv].iloc[input_data_end_index_preview - 1].strftime('%d/%m/%Y %H:%M')
+                target_start_str = df_current_csv[date_col_name_csv].iloc[actual_data_start_idx_test_preview].strftime('%d/%m/%Y %H:%M')
+                target_end_str = df_current_csv[date_col_name_csv].iloc[actual_data_end_idx_test_preview - 1].strftime('%d/%m/%Y %H:%M')
+                
+                st.markdown(f"- **Input Data (Periodo 1):** `{input_start_str}` - `{input_end_str}`")
+                st.markdown(f"- **Target Data (Periodo 1):** `{target_start_str}` - `{target_end_str}`")
+                if active_model_type == "Seq2Seq":
+                     decoder_input_end_idx_for_preview = actual_data_start_idx_test_preview + forecast_steps_model_test -1 # -1 because iloc is inclusive for end
+                     if decoder_input_end_idx_for_preview < len(df_current_csv) and decoder_input_end_idx_for_preview >= actual_data_start_idx_test_preview :
+                         decoder_input_end_str = df_current_csv[date_col_name_csv].iloc[decoder_input_end_idx_for_preview].strftime('%d/%m/%Y %H:%M')
+                         st.markdown(f"- **Decoder Input Data (Periodo 1):** `{target_start_str}` - `{decoder_input_end_str}` (per {forecast_steps_model_test} steps)")
+                     else:
+                         st.caption("- Non è possibile mostrare il range completo per l'input del decoder con gli indici attuali.")
+
+            except IndexError:
+                st.caption("Errore: Indici fuori range per le date del CSV con le impostazioni correnti.")
+            except Exception as e_prev:
+                st.caption(f"Errore durante la generazione dell'anteprima date: {e_prev}")
+        else:
+            st.caption("Anteprima non disponibile per il primo periodo con le impostazioni di indice/lunghezza dati correnti.")
+    else:
+        st.caption("Anteprima date non disponibile: Carica CSV con colonna data valida.")
+    st.markdown("---") # Separatore prima del bottone di esecuzione
+
     max_first_start_idx = len(df_current_csv) - (required_len_for_test + (num_evaluation_periods - 1) * stride_between_periods)
     if first_input_start_index > max_first_start_idx :
-        st.warning(f"L'indice di inizio ({first_input_start_index}) con i periodi e lo stride scelti supera la lunghezza dei dati. Max indice di inizio possibile: {max(0, max_first_start_idx)}. Riduci il numero di periodi, lo stride, o l'indice di inizio.")
+        # Questa warning è ora gestita anche nell'anteprima, ma la lasciamo qui per la logica del bottone
+        # st.warning(f"L'indice di inizio ({first_input_start_index}) con i periodi e lo stride scelti supera la lunghezza dei dati. Max indice di inizio possibile: {max(0, max_first_start_idx)}. Riduci il numero di periodi, lo stride, o l'indice di inizio.")
         can_run_walk_forward = False
     else:
         can_run_walk_forward = True
