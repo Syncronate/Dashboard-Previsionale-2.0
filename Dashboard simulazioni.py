@@ -2221,7 +2221,7 @@ elif page == 'Simulazione':
                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_manual, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = datetime.now(italy_tz)
                            else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
                  else: st.error("Dati input manuali non pronti o invalidi.")
-         elif sim_method == 'Importa da Google Sheet (Ultime Ore)':
+          elif sim_method == 'Importa da Google Sheet (Ultime Ore)':
              st.markdown(f'Importa gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) da Google Sheet per le **{len(feature_columns_model)}** feature di input.'); st.caption(f"Verranno recuperati i dati dal Foglio Google (ID: `{GSHEET_ID}`).")
              date_col_model_name = st.session_state.date_col_name_csv
              column_mapping_gsheet_to_lstm = {'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)', 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)', 'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)', 'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)', 'Umidita\' Sensore 3452 (Montemurello)': HUMIDITY_COL_NAME, 'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)', 'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)', 'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)', 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)', 'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)', GSHEET_DATE_COL: date_col_model_name}
@@ -2238,49 +2238,66 @@ elif page == 'Simulazione':
                      try: final_lstm_df = imported_df_lstm[feature_columns_model]; st.success(f"Recuperate e processate {len(final_lstm_df)} righe LSTM da GSheet."); st.session_state.imported_sim_data_gs_df_lstm = final_lstm_df; st.session_state.imported_sim_start_time_gs_lstm = last_ts_lstm if last_ts_lstm else datetime.now(italy_tz); fetch_error_gsheet_lstm = None; st.rerun()
                      except KeyError as e_cols_lstm: missing_cols_final_lstm = [c for c in feature_columns_model if c not in imported_df_lstm.columns]; st.error(f"Errore selezione colonne LSTM dopo fetch: Colonne mancanti {missing_cols_final_lstm}"); st.session_state.imported_sim_data_gs_df_lstm = None; fetch_error_gsheet_lstm = f"Errore colonne: {e_cols_lstm}"
                  else: st.error("Recupero GSheet per LSTM non riuscito."); fetch_error_gsheet_lstm = "Errore sconosciuto."
+             
              imported_df_lstm_gs = st.session_state.get("imported_sim_data_gs_df_lstm", None)
-             if imported_df_lstm_gs is not None: st.caption("Dati LSTM importati da Google Sheet pronti."); st.expander("Mostra dati importati (Input LSTM)").dataframe(imported_df_lstm_gs.round(3))
-             sim_data_input_lstm_gs = None; sim_start_time_lstm_gs = None
+             if imported_df_lstm_gs is not None: 
+                 st.caption("Dati LSTM importati da Google Sheet pronti.")
+                 # Rimosso expander qui per brevità, il dataframe di input può essere ancora ispezionato se necessario
+                 # st.expander("Mostra dati importati (Input LSTM)").dataframe(imported_df_lstm_gs.round(3)) #DEBUG
+             
+             sim_data_input_lstm_gs = None
+             sim_start_time_lstm_gs = None # Inizializza
+             
              if isinstance(imported_df_lstm_gs, pd.DataFrame):
                  try:
-                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_model]; sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values; last_csv_timestamp = df_current_csv[date_col_name_csv].iloc[-1]
-                     if pd.notna(last_csv_timestamp) and isinstance(last_csv_timestamp, pd.Timestamp): sim_start_time_lstm_gs = last_csv_timestamp.tz_localize(italy_tz) if last_csv_timestamp.tz is None else last_csv_timestamp.tz_convert(italy_tz)
-                     else: sim_start_time_lstm_gs = datetime.now(italy_tz)
-                     st.caption("Dati LSTM pronti per la simulazione."); st.expander("Mostra dati LSTM utilizzati (Input LSTM)").dataframe(imported_df_lstm_gs.round(3))
-                     if np.isnan(sim_data_input_lstm_gs).any(): st.error("Trovati valori NaN nei dati GSheet importati. Impossibile procedere."); sim_data_input_lstm_gs = None
-                 except KeyError as e_key_gs: st.error(f"Colonna mancante nei dati LSTM GSheet: {e_key_gs}"); sim_data_input_lstm_gs = None
-                 except Exception as e_prep_gs: st.error(f"Errore preparazione dati LSTM GSheet: {e_prep_gs}"); sim_data_input_lstm_gs = None
-             input_ready_lstm_gs = sim_data_input_lstm_gs is not None; st.divider()
+                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_model]
+                     sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values
+                     
+                     # --- INIZIO MODIFICA ---
+                     # Prendi il timestamp di inizio dai dati GSheet importati, non dal CSV generico
+                     sim_start_time_lstm_gs = st.session_state.get('imported_sim_start_time_gs_lstm')
+
+                     if sim_start_time_lstm_gs is None:
+                         st.warning("Timestamp di inizio simulazione da GSheet non trovato. Uso ora corrente come fallback.")
+                         sim_start_time_lstm_gs = datetime.now(italy_tz)
+                     elif not isinstance(sim_start_time_lstm_gs, (pd.Timestamp, datetime)):
+                         st.warning(f"Formato timestamp da GSheet ({type(sim_start_time_lstm_gs)}) non valido per l'inizio simulazione. Uso ora corrente.")
+                         sim_start_time_lstm_gs = datetime.now(italy_tz)
+                     
+                     # Assicura che il timestamp sia timezone-aware (Europe/Rome)
+                     if isinstance(sim_start_time_lstm_gs, (pd.Timestamp, datetime)):
+                        if sim_start_time_lstm_gs.tzinfo is None:
+                            sim_start_time_lstm_gs = italy_tz.localize(sim_start_time_lstm_gs, ambiguous='infer', nonexistent='shift_forward')
+                        else:
+                            sim_start_time_lstm_gs = sim_start_time_lstm_gs.tz_convert(italy_tz)
+                     # --- FINE MODIFICA ---
+                     
+                     # st.caption("Dati LSTM pronti per la simulazione.") # Rimosso per brevità
+                     # st.expander("Mostra dati LSTM utilizzati (Input LSTM)").dataframe(imported_df_lstm_gs.round(3)) #DEBUG
+                     if np.isnan(sim_data_input_lstm_gs).any(): 
+                         st.error("Trovati valori NaN nei dati GSheet importati per LSTM. Impossibile procedere.")
+                         sim_data_input_lstm_gs = None
+                 except KeyError as e_key_gs: 
+                     st.error(f"Colonna mancante nei dati LSTM GSheet: {e_key_gs}")
+                     sim_data_input_lstm_gs = None
+                 except Exception as e_prep_gs: 
+                     st.error(f"Errore preparazione dati LSTM GSheet: {e_prep_gs}")
+                     st.error(traceback.format_exc()) # Aggiunto per debug
+                     sim_data_input_lstm_gs = None
+             
+             input_ready_lstm_gs = sim_data_input_lstm_gs is not None
+             st.divider()
              if st.button('Esegui Simulazione LSTM (GSheet)', type="primary", disabled=(not input_ready_lstm_gs), key="sim_run_exec_lstm_gsheet"):
                   if input_ready_lstm_gs:
                       with st.spinner('Simulazione LSTM (GSheet) in corso...'):
-                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = sim_start_time_lstm_gs
-                            else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
-                  else: st.error("Dati input da GSheet non pronti o non importati.")
-         elif sim_method == 'Orario Dettagliato (Tabella)':
-             st.markdown(f'Inserisci i dati per i **{input_steps_model}** passi temporali ({input_steps_model*0.5:.1f} ore) precedenti.'); st.caption(f"La tabella contiene le **{len(feature_columns_model)}** feature di input richieste dal modello.")
-             editor_df_initial = pd.DataFrame(index=range(input_steps_model), columns=feature_columns_model)
-             if data_ready_csv and len(df_current_csv) >= input_steps_model:
-                 try: editor_df_initial = df_current_csv[feature_columns_model].iloc[-input_steps_model:].reset_index(drop=True).astype(float).round(2); st.caption("Tabella precompilata con gli ultimi dati CSV.")
-                 except Exception as e_fill_csv: st.caption(f"Impossibile precompilare con dati CSV ({e_fill_csv}). Inizializzata a 0."); editor_df_initial = editor_df_initial.fillna(0.0)
-             else: editor_df_initial = editor_df_initial.fillna(0.0)
-             edited_lstm_df = st.data_editor(editor_df_initial, key="lstm_editor_sim", num_rows="fixed", use_container_width=True, column_config={col: st.column_config.NumberColumn(label=get_station_label(col, short=True), help=f"Valore storico per {col}", min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None, max_value=100.0 if 'umidit' in col.lower() else None, format="%.1f" if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else "%.2f", step=0.5 if ('pioggia' in col.lower() or 'cumulata' in col.lower()) else (1.0 if 'umidit' in col.lower() else 0.1), required=True ) for col in feature_columns_model})
-             sim_data_input_lstm_editor = None; validation_passed_editor = False
-             if edited_lstm_df is not None and not edited_lstm_df.isnull().any().any():
-                 if edited_lstm_df.shape == (input_steps_model, len(feature_columns_model)):
-                     try: sim_data_input_lstm_editor = edited_lstm_df[feature_columns_model].astype(float).values; validation_passed_editor = True
-                     except KeyError as e_key_edit: st.error(f"Errore colonna tabella: {e_key_edit}")
-                     except ValueError: st.error("Valori non numerici inseriti nella tabella.")
-                     except Exception as e_conv_edit: st.error(f"Errore conversione dati tabella: {e_conv_edit}")
-                 else: st.warning("Numero righe/colonne errato nella tabella.")
-             else: st.warning("Completa o correggi la tabella. Tutti i valori devono essere numerici.")
-             input_ready_lstm_editor = sim_data_input_lstm_editor is not None and validation_passed_editor; st.divider()
-             if st.button('Esegui Simulazione LSTM (Tabella)', type="primary", disabled=(not input_ready_lstm_editor), key="sim_run_exec_lstm_editor"):
-                  if input_ready_lstm_editor:
-                      with st.spinner('Simulazione LSTM (Tabella) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_editor, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = datetime.now(italy_tz)
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
-                  else: st.error("Dati input da tabella non pronti o invalidi.")
+                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2: 
+                                predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, active_scalers[0], active_scalers[1], active_config, active_device)
+                                start_pred_time_lstm = sim_start_time_lstm_gs # Ora usa il timestamp corretto
+                            else: 
+                                st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                                predictions_sim_lstm = None
+                  else: 
+                      st.error("Dati input da GSheet non pronti o non importati correttamente.")
          elif sim_method == 'Usa Ultime Ore da CSV Caricato':
              st.markdown(f"Utilizza gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) dai dati CSV caricati.")
              if not data_ready_csv: st.error("Dati CSV non caricati."); st.stop()
