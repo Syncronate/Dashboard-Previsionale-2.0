@@ -2243,9 +2243,25 @@ elif page == 'Simulazione':
              sim_data_input_lstm_gs = None; sim_start_time_lstm_gs = None
              if isinstance(imported_df_lstm_gs, pd.DataFrame):
                  try:
-                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_model]; sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values; last_csv_timestamp = df_current_csv[date_col_name_csv].iloc[-1]
-                     if pd.notna(last_csv_timestamp) and isinstance(last_csv_timestamp, pd.Timestamp): sim_start_time_lstm_gs = last_csv_timestamp.tz_localize(italy_tz) if last_csv_timestamp.tz is None else last_csv_timestamp.tz_convert(italy_tz)
-                     else: sim_start_time_lstm_gs = datetime.now(italy_tz)
+                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_model]; sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values
+                     # --- INIZIO MODIFICA (basata su feedback utente) ---
+                     # Prendi il timestamp di inizio dai dati GSheet importati, non dal CSV generico
+                     sim_start_time_lstm_gs = st.session_state.get('imported_sim_start_time_gs_lstm')
+
+                     if sim_start_time_lstm_gs is None:
+                         st.warning("Timestamp di inizio simulazione da GSheet non trovato. Uso ora corrente come fallback.")
+                         sim_start_time_lstm_gs = datetime.now(italy_tz)
+                     elif not isinstance(sim_start_time_lstm_gs, (pd.Timestamp, datetime)):
+                         st.warning(f"Formato timestamp da GSheet ({type(sim_start_time_lstm_gs)}) non valido per l'inizio simulazione. Uso ora corrente.")
+                         sim_start_time_lstm_gs = datetime.now(italy_tz)
+
+                     # Assicura che il timestamp sia timezone-aware (Europe/Rome)
+                     if isinstance(sim_start_time_lstm_gs, (pd.Timestamp, datetime)):
+                        if sim_start_time_lstm_gs.tzinfo is None:
+                            sim_start_time_lstm_gs = italy_tz.localize(sim_start_time_lstm_gs, ambiguous='infer', nonexistent='shift_forward')
+                        else:
+                            sim_start_time_lstm_gs = sim_start_time_lstm_gs.tz_convert(italy_tz)
+                     # --- FINE MODIFICA ---
                      st.caption("Dati LSTM pronti per la simulazione."); st.expander("Mostra dati LSTM utilizzati (Input LSTM)").dataframe(imported_df_lstm_gs.round(3))
                      if np.isnan(sim_data_input_lstm_gs).any(): st.error("Trovati valori NaN nei dati GSheet importati. Impossibile procedere."); sim_data_input_lstm_gs = None
                  except KeyError as e_key_gs: st.error(f"Colonna mancante nei dati LSTM GSheet: {e_key_gs}"); sim_data_input_lstm_gs = None
