@@ -2450,6 +2450,17 @@ elif page == 'Test Modello su Storico':
         st.stop()
 
     st.info(f"Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
+
+    st.subheader("Opzioni di Inferenza Avanzata (Walk-Forward)")
+    num_mc_samples_ui_test_wf = st.number_input(
+        label="Numero di Campioni Monte Carlo Dropout (1 per inferenza standard):",
+        min_value=1,
+        value=1,
+        step=1,
+        key="mc_samples_test_wf",
+        help="Valori > 1 attivano MC Dropout. Si applica a ogni periodo del test walk-forward."
+    )
+
     if date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]) and not df_current_csv.empty:
         min_date_csv_str = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
         max_date_csv_str = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
@@ -2647,10 +2658,10 @@ elif page == 'Test Modello su Storico':
                         past_input_np_test_period = input_data_df_test_period[past_feature_cols_model_test].astype(float).values
                         future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf] 
                         future_forecast_np_test_period = future_forecast_df_test_period[forecast_feature_cols_model_test].astype(float).values
-                            predictions_test_period, std_test_period = predict_seq2seq(active_model, past_input_np_test_period, future_forecast_np_test_period, active_scalers, active_config, active_device, num_mc_samples=num_mc_samples_ui_test_wf)
+                        predictions_test_period, std_test_period = predict_seq2seq(active_model, past_input_np_test_period, future_forecast_np_test_period, active_scalers, active_config, active_device, num_mc_samples=num_mc_samples_ui_test_wf)
                     else: # LSTM
                         input_features_np_test_period = input_data_df_test_period[feature_columns_model_test].astype(float).values
-                            predictions_test_period, std_test_period = predict(active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], active_config, active_device, num_mc_samples=num_mc_samples_ui_test_wf)
+                        predictions_test_period, std_test_period = predict(active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], active_config, active_device, num_mc_samples=num_mc_samples_ui_test_wf)
 
                     if predictions_test_period is not None and actual_target_data_np_test_period is not None: # std_test_period also available
                         # Assicurati che le predizioni abbiano la stessa lunghezza degli attuali per il confronto MSE
@@ -2670,8 +2681,8 @@ elif page == 'Test Modello su Storico':
                         "period_num": i_period + 1,
                         "input_df_slice": input_data_df_test_period,
                         "output_df_slice": actual_data_for_comparison_df_period,
-                        "predictions": predictions_test_period, # Mean predictions
-                        "std_devs": std_test_period, # Standard deviations
+                        "predictions": predictions_test_period, 
+                        "std_devs": std_test_period, 
                         "actuals": actual_target_data_np_test_period,
                         "start_time": prediction_start_time_test_period,
                         "mses": period_mses,
