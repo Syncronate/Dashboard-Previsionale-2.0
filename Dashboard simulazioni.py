@@ -1,3 +1,4 @@
+
 import streamlit as st
 import torch
 import pandas as pd
@@ -725,12 +726,12 @@ def load_specific_scalers(config, model_info):
         else: return None, None
 
 # --- Funzioni Predict (Standard e Seq2Seq) ---
-def predict(model, input_data, scaler_features, scaler_targets, config, device, num_mc_samples=1):
+def predict(model, input_data, scaler_features, scaler_targets, config, device):
     if model is None or scaler_features is None or scaler_targets is None or config is None:
-        st.error("Predict LSTM: Modello, scaler o config mancanti."); return None, None
+        st.error("Predict LSTM: Modello, scaler o config mancanti."); return None
 
     model_type = config.get("model_type", "LSTM")
-    if model_type != "LSTM": st.error(f"Funzione predict chiamata su modello non LSTM (tipo: {model_type})"); return None, None
+    if model_type != "LSTM": st.error(f"Funzione predict chiamata su modello non LSTM (tipo: {model_type})"); return None
 
     input_steps = config["input_window"] # Numero di righe da 30min
     output_steps = config["output_window"] # Numero di righe da 30min
@@ -738,57 +739,40 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device, 
     f_cols_cfg = config.get("feature_columns", []) # Deve essere presente per LSTM
 
     if input_data.shape[0] != input_steps:
-        st.error(f"Predict LSTM: Input righe {input_data.shape[0]} != Steps richiesti {input_steps}."); return None, None
+        st.error(f"Predict LSTM: Input righe {input_data.shape[0]} != Steps richiesti {input_steps}."); return None
     expected_features = getattr(scaler_features, 'n_features_in_', len(f_cols_cfg) if f_cols_cfg else None)
     if expected_features is not None and input_data.shape[1] != expected_features:
-        st.error(f"Predict LSTM: Input colonne {input_data.shape[1]} != Features attese {expected_features}."); return None, None
+        st.error(f"Predict LSTM: Input colonne {input_data.shape[1]} != Features attese {expected_features}."); return None
 
-    original_training_state = model.training
-    if num_mc_samples > 1:
-        model.train()
-    else:
-        model.eval()
-
+    model.eval()
     try:
-        predictions_list = []
-        for _ in range(num_mc_samples):
-            inp_norm = scaler_features.transform(input_data)
-            inp_tens = torch.FloatTensor(inp_norm).unsqueeze(0).to(device) # (1, input_steps, num_features)
-            with torch.no_grad(): output = model(inp_tens) # Output: (1, output_steps, num_targets)
+        inp_norm = scaler_features.transform(input_data)
+        inp_tens = torch.FloatTensor(inp_norm).unsqueeze(0).to(device) # (1, input_steps, num_features)
+        with torch.no_grad(): output = model(inp_tens) # Output: (1, output_steps, num_targets)
 
-            if output.shape != (1, output_steps, len(target_cols)):
-                 st.error(f"Predict LSTM: Shape output modello {output.shape} inattesa. Attesa: (1, {output_steps}, {len(target_cols)})"); return None, None
-            out_np = output.cpu().numpy().squeeze(0) # (output_steps, num_targets)
-            
-            expected_targets_scaler = getattr(scaler_targets, 'n_features_in_', len(target_cols))
+        if output.shape != (1, output_steps, len(target_cols)):
+             st.error(f"Predict LSTM: Shape output modello {output.shape} inattesa. Attesa: (1, {output_steps}, {len(target_cols)})"); return None
+        out_np = output.cpu().numpy().squeeze(0) # (output_steps, num_targets)
+        
+        # scaler_targets si aspetta (num_samples, num_features)
+        # out_np ha già la forma corretta (output_steps come num_samples, num_targets come num_features)
+        expected_targets_scaler = getattr(scaler_targets, 'n_features_in_', len(target_cols))
 
-            if out_np.shape[1] != expected_targets_scaler:
-                st.error(f"Predict LSTM: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets_scaler}).")
-                return None, None
-            preds_sample = scaler_targets.inverse_transform(out_np) # (output_steps, num_targets)
-            predictions_list.append(preds_sample)
-        
-        predictions_arr = np.array(predictions_list)
-        mean_predictions = np.mean(predictions_arr, axis=0)
-        
-        if num_mc_samples > 1:
-            std_predictions = np.std(predictions_arr, axis=0)
-        else:
-            std_predictions = np.zeros_like(mean_predictions)
-            
-        return mean_predictions, std_predictions
+        if out_np.shape[1] != expected_targets_scaler:
+            st.error(f"Predict LSTM: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets_scaler}).")
+            return None
+        preds = scaler_targets.inverse_transform(out_np) # (output_steps, num_targets)
+        return preds
     except Exception as e:
         st.error(f"Errore durante predict LSTM: {e}")
-        st.error(traceback.format_exc()); return None, None
-    finally:
-        model.train(original_training_state)
+        st.error(traceback.format_exc()); return None
 
-def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, device, num_mc_samples=1):
+def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, device):
     if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
-         st.error("Predict Seq2Seq: Input mancanti."); return None, None
+         st.error("Predict Seq2Seq: Input mancanti."); return None
 
     model_type = config.get("model_type")
-    if model_type != "Seq2Seq": st.error(f"Funzione predict_seq2seq chiamata su modello non Seq2Seq"); return None, None
+    if model_type != "Seq2Seq": st.error(f"Funzione predict_seq2seq chiamata su modello non Seq2Seq"); return None
 
     input_steps = config["input_window_steps"]
     forecast_steps_input_decoder = config["forecast_window_steps"] # Quanti input forniamo al decoder
@@ -810,56 +794,37 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
     if future_forecast_data.shape[0] < output_steps_model:
          st.warning(f"Predict Seq2Seq: Finestra input forecast ({future_forecast_data.shape[0]}) < finestra output modello ({output_steps_model}). Il modello userà padding.")
     if future_forecast_data.shape[1] != len(forecast_cols):
-         st.error(f"Predict Seq2Seq: Numero colonne dati forecast ({future_forecast_data.shape[1]}) errato (atteso {len(forecast_cols)})."); return None, None
+         st.error(f"Predict Seq2Seq: Numero colonne dati forecast ({future_forecast_data.shape[1]}) errato (atteso {len(forecast_cols)})."); return None
 
-    original_training_state_s2s = model.training
-    if num_mc_samples > 1:
-        model.train()
-    else:
-        model.eval()
 
+    model.eval()
     try:
-        predictions_list_s2s = []
-        for _ in range(num_mc_samples):
-            past_norm = scaler_past.transform(past_data)
-            future_norm = scaler_forecast.transform(future_forecast_data)
-            past_tens = torch.FloatTensor(past_norm).unsqueeze(0).to(device)
-            future_tens = torch.FloatTensor(future_norm).unsqueeze(0).to(device)
+        past_norm = scaler_past.transform(past_data)
+        future_norm = scaler_forecast.transform(future_forecast_data)
+        past_tens = torch.FloatTensor(past_norm).unsqueeze(0).to(device)
+        future_tens = torch.FloatTensor(future_norm).unsqueeze(0).to(device)
 
-            with torch.no_grad(): output = model(past_tens, future_tens, teacher_forcing_ratio=0.0) # Output: (1, output_steps_model, num_targets)
+        with torch.no_grad(): output = model(past_tens, future_tens, teacher_forcing_ratio=0.0) # Output: (1, output_steps_model, num_targets)
 
-            if output.shape != (1, output_steps_model, len(target_cols)):
-                 st.error(f"Predict Seq2Seq: Shape output modello {output.shape} inattesa (attesa (1, {output_steps_model}, {len(target_cols)}))."); return None, None
-            out_np = output.cpu().numpy().squeeze(0) # (output_steps_model, num_targets)
-            
-            expected_targets_scaler = getattr(scaler_targets, 'n_features_in_', len(target_cols)) 
-            if out_np.shape[1] != expected_targets_scaler:
-                 st.error(f"Predict Seq2Seq: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets_scaler})."); return None, None
-            preds_sample_s2s = scalers["targets"].inverse_transform(out_np)
-            predictions_list_s2s.append(preds_sample_s2s)
-
-        predictions_arr_s2s = np.array(predictions_list_s2s)
-        mean_predictions_s2s = np.mean(predictions_arr_s2s, axis=0)
-
-        if num_mc_samples > 1:
-            std_predictions_s2s = np.std(predictions_arr_s2s, axis=0)
-        else:
-            std_predictions_s2s = np.zeros_like(mean_predictions_s2s)
-            
-        return mean_predictions_s2s, std_predictions_s2s
+        if output.shape != (1, output_steps_model, len(target_cols)):
+             st.error(f"Predict Seq2Seq: Shape output modello {output.shape} inattesa (attesa (1, {output_steps_model}, {len(target_cols)}))."); return None
+        out_np = output.cpu().numpy().squeeze(0) # (output_steps_model, num_targets)
+        
+        expected_targets_scaler = getattr(scaler_targets, 'n_features_in_', len(target_cols)) 
+        if out_np.shape[1] != expected_targets_scaler:
+             st.error(f"Predict Seq2Seq: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets_scaler})."); return None
+        preds = scaler_targets.inverse_transform(out_np)
+        return preds
     except Exception as e:
         st.error(f"Errore durante predict Seq2Seq: {e}")
-        st.error(traceback.format_exc()); return None, None
-    finally:
-        model.train(original_training_state_s2s)
+        st.error(traceback.format_exc()); return None
 
 # --- Funzione Grafici Previsioni (MODIFICATA per includere dati reali opzionali) ---
-def plot_predictions(predictions, config, start_time=None, actual_data=None, actual_data_label="Dati Reali CSV", std_predictions=None):
+def plot_predictions(predictions, config, start_time=None, actual_data=None, actual_data_label="Dati Reali CSV"):
     """
     Genera grafici Plotly INDIVIDUALI per le previsioni.
     Se `actual_data` è fornito, lo plotta accanto alle previsioni per confronto.
     Aggiunge linee orizzontali per le soglie H e un secondo asse Y per la portata Q (solo prevista).
-    Se `std_predictions` è fornito, mostra un'area di incertezza.
     """
     if config is None or predictions is None: return []
 
@@ -897,41 +862,10 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
                 y_axis_unit = unit_content.strip()
                 y_axis_title_h = f"Livello H ({y_axis_unit})"
 
-        # Traccia Previsioni H (Mean)
+        # Traccia Previsioni H
         fig.add_trace(go.Scatter(
             x=x_axis_np, y=predictions[:, i], mode='lines+markers', name=f'Previsto H ({y_axis_unit})', yaxis='y1'
         ))
-
-        # Traccia Incertezza (se std_predictions è fornito)
-        if std_predictions is not None and std_predictions.shape == predictions.shape and np.any(std_predictions[:, i] > 1e-5):
-            # Calculate 95% confidence interval
-            upper_bound = predictions[:, i] + 1.96 * std_predictions[:, i]
-            lower_bound = predictions[:, i] - 1.96 * std_predictions[:, i]
-
-            # Upper bound trace (invisible line)
-            fig.add_trace(go.Scatter(
-                x=x_axis_np,
-                y=upper_bound,
-                line=dict(width=0),
-                hoverinfo="skip",
-                showlegend=False,
-                name='Upper CI' # Not shown in legend, but good for structure
-            ))
-            # Lower bound trace (invisible line) with fill to the upper bound trace
-            fig.add_trace(go.Scatter(
-                x=x_axis_np,
-                y=lower_bound,
-                fill='tonexty', # Fill area between this trace and the one above (upper_bound)
-                fillcolor='rgba(0,100,80,0.2)',
-                line=dict(width=0),
-                hoverinfo="skip", # Hover info will be on the mean prediction line
-                showlegend=False, # Legend entry for the fill can be controlled by one trace
-                name='Incertezza (95% CI)' # This name can appear on hover for the filled area
-            ))
-            # It might be better to have a single trace for the filled area for legend purposes,
-            # but Plotly's fill='tonexty' requires two traces if they are not x-reversed like the previous toself method.
-            # For a cleaner legend, one might use the x-reversed method with a single trace and better name.
-            # However, sticking to 'tonexty' as per common examples for CI bands.
 
         # Traccia Dati Reali H (se forniti)
         if actual_data is not None:
@@ -2181,17 +2115,6 @@ elif page == 'Simulazione':
         output_steps_model = active_config['output_window']
 
     st.divider()
-
-    st.subheader("Opzioni di Inferenza Avanzata")
-    num_mc_samples_ui_sim = st.number_input(
-        label="Numero di Campioni Monte Carlo Dropout (1 per inferenza standard):",
-        min_value=1,
-        value=1,
-        step=1,
-        key="mc_samples_sim",
-        help="Valori > 1 attivano MC Dropout per stime di incertezza e potenziale robustezza. Aumenta il tempo di calcolo."
-    )
-
     if active_model_type == "Seq2Seq":
          st.subheader(f"Preparazione Dati Input Simulazione Seq2Seq")
          st.markdown("**Passo 1: Recupero Dati Storici (Input Encoder)**"); st.caption(f"Verranno recuperati gli ultimi {input_steps_model} steps dal Foglio Google (ID: `{GSHEET_ID}`).")
@@ -2243,9 +2166,9 @@ elif page == 'Simulazione':
                        with st.spinner("Simulazione Seq2Seq in corso..."):
                            past_data_np = st.session_state.seq2seq_past_data_gsheet[past_feature_cols_model].astype(float).values
                            future_forecast_np = edited_forecast_df[forecast_feature_cols_model].astype(float).values
-                           predictions_s2s, std_predictions_s2s = predict_seq2seq(active_model, past_data_np, future_forecast_np, active_scalers, active_config, active_device, num_mc_samples=num_mc_samples_ui_sim)
+                           predictions_s2s = predict_seq2seq(active_model, past_data_np, future_forecast_np, active_scalers, active_config, active_device)
                            start_pred_time_s2s = st.session_state.get('seq2seq_last_ts_gsheet', datetime.now(italy_tz))
-                       if predictions_s2s is not None: # std_predictions_s2s will also be not None or np.zeros_like
+                       if predictions_s2s is not None:
                            output_steps_actual = predictions_s2s.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
                            st.subheader(f'Risultato Simulazione Seq2Seq: Prossime {total_hours_output_actual:.1f} ore'); st.caption(f"Previsione calcolata a partire da: {start_pred_time_s2s.strftime('%d/%m/%Y %H:%M:%S %Z')}")
                            results_df_s2s = pd.DataFrame(predictions_s2s, columns=target_columns_model); q_cols_to_add_s2s = {}
@@ -2261,7 +2184,7 @@ elif page == 'Simulazione':
                            if q_col_match in results_df_s2s.columns: rename_dict_s2s[q_col_match] = q_col_match; final_display_columns.append(q_col_match)
                            results_df_s2s_display = results_df_s2s_display.rename(columns=rename_dict_s2s)
                            st.dataframe(results_df_s2s_display[final_display_columns].round(3), hide_index=True); st.markdown(get_table_download_link(results_df_s2s, f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
-                           st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali H e Q)'); figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s, std_predictions=std_predictions_s2s); num_graph_cols = min(len(figs_sim_s2s), 3); sim_cols = st.columns(num_graph_cols) # Pass std_predictions_s2s
+                           st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali H e Q)'); figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s); num_graph_cols = min(len(figs_sim_s2s), 3); sim_cols = st.columns(num_graph_cols)
                            for i, fig_sim in enumerate(figs_sim_s2s):
                               with sim_cols[i % num_graph_cols]: s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_columns_model[i], short=False)); filename_base_s2s_ind = f"grafico_sim_s2s_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.plotly_chart(fig_sim, use_container_width=True); st.markdown(get_plotly_download_link(fig_sim, filename_base_s2s_ind), unsafe_allow_html=True)
                            st.subheader('Grafico Combinato Livelli H Output (Seq2Seq)'); fig_combined_s2s = go.Figure()
@@ -2296,10 +2219,8 @@ elif page == 'Simulazione':
              if st.button('Esegui Simulazione LSTM (Manuale)', type="primary", disabled=(not input_ready_manual), key="sim_run_exec_lstm_manual"):
                  if input_ready_manual:
                       with st.spinner('Simulazione LSTM (Manuale) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: 
-                               predictions_sim_lstm, std_sim_lstm = predict(active_model, sim_data_input_manual, active_scalers[0], active_scalers[1], active_config, active_device, num_mc_samples=num_mc_samples_ui_sim)
-                               start_pred_time_lstm = datetime.now(italy_tz)
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None; std_sim_lstm = None
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_manual, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = datetime.now(italy_tz)
+                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
                  else: st.error("Dati input manuali non pronti o invalidi.")
          elif sim_method == 'Importa da Google Sheet (Ultime Ore)':
              st.markdown(f'Importa gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) da Google Sheet per le **{len(feature_columns_model)}** feature di input.'); st.caption(f"Verranno recuperati i dati dal Foglio Google (ID: `{GSHEET_ID}`).")
@@ -2350,10 +2271,8 @@ elif page == 'Simulazione':
              if st.button('Esegui Simulazione LSTM (GSheet)', type="primary", disabled=(not input_ready_lstm_gs), key="sim_run_exec_lstm_gsheet"):
                   if input_ready_lstm_gs:
                       with st.spinner('Simulazione LSTM (GSheet) in corso...'):
-                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2: 
-                                predictions_sim_lstm, std_sim_lstm = predict(active_model, sim_data_input_lstm_gs, active_scalers[0], active_scalers[1], active_config, active_device, num_mc_samples=num_mc_samples_ui_sim)
-                                start_pred_time_lstm = sim_start_time_lstm_gs
-                            else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None; std_sim_lstm = None
+                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = sim_start_time_lstm_gs
+                            else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
                   else: st.error("Dati input da GSheet non pronti o non importati.")
          elif sim_method == 'Orario Dettagliato (Tabella)':
              st.markdown(f'Inserisci i dati per i **{input_steps_model}** passi temporali ({input_steps_model*0.5:.1f} ore) precedenti.'); st.caption(f"La tabella contiene le **{len(feature_columns_model)}** feature di input richieste dal modello.")
@@ -2376,10 +2295,8 @@ elif page == 'Simulazione':
              if st.button('Esegui Simulazione LSTM (Tabella)', type="primary", disabled=(not input_ready_lstm_editor), key="sim_run_exec_lstm_editor"):
                   if input_ready_lstm_editor:
                       with st.spinner('Simulazione LSTM (Tabella) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: 
-                               predictions_sim_lstm, std_sim_lstm = predict(active_model, sim_data_input_lstm_editor, active_scalers[0], active_scalers[1], active_config, active_device, num_mc_samples=num_mc_samples_ui_sim)
-                               start_pred_time_lstm = datetime.now(italy_tz)
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None; std_sim_lstm = None
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_editor, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = datetime.now(italy_tz)
+                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
                   else: st.error("Dati input da tabella non pronti o invalidi.")
          elif sim_method == 'Usa Ultime Ore da CSV Caricato':
              st.markdown(f"Utilizza gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) dai dati CSV caricati.")
@@ -2401,10 +2318,8 @@ elif page == 'Simulazione':
              if st.button('Esegui Simulazione LSTM (CSV)', type="primary", disabled=(not input_ready_lstm_csv), key="sim_run_exec_lstm_csv"):
                  if input_ready_lstm_csv:
                       with st.spinner('Simulazione LSTM (CSV) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: 
-                               predictions_sim_lstm, std_sim_lstm = predict(active_model, sim_data_input_lstm_csv, active_scalers[0], active_scalers[1], active_config, active_device, num_mc_samples=num_mc_samples_ui_sim)
-                               start_pred_time_lstm = sim_start_time_lstm_csv
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None; std_sim_lstm = None
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_csv, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = sim_start_time_lstm_csv
+                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
                  else: st.error("Dati input da CSV non pronti o invalidi.")
 
          if predictions_sim_lstm is not None:
@@ -2412,7 +2327,7 @@ elif page == 'Simulazione':
              st.subheader(f'Risultato Simulazione LSTM ({sim_method}): Prossime {total_hours_output_actual:.1f} ore')
              if start_pred_time_lstm: st.caption(f"Previsione calcolata a partire da: {start_pred_time_lstm.strftime('%d/%m/%Y %H:%M:%S %Z')}")
              else: st.caption("Previsione calcolata (timestamp iniziale non disponibile).")
-             results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); q_cols_to_add_lstm = {} # predictions_sim_lstm is mean here
+             results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); q_cols_to_add_lstm = {}
              for i_lstm, target_col_h_lstm in enumerate(target_columns_model):
                  sensor_info_lstm = STATION_COORDS.get(target_col_h_lstm)
                  if sensor_info_lstm:
@@ -2427,7 +2342,7 @@ elif page == 'Simulazione':
              if q_col_match in results_df_lstm.columns: rename_dict_lstm[q_col_match] = q_col_match; final_display_columns_lstm.append(q_col_match)
              results_df_lstm_display = results_df_lstm_display.rename(columns=rename_dict_lstm)
              st.dataframe(results_df_lstm_display[final_display_columns_lstm].round(3), hide_index=True); st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
-             st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali H e Q)'); figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm, std_predictions=std_sim_lstm); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
+             st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali H e Q)'); figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
              for i, fig_sim in enumerate(figs_sim_lstm):
                  with sim_cols_lstm[i % num_graph_cols_lstm]: s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_columns_model[i], short=False)); filename_base_lstm_ind = f"grafico_sim_lstm_{sim_method.split()[0].lower()}_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.plotly_chart(fig_sim, use_container_width=True); st.markdown(get_plotly_download_link(fig_sim, filename_base_lstm_ind), unsafe_allow_html=True)
              st.subheader(f'Grafico Combinato Livelli H Output (LSTM {sim_method})'); fig_combined_lstm = go.Figure()
@@ -2450,33 +2365,12 @@ elif page == 'Test Modello su Storico':
         st.stop()
 
     st.info(f"Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
-
-    st.subheader("Opzioni di Inferenza Avanzata (Walk-Forward)")
-    num_mc_samples_ui_test_wf = st.number_input(
-        label="Numero di Campioni Monte Carlo Dropout (1 per inferenza standard):",
-        min_value=1,
-        value=1,
-        step=1,
-        key="mc_samples_test_wf",
-        help="Valori > 1 attivano MC Dropout. Si applica a ogni periodo del test walk-forward."
-    )
-
     if date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]) and not df_current_csv.empty:
         min_date_csv_str = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
         max_date_csv_str = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
         st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe, dal {min_date_csv_str} al {max_date_csv_str}")
     else:
         st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe. Colonna data non valida o assente per range.")
-
-    st.subheader("Opzioni di Inferenza Avanzata (Walk-Forward)")
-    num_mc_samples_ui_test_wf = st.number_input(
-        label="Numero di Campioni Monte Carlo Dropout (1 per inferenza standard):",
-        min_value=1,
-        value=1,
-        step=1,
-        key="mc_samples_test_wf",
-        help="Valori > 1 attivano MC Dropout. Si applica a ogni periodo del test walk-forward."
-    )
 
     target_columns_model_test = active_config['target_columns']
     if active_model_type == "Seq2Seq":
@@ -2642,7 +2536,6 @@ elif page == 'Test Modello su Storico':
 
             with st.spinner(f"Periodo {i_period+1}: Estrazione dati e predizione..."):
                 predictions_test_period = None
-                std_test_period = None # Initialize std_test_period for the current period
                 actual_target_data_np_test_period = None
                 prediction_start_time_test_period = None
                 period_mses = {}
@@ -2658,12 +2551,12 @@ elif page == 'Test Modello su Storico':
                         past_input_np_test_period = input_data_df_test_period[past_feature_cols_model_test].astype(float).values
                         future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf] 
                         future_forecast_np_test_period = future_forecast_df_test_period[forecast_feature_cols_model_test].astype(float).values
-                        predictions_test_period, std_test_period = predict_seq2seq(active_model, past_input_np_test_period, future_forecast_np_test_period, active_scalers, active_config, active_device, num_mc_samples=num_mc_samples_ui_test_wf)
+                        predictions_test_period = predict_seq2seq(active_model, past_input_np_test_period, future_forecast_np_test_period, active_scalers, active_config, active_device)
                     else: # LSTM
                         input_features_np_test_period = input_data_df_test_period[feature_columns_model_test].astype(float).values
-                        predictions_test_period, std_test_period = predict(active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], active_config, active_device, num_mc_samples=num_mc_samples_ui_test_wf)
+                        predictions_test_period = predict(active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], active_config, active_device)
 
-                    if predictions_test_period is not None and actual_target_data_np_test_period is not None: # std_test_period also available
+                    if predictions_test_period is not None and actual_target_data_np_test_period is not None:
                         # Assicurati che le predizioni abbiano la stessa lunghezza degli attuali per il confronto MSE
                         # predictions_test_period può essere più lungo di output_steps_model_test se il modello Seq2Seq
                         # è addestrato per un output_window_steps più lungo di quello usato per il confronto.
@@ -2681,12 +2574,11 @@ elif page == 'Test Modello su Storico':
                         "period_num": i_period + 1,
                         "input_df_slice": input_data_df_test_period,
                         "output_df_slice": actual_data_for_comparison_df_period,
-                        "predictions": predictions_test_period, 
-                        "std_devs": std_test_period, 
-                        "actuals": actual_target_data_np_test_period,
+                        "predictions": predictions_test_period, # Intere predizioni
+                        "actuals": actual_target_data_np_test_period, # Interi dati attuali per confronto
                         "start_time": prediction_start_time_test_period,
                         "mses": period_mses,
-                        "len_compared": len_to_compare
+                        "len_compared": len_to_compare # Lunghezza effettiva usata per MSE
                     })
 
                 except Exception as e_pred_test_period:
@@ -2739,12 +2631,11 @@ elif page == 'Test Modello su Storico':
 
                 st.markdown("**Grafici di Confronto per il Periodo:**")
                 figs_test_period = plot_predictions(
-                    result['predictions'][:len_display, :], # Usa len_display (mean predictions)
+                    result['predictions'][:len_display, :], # Usa len_display
                     active_config, 
                     start_time=result['start_time'], 
-                    actual_data=result['actuals'][:len_display, :], 
-                    actual_data_label="Reale CSV",
-                    std_predictions=result.get('std_devs')[:len_display, :] if result.get('std_devs') is not None else None
+                    actual_data=result['actuals'][:len_display, :], # Usa len_display
+                    actual_data_label="Reale CSV" 
                 )
                 num_graph_cols_test_period = min(len(figs_test_period), 2)
                 graph_cols_test_period = st.columns(num_graph_cols_test_period)
