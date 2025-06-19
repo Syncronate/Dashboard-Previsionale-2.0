@@ -37,23 +37,26 @@ GSHEET_ID = "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA" # ID Foglio per Dashb
 WEATHERLINK_SHEET_NAME = "Dati Stazioni Weatherlink"
 WEATHERLINK_COLS = [
     'Data_Ora',
-    'Temperatura_Aria_Media_C',
-    'Umidita_Relativa_Media_perc',
-    'Pressione_Atmosferica_Media_hPa',
-    'Precipitazione_mm',
-    'Intensita_Precipitazione_mm_h',
-    'Energia_Solare_Media_W_m2',
-    'Direzione_Vento_Media_gradi',
-    'Velocita_Vento_Media_km_h',
-    'Raffica_Vento_Media_km_h',
-    'ET_Davis_mm',
-    'Temperatura_Suolo_Media_C',
-    'Umidita_Suolo_Media_perc',
-    'Temperatura_Foglia_Media_C',
-    'Umidita_Foglia_Media_perc'
+    'Montignano - Direzione Vento (gradi)',
+    'Montignano - Intensità Pioggia (mm/hr)',
+    'Montignano - Pioggia Giornaliera (mm)',
+    'Montignano - Raffica Vento 10 min (km/h)',
+    'Montignano - Velocità Vento (km/h)',
+    'Sant\'Angelo - Direzione Vento (gradi)',
+    'Sant\'Angelo - Intensità Pioggia (mm/hr)',
+    'Sant\'Angelo - Pioggia Giornaliera (mm)',
+    'Sant\'Angelo - Raffica Vento 10 min (km/h)',
+    'Sant\'Angelo - Velocità Vento (km/h)',
+    'Scapezzano - Direzione Vento (gradi)',
+    'Scapezzano - Intensità Pioggia (mm/hr)',
+    'Scapezzano - Pioggia Giornaliera (mm)',
+    'Scapezzano - Raffica Vento 10 min (km/h)',
+    'Scapezzano - Velocità Vento (km/h)'
 ]
-GSHEET_DATE_COL = 'Data_Ora'
-GSHEET_DATE_FORMAT = '%d/%m/%Y %H:%M'
+GSHEET_DATE_COL = 'Data_Ora' # Main sheet date column
+GSHEET_DATE_FORMAT = '%d/%m/%Y %H:%M' # Main sheet date format
+WEATHERLINK_DATE_COL = 'Data_Ora' # Weatherlink sheet date column
+WEATHERLINK_DATE_FORMAT = '%d/%m/%Y %H:%M' # Weatherlink sheet date format
 GSHEET_RELEVANT_COLS = [
     GSHEET_DATE_COL,
     'Arcevia - Pioggia Ora (mm)', 'Barbara - Pioggia Ora (mm)', 'Corinaldo - Pioggia Ora (mm)',
@@ -2085,7 +2088,7 @@ if page == 'Dashboard':
         # Fetch Weatherlink data (all data then filter)
         df_weatherlink_full, error_msg_wl, _ = fetch_weatherlink_gsheet_data(
             cache_time_key_full, GSHEET_ID, WEATHERLINK_SHEET_NAME, WEATHERLINK_COLS,
-            GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=True
+            WEATHERLINK_DATE_COL, WEATHERLINK_DATE_FORMAT, fetch_all=True
         )
         if error_msg_wl: st.warning(f"Errore dati Weatherlink: {error_msg_wl}")
 
@@ -2137,7 +2140,7 @@ if page == 'Dashboard':
         # Fetch recent Weatherlink data
         df_weatherlink, error_msg_wl, _ = fetch_weatherlink_gsheet_data(
             cache_time_key_recent, GSHEET_ID, WEATHERLINK_SHEET_NAME, WEATHERLINK_COLS,
-            GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS
+            WEATHERLINK_DATE_COL, WEATHERLINK_DATE_FORMAT, fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS
         )
         if error_msg_wl: st.warning(f"Errore dati Weatherlink: {error_msg_wl}")
 
