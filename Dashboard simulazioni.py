@@ -34,6 +34,24 @@ st.set_page_config(page_title="Modello Predittivo Idrologico", layout="wide")
 MODELS_DIR = "models"
 DEFAULT_DATA_PATH = "dati_idro.csv"
 GSHEET_ID = "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA" # ID Foglio per Dashboard e Simulazione Base
+WEATHERLINK_SHEET_NAME = "Dati Stazioni Weatherlink"
+WEATHERLINK_COLS = [
+    'Data_Ora',
+    'Temperatura_Aria_Media_C',
+    'Umidita_Relativa_Media_perc',
+    'Pressione_Atmosferica_Media_hPa',
+    'Precipitazione_mm',
+    'Intensita_Precipitazione_mm_h',
+    'Energia_Solare_Media_W_m2',
+    'Direzione_Vento_Media_gradi',
+    'Velocita_Vento_Media_km_h',
+    'Raffica_Vento_Media_km_h',
+    'ET_Davis_mm',
+    'Temperatura_Suolo_Media_C',
+    'Umidita_Suolo_Media_perc',
+    'Temperatura_Foglia_Media_C',
+    'Umidita_Foglia_Media_perc'
+]
 GSHEET_DATE_COL = 'Data_Ora'
 GSHEET_DATE_FORMAT = '%d/%m/%Y %H:%M'
 GSHEET_RELEVANT_COLS = [
@@ -99,6 +117,11 @@ RATING_CURVES = {
 
 
 # --- AGGIORNAMENTO STATION_COORDS CON sensor_code ---
+# Placeholder coordinates for new stations
+LAT_MONTIGNANO, LON_MONTIGNANO = 43.70, 13.20
+LAT_SANTANGELO, LON_SANTANGELO = 43.71, 13.21
+LAT_SCAPEZZANO, LON_SCAPEZZANO = 43.72, 13.22
+
 STATION_COORDS = {
     # Pioggia e Umidità (invariati, senza sensor_code idrometrico)
     'Arcevia - Pioggia Ora (mm)': {'lat': 43.5228, 'lon': 12.9388, 'name': 'Arcevia (Pioggia)', 'type': 'Pioggia', 'location_id': 'Arcevia'},
@@ -121,7 +144,27 @@ STATION_COORDS = {
      'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'lat': 43.6491, 'lon': 13.0476, 'name': 'Corinaldo (Livello Nevola)', 'type': 'Livello', 'location_id': 'Corinaldo', 'sensor_code': '1283'},
     # Livelli CSV/Internal Style (senza scala di deflusso specificata)
      'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'lat': 43.660, 'lon': 13.135, 'name': 'Pianello di Ostra (Livello)', 'type': 'Livello', 'location_id': 'Pianello Ostra'},
-     'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'lat': 43.7176, 'lon': 13.2189, 'name': 'Ponte Garibaldi (Senigallia)', 'type': 'Livello', 'location_id': 'Ponte Garibaldi'}
+     'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'lat': 43.7176, 'lon': 13.2189, 'name': 'Ponte Garibaldi (Senigallia)', 'type': 'Livello', 'location_id': 'Ponte Garibaldi'},
+
+    # --- Weatherlink Stations ---
+    # Montignano
+    'Montignano - Direzione Vento (gradi)': {'lat': LAT_MONTIGNANO, 'lon': LON_MONTIGNANO, 'name': 'Montignano Vento Dir', 'type': 'Direzione Vento', 'location_id': 'Montignano'},
+    'Montignano - Intensità Pioggia (mm/hr)': {'lat': LAT_MONTIGNANO, 'lon': LON_MONTIGNANO, 'name': 'Montignano Pioggia Int.', 'type': 'Intensità Pioggia', 'location_id': 'Montignano'},
+    'Montignano - Pioggia Giornaliera (mm)': {'lat': LAT_MONTIGNANO, 'lon': LON_MONTIGNANO, 'name': 'Montignano Pioggia Giorn.', 'type': 'Pioggia Giornaliera', 'location_id': 'Montignano'},
+    'Montignano - Raffica Vento (km/h)': {'lat': LAT_MONTIGNANO, 'lon': LON_MONTIGNANO, 'name': 'Montignano Vento Raff.', 'type': 'Raffica Vento', 'location_id': 'Montignano'},
+    'Montignano - Velocità Vento (km/h)': {'lat': LAT_MONTIGNANO, 'lon': LON_MONTIGNANO, 'name': 'Montignano Vento Vel.', 'type': 'Velocità Vento', 'location_id': 'Montignano'},
+    # Sant'Angelo
+    'Sant\'Angelo - Direzione Vento (gradi)': {'lat': LAT_SANTANGELO, 'lon': LON_SANTANGELO, 'name': 'Sant\'Angelo Vento Dir', 'type': 'Direzione Vento', 'location_id': 'Sant\'Angelo'},
+    'Sant\'Angelo - Intensità Pioggia (mm/hr)': {'lat': LAT_SANTANGELO, 'lon': LON_SANTANGELO, 'name': 'Sant\'Angelo Pioggia Int.', 'type': 'Intensità Pioggia', 'location_id': 'Sant\'Angelo'},
+    'Sant\'Angelo - Pioggia Giornaliera (mm)': {'lat': LAT_SANTANGELO, 'lon': LON_SANTANGELO, 'name': 'Sant\'Angelo Pioggia Giorn.', 'type': 'Pioggia Giornaliera', 'location_id': 'Sant\'Angelo'},
+    'Sant\'Angelo - Raffica Vento (km/h)': {'lat': LAT_SANTANGELO, 'lon': LON_SANTANGELO, 'name': 'Sant\'Angelo Vento Raff.', 'type': 'Raffica Vento', 'location_id': 'Sant\'Angelo'},
+    'Sant\'Angelo - Velocità Vento (km/h)': {'lat': LAT_SANTANGELO, 'lon': LON_SANTANGELO, 'name': 'Sant\'Angelo Vento Vel.', 'type': 'Velocità Vento', 'location_id': 'Sant\'Angelo'},
+    # Scapezzano
+    'Scapezzano - Direzione Vento (gradi)': {'lat': LAT_SCAPEZZANO, 'lon': LON_SCAPEZZANO, 'name': 'Scapezzano Vento Dir', 'type': 'Direzione Vento', 'location_id': 'Scapezzano'},
+    'Scapezzano - Intensità Pioggia (mm/hr)': {'lat': LAT_SCAPEZZANO, 'lon': LON_SCAPEZZANO, 'name': 'Scapezzano Pioggia Int.', 'type': 'Intensità Pioggia', 'location_id': 'Scapezzano'},
+    'Scapezzano - Pioggia Giornaliera (mm)': {'lat': LAT_SCAPEZZANO, 'lon': LON_SCAPEZZANO, 'name': 'Scapezzano Pioggia Giorn.', 'type': 'Pioggia Giornaliera', 'location_id': 'Scapezzano'},
+    'Scapezzano - Raffica Vento (km/h)': {'lat': LAT_SCAPEZZANO, 'lon': LON_SCAPEZZANO, 'name': 'Scapezzano Vento Raff.', 'type': 'Raffica Vento', 'location_id': 'Scapezzano'},
+    'Scapezzano - Velocità Vento (km/h)': {'lat': LAT_SCAPEZZANO, 'lon': LON_SCAPEZZANO, 'name': 'Scapezzano Vento Vel.', 'type': 'Velocità Vento', 'location_id': 'Scapezzano'},
 }
 # --- FINE AGGIORNAMENTO ---
 
@@ -937,7 +980,7 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
         if "GOOGLE_CREDENTIALS" not in st.secrets:
             return None, "Errore: Credenziali Google mancanti.", actual_fetch_time
         credentials = Credentials.from_service_account_info(st.secrets["GOOGLE_CREDENTIALS"], scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
-        gc = gspread.authorize(credentials); sh = gc.open_by_key(sheet_id); worksheet = sh.sheet1
+        gc = gspread.authorize(credentials); sh = gc.open_by_key(sheet_id); worksheet = sh.sheet1 # Default to sheet1 for this original function
         all_values = worksheet.get_all_values()
         if not all_values or len(all_values) < 2: return None, "Errore: Foglio Google vuoto o con solo intestazione.", actual_fetch_time
 
@@ -981,6 +1024,67 @@ def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, dat
         return None, f"Errore API Google Sheets: {error_msg}", actual_fetch_time
     except gspread.exceptions.SpreadsheetNotFound: return None, f"Errore: Foglio Google non trovato (ID: '{sheet_id}').", actual_fetch_time
     except Exception as e: return None, f"Errore imprevisto recupero dati GSheet: {type(e).__name__} - {e}\n{traceback.format_exc()}", actual_fetch_time
+
+@st.cache_data(ttl=DASHBOARD_REFRESH_INTERVAL_SECONDS, show_spinner="Recupero dati Weatherlink dal foglio Google...")
+def fetch_weatherlink_gsheet_data(_cache_key_time, sheet_id, sheet_name, relevant_columns, date_col, date_format,
+                                fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS):
+    mode = "tutti i dati" if fetch_all else f"ultime {num_rows_default} righe da '{sheet_name}'"
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] ESECUZIONE fetch_weatherlink_gsheet_data ({mode})")
+    actual_fetch_time = datetime.now(italy_tz)
+    try:
+        if "GOOGLE_CREDENTIALS" not in st.secrets:
+            return None, "Errore: Credenziali Google mancanti.", actual_fetch_time
+        credentials = Credentials.from_service_account_info(st.secrets["GOOGLE_CREDENTIALS"], scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
+        gc = gspread.authorize(credentials)
+        sh = gc.open_by_key(sheet_id)
+        try:
+            worksheet = sh.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            return None, f"Errore: Sotto-foglio '{sheet_name}' non trovato.", actual_fetch_time
+        
+        all_values = worksheet.get_all_values()
+        if not all_values or len(all_values) < 2: return None, f"Errore: Sotto-foglio '{sheet_name}' vuoto o con solo intestazione.", actual_fetch_time
+
+        headers = all_values[0]
+        if fetch_all: data_rows = all_values[1:]
+        else: start_index = max(1, len(all_values) - num_rows_default); data_rows = all_values[start_index:]
+
+        missing_cols = [col for col in relevant_columns if col not in headers]
+        if missing_cols: return None, f"Errore: Colonne Weatherlink richieste mancanti in '{sheet_name}': {', '.join(missing_cols)}", actual_fetch_time
+
+        df = pd.DataFrame(data_rows, columns=headers)
+        cols_to_select = [c for c in relevant_columns if c in df.columns]
+        df = df[cols_to_select]
+
+        error_parsing = []
+        for col in df.columns:
+            if col == date_col:
+                try:
+                    df[col] = pd.to_datetime(df[col], format=date_format if date_format else None, errors='coerce', infer_datetime_format=True)
+                    if df[col].isnull().any(): error_parsing.append(f"Formato data non valido per '{col}' in '{sheet_name}'")
+                    if not df[col].empty and df[col].notna().any():
+                        if df[col].dt.tz is None: df[col] = df[col].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                        else: df[col] = df[col].dt.tz_convert(italy_tz)
+                except Exception as e_date: error_parsing.append(f"Errore data '{col}' in '{sheet_name}': {e_date}"); df[col] = pd.NaT
+            else:
+                try:
+                    if col in df.columns:
+                        df_col_str = df[col].astype(str).str.replace(',', '.', regex=False).str.strip()
+                        df[col] = df_col_str.replace(['N/A', '', '-', ' ', 'None', 'null'], np.nan, regex=False)
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                except Exception as e_num: error_parsing.append(f"Errore numerico '{col}' in '{sheet_name}': {e_num}"); df[col] = np.nan
+
+        if date_col in df.columns: df = df.sort_values(by=date_col, na_position='first').reset_index(drop=True)
+        else: st.warning(f"Colonna data '{date_col}' non trovata in '{sheet_name}' per ordinamento.")
+
+        error_message = f"Attenzione conversione dati Weatherlink da '{sheet_name}': " + " | ".join(error_parsing) if error_parsing else None
+        return df, error_message, actual_fetch_time
+    except gspread.exceptions.APIError as api_e:
+        try: error_details = api_e.response.json(); error_msg = error_details.get('error', {}).get('message', str(api_e)); status = error_details.get('error', {}).get('code', 'N/A'); error_msg = f"Codice {status}: {error_msg}";
+        except: error_msg = str(api_e)
+        return None, f"Errore API Google Sheets (Weatherlink '{sheet_name}'): {error_msg}", actual_fetch_time
+    except gspread.exceptions.SpreadsheetNotFound: return None, f"Errore: Foglio Google Weatherlink non trovato (ID: '{sheet_id}', Sheet: '{sheet_name}').", actual_fetch_time
+    except Exception as e: return None, f"Errore imprevisto recupero dati Weatherlink da '{sheet_name}': {type(e).__name__} - {e}\n{traceback.format_exc()}", actual_fetch_time
 
 @st.cache_data(ttl=120, show_spinner="Importazione dati storici da Google Sheet per simulazione...")
 def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format_gs, col_mapping, required_model_cols_fetch, impute_dict):
@@ -1920,6 +2024,8 @@ if page == 'Dashboard':
     if "GOOGLE_CREDENTIALS" not in st.secrets: st.error("Errore Configurazione: Credenziali Google mancanti."); st.stop()
     st.checkbox("Visualizza intervallo di date personalizzato", key="dash_custom_range_check", value=st.session_state.dash_custom_range_check)
     df_dashboard = None; error_msg = None; actual_fetch_time = None; data_source_mode = ""
+    df_weatherlink = None; error_msg_wl = None; actual_fetch_time_wl = None # For Weatherlink data
+
     if st.session_state.dash_custom_range_check:
         st.subheader("Seleziona Intervallo Temporale")
         col_date1, col_date2 = st.columns(2)
@@ -1929,39 +2035,132 @@ if page == 'Dashboard':
         if end_date_select != st.session_state.dash_end_date: st.session_state.dash_end_date = end_date_select
         if start_date_select > end_date_select: st.error("La Data Fine deve essere uguale o successiva alla Data Inizio."); st.stop()
         start_dt_filter = italy_tz.localize(datetime.combine(start_date_select, time.min)); end_dt_filter = italy_tz.localize(datetime.combine(end_date_select, time.max))
-        cache_time_key_full = int(pytime.time() // (DASHBOARD_REFRESH_INTERVAL_SECONDS * 2))
+        cache_time_key_full = int(pytime.time() // (DASHBOARD_REFRESH_INTERVAL_SECONDS * 2)) # Same cache key for both fetches
+
+        # Fetch main dashboard data (Sheet1)
         df_dashboard_full, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(cache_time_key_full, GSHEET_ID, GSHEET_RELEVANT_COLS, GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=True)
         if df_dashboard_full is not None:
-            st.session_state.full_gsheet_data_cache = df_dashboard_full; st.session_state.last_dashboard_error = error_msg; st.session_state.last_dashboard_fetch_time = actual_fetch_time
-            try:
-                if GSHEET_DATE_COL in df_dashboard_full.columns:
-                     if not pd.api.types.is_datetime64_any_dtype(df_dashboard_full[GSHEET_DATE_COL]): df_dashboard_full[GSHEET_DATE_COL] = pd.to_datetime(df_dashboard_full[GSHEET_DATE_COL], errors='coerce')
-                     if df_dashboard_full[GSHEET_DATE_COL].dt.tz is None: df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
-                     else: df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_convert(italy_tz)
-                     df_dashboard = df_dashboard_full[(df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) & (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)].copy()
-                     data_source_mode = f"Dati da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
-                     if df_dashboard.empty: st.warning(f"Nessun dato trovato nell'intervallo selezionato.")
-                else: st.error("Colonna data GSheet mancante per il filtraggio."); df_dashboard = None
-            except Exception as e_filter: st.error(f"Errore durante il filtraggio dei dati per data: {e_filter}"); df_dashboard = None
-        else:
-            df_dashboard_full = st.session_state.get('full_gsheet_data_cache')
-            if df_dashboard_full is not None:
-                 st.warning("Recupero dati GSheet fallito, utilizzo dati precedentemente caricati.")
-                 try:
-                      if GSHEET_DATE_COL in df_dashboard_full.columns:
-                         if df_dashboard_full[GSHEET_DATE_COL].dt.tz is None: df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
-                         else: df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_convert(italy_tz)
-                         df_dashboard = df_dashboard_full[(df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) & (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)].copy()
-                         data_source_mode = f"Dati (da cache) da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
-                 except Exception: pass
-            else: st.error(f"Recupero dati GSheet fallito: {error_msg}")
+            st.session_state.full_gsheet_data_cache = df_dashboard_full # Cache full main data
             st.session_state.last_dashboard_error = error_msg
-    else:
+            st.session_state.last_dashboard_fetch_time = actual_fetch_time # Use main data's fetch time for overall status
+            try:
+                # Ensure date column is datetime and localized for main data
+                if GSHEET_DATE_COL in df_dashboard_full.columns:
+                    if not pd.api.types.is_datetime64_any_dtype(df_dashboard_full[GSHEET_DATE_COL]):
+                        df_dashboard_full[GSHEET_DATE_COL] = pd.to_datetime(df_dashboard_full[GSHEET_DATE_COL], errors='coerce')
+                    if df_dashboard_full[GSHEET_DATE_COL].dt.tz is None:
+                        df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                    else:
+                        df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_convert(italy_tz)
+                    df_dashboard = df_dashboard_full[(df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) & (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)].copy()
+                    data_source_mode = f"Dati principali da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
+                    if df_dashboard.empty: st.warning(f"Nessun dato principale trovato nell'intervallo selezionato.")
+                else:
+                    st.error("Colonna data GSheet mancante nei dati principali per il filtraggio."); df_dashboard = None
+            except Exception as e_filter:
+                st.error(f"Errore durante il filtraggio dei dati principali: {e_filter}"); df_dashboard = None
+        else: # Fallback to cached main data if fetch fails
+            df_dashboard_full_cached = st.session_state.get('full_gsheet_data_cache')
+            if df_dashboard_full_cached is not None:
+                st.warning("Recupero dati GSheet principali fallito, utilizzo dati precedentemente caricati.")
+                df_dashboard_full = df_dashboard_full_cached # Use cached full data
+                # Apply filtering to cached data
+                try:
+                    if GSHEET_DATE_COL in df_dashboard_full.columns:
+                        # Ensure date column is datetime and localized for cached data
+                        if not pd.api.types.is_datetime64_any_dtype(df_dashboard_full[GSHEET_DATE_COL]):
+                            df_dashboard_full[GSHEET_DATE_COL] = pd.to_datetime(df_dashboard_full[GSHEET_DATE_COL], errors='coerce')
+                        if df_dashboard_full[GSHEET_DATE_COL].dt.tz is None:
+                            df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                        else:
+                            df_dashboard_full[GSHEET_DATE_COL] = df_dashboard_full[GSHEET_DATE_COL].dt.tz_convert(italy_tz)
+                        df_dashboard = df_dashboard_full[(df_dashboard_full[GSHEET_DATE_COL] >= start_dt_filter) & (df_dashboard_full[GSHEET_DATE_COL] <= end_dt_filter)].copy()
+                        data_source_mode = f"Dati principali (da cache) da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
+                except Exception as e_filter_cache:
+                     st.error(f"Errore filtraggio dati principali da cache: {e_filter_cache}"); df_dashboard = None
+            else:
+                st.error(f"Recupero dati GSheet principali fallito: {error_msg}")
+            st.session_state.last_dashboard_error = error_msg # Keep the original error
+
+        # Fetch Weatherlink data (all data then filter)
+        df_weatherlink_full, error_msg_wl, _ = fetch_weatherlink_gsheet_data(
+            cache_time_key_full, GSHEET_ID, WEATHERLINK_SHEET_NAME, WEATHERLINK_COLS,
+            GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=True
+        )
+        if error_msg_wl: st.warning(f"Errore dati Weatherlink: {error_msg_wl}")
+
+        if df_weatherlink_full is not None:
+            try:
+                if GSHEET_DATE_COL in df_weatherlink_full.columns:
+                    # Ensure date column is datetime and localized for Weatherlink data
+                    if not pd.api.types.is_datetime64_any_dtype(df_weatherlink_full[GSHEET_DATE_COL]):
+                        df_weatherlink_full[GSHEET_DATE_COL] = pd.to_datetime(df_weatherlink_full[GSHEET_DATE_COL], errors='coerce')
+                    if df_weatherlink_full[GSHEET_DATE_COL].dt.tz is None:
+                        df_weatherlink_full[GSHEET_DATE_COL] = df_weatherlink_full[GSHEET_DATE_COL].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                    else:
+                        df_weatherlink_full[GSHEET_DATE_COL] = df_weatherlink_full[GSHEET_DATE_COL].dt.tz_convert(italy_tz)
+                    df_weatherlink = df_weatherlink_full[(df_weatherlink_full[GSHEET_DATE_COL] >= start_dt_filter) & (df_weatherlink_full[GSHEET_DATE_COL] <= end_dt_filter)].copy()
+                    if df_weatherlink.empty: st.caption(f"Nessun dato Weatherlink trovato nell'intervallo selezionato.")
+                else:
+                    st.warning("Colonna data GSheet mancante nei dati Weatherlink per il filtraggio."); df_weatherlink = None
+            except Exception as e_filter_wl:
+                st.warning(f"Errore durante il filtraggio dei dati Weatherlink: {e_filter_wl}"); df_weatherlink = None
+        
+        # Merge if both dataframes are available
+        if df_dashboard is not None and df_weatherlink is not None:
+            if not df_dashboard.empty and not df_weatherlink.empty:
+                df_dashboard = pd.merge(df_dashboard, df_weatherlink, on=GSHEET_DATE_COL, how='outer', suffixes=('_main', '_weatherlink'))
+                df_dashboard = df_dashboard.sort_values(by=GSHEET_DATE_COL).reset_index(drop=True)
+                data_source_mode += " + Dati Weatherlink"
+            elif df_weatherlink is not None and not df_weatherlink.empty: # df_dashboard was empty or None
+                df_dashboard = df_weatherlink
+                data_source_mode = f"Solo Dati Weatherlink da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
+            # If df_weatherlink is empty or None, df_dashboard remains as is (main data or empty/None)
+        elif df_weatherlink is not None and not df_weatherlink.empty : # df_dashboard was None
+             df_dashboard = df_weatherlink
+             data_source_mode = f"Solo Dati Weatherlink da {start_date_select.strftime('%d/%m/%Y')} a {end_date_select.strftime('%d/%m/%Y')}"
+
+
+    else: # Default: Fetch recent data for both
         cache_time_key_recent = int(pytime.time() // DASHBOARD_REFRESH_INTERVAL_SECONDS)
-        df_dashboard, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(cache_time_key_recent, GSHEET_ID, GSHEET_RELEVANT_COLS, GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS)
-        st.session_state.last_dashboard_data = df_dashboard; st.session_state.last_dashboard_error = error_msg
-        if df_dashboard is not None or error_msg is None: st.session_state.last_dashboard_fetch_time = actual_fetch_time
-        data_source_mode = f"Ultime {DASHBOARD_HISTORY_ROWS // 2} ore circa"
+        
+        # Fetch recent main dashboard data
+        df_dashboard, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(
+            cache_time_key_recent, GSHEET_ID, GSHEET_RELEVANT_COLS, GSHEET_DATE_COL,
+            GSHEET_DATE_FORMAT, fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS
+        )
+        st.session_state.last_dashboard_data = df_dashboard # Store potentially unmerged main data for now
+        st.session_state.last_dashboard_error = error_msg
+        if df_dashboard is not None or error_msg is None:
+            st.session_state.last_dashboard_fetch_time = actual_fetch_time
+        
+        # Fetch recent Weatherlink data
+        df_weatherlink, error_msg_wl, _ = fetch_weatherlink_gsheet_data(
+            cache_time_key_recent, GSHEET_ID, WEATHERLINK_SHEET_NAME, WEATHERLINK_COLS,
+            GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS
+        )
+        if error_msg_wl: st.warning(f"Errore dati Weatherlink: {error_msg_wl}")
+
+        # Merge if both dataframes are available
+        if df_dashboard is not None and df_weatherlink is not None:
+            if not df_dashboard.empty and not df_weatherlink.empty:
+                df_dashboard = pd.merge(df_dashboard, df_weatherlink, on=GSHEET_DATE_COL, how='outer', suffixes=('_main', '_weatherlink'))
+                df_dashboard = df_dashboard.sort_values(by=GSHEET_DATE_COL).reset_index(drop=True)
+                st.session_state.last_dashboard_data = df_dashboard # Update cached data with merged
+                data_source_mode = f"Ultime {DASHBOARD_HISTORY_ROWS // 2} ore circa (Principale + Weatherlink)"
+            elif df_weatherlink is not None and not df_weatherlink.empty: # df_dashboard was empty or None
+                df_dashboard = df_weatherlink
+                st.session_state.last_dashboard_data = df_dashboard
+                data_source_mode = f"Ultime {DASHBOARD_HISTORY_ROWS // 2} ore circa (Solo Weatherlink)"
+            else: # df_weatherlink is empty or None, df_dashboard is main data
+                 data_source_mode = f"Ultime {DASHBOARD_HISTORY_ROWS // 2} ore circa (Solo Principale)"
+        elif df_weatherlink is not None and not df_weatherlink.empty: # df_dashboard was None
+             df_dashboard = df_weatherlink
+             st.session_state.last_dashboard_data = df_dashboard
+             data_source_mode = f"Ultime {DASHBOARD_HISTORY_ROWS // 2} ore circa (Solo Weatherlink)"
+        else: # df_weatherlink is None, df_dashboard is main data
+             data_source_mode = f"Ultime {DASHBOARD_HISTORY_ROWS // 2} ore circa (Solo Principale)"
+
 
     col_status, col_refresh_btn = st.columns([4, 1])
     with col_status:
@@ -1974,14 +2173,17 @@ if page == 'Dashboard':
         else: st.caption("Recupero dati GSheet in corso o fallito...")
     with col_refresh_btn:
         if st.button("Aggiorna Ora", key="dash_refresh_button"): fetch_gsheet_dashboard_data.clear(); fetch_sim_gsheet_data.clear(); st.session_state.full_gsheet_data_cache = None; st.success("Cache GSheet pulita. Ricaricamento..."); pytime.sleep(0.5); st.rerun()
-    last_error_sess = st.session_state.get('last_dashboard_error')
+    last_error_sess = st.session_state.get('last_dashboard_error') # This refers to the main data fetch
     if last_error_sess:
-        if any(x in last_error_sess for x in ["API", "Foglio", "Credenziali", "Errore:"]): st.error(f"Errore GSheet: {last_error_sess}")
-        else: st.warning(f"Attenzione Dati GSheet: {last_error_sess}")
+        if any(x in last_error_sess for x in ["API", "Foglio", "Credenziali", "Errore:"]): st.error(f"Errore GSheet (Dati Principali): {last_error_sess}")
+        else: st.warning(f"Attenzione Dati GSheet (Dati Principali): {last_error_sess}")
+    # Note: error_msg_wl for Weatherlink is displayed directly where it's fetched.
 
     if df_dashboard is not None and not df_dashboard.empty:
-        if GSHEET_DATE_COL in df_dashboard.columns:
-            latest_row_data = df_dashboard.iloc[-1]; last_update_time = latest_row_data.get(GSHEET_DATE_COL)
+        # Ensure GSHEET_DATE_COL is present after potential merge
+        if GSHEET_DATE_COL in df_dashboard.columns and pd.api.types.is_datetime64_any_dtype(df_dashboard[GSHEET_DATE_COL]):
+            latest_row_data = df_dashboard.dropna(subset=[GSHEET_DATE_COL]).iloc[-1] if not df_dashboard.dropna(subset=[GSHEET_DATE_COL]).empty else pd.Series()
+            last_update_time = latest_row_data.get(GSHEET_DATE_COL)
             if pd.notna(last_update_time) and isinstance(last_update_time, pd.Timestamp):
                  time_now_italy = datetime.now(italy_tz)
                  if last_update_time.tzinfo is None: last_update_time = italy_tz.localize(last_update_time)
@@ -2004,19 +2206,35 @@ if page == 'Dashboard':
             threshold = st.session_state.dashboard_thresholds.get(col_name); alert_active = False; value_numeric = np.nan; value_display = "N/D"; unit = ""
             unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', col_name)
             if unit_match: unit_content = unit_match.group(1) or unit_match.group(2); unit = unit_content.strip() if unit_content else ""
+            
             if pd.notna(current_value_H) and isinstance(current_value_H, (int, float, np.number)):
-                 value_numeric = float(current_value_H); fmt_spec = ".1f" if unit in ['mm', '%'] else ".2f"
+                 value_numeric = float(current_value_H)
+                 # Try to determine unit type for formatting, default to .2f for unknown non-integer like values
+                 fmt_spec = ".2f" 
+                 if unit.lower() in ['mm', '%', '°c', 'hpa', 'w/m2', 'km/h', 'gradi']:
+                     fmt_spec = ".1f"
+                 elif unit.lower() in ['mt', 'm']: # Levels might need more precision
+                     fmt_spec = ".2f"
+
                  try: value_display = f"{value_numeric:{fmt_spec}} {unit}".strip()
-                 except ValueError: value_display = f"{value_numeric} {unit}".strip()
-                 if threshold is not None and isinstance(threshold, (int, float, np.number)) and value_numeric >= float(threshold): alert_active = True; current_alerts.append((col_name, value_numeric, threshold))
-            elif pd.notna(current_value_H): value_display = f"{current_value_H} (?)"
-            portata_Q = None; portata_display = "N/A"; sensor_info = STATION_COORDS.get(col_name)
-            if sensor_info:
-                sensor_code = sensor_info.get('sensor_code')
-                if sensor_code and sensor_code in RATING_CURVES:
-                    portata_Q = calculate_discharge(sensor_code, value_numeric)
-                    if portata_Q is not None and pd.notna(portata_Q): portata_display = f"{portata_Q:.2f}"
-                    else: portata_display = "-"
+                 except ValueError: value_display = f"{value_numeric} {unit}".strip() # Fallback if format spec fails
+                 
+                 if threshold is not None and isinstance(threshold, (int, float, np.number)) and value_numeric >= float(threshold):
+                     alert_active = True
+                     current_alerts.append((col_name, value_numeric, threshold))
+            elif pd.notna(current_value_H):
+                value_display = f"{str(current_value_H)} (?)" # Non-numeric but not NaN
+
+            portata_Q = None; portata_display = "-"; # Default to "-" for non-applicable
+            sensor_info = STATION_COORDS.get(col_name)
+            if sensor_info and sensor_info.get('type') == 'Livello' and 'sensor_code' in sensor_info and sensor_info['sensor_code'] in RATING_CURVES:
+                # Only calculate discharge for 'Livello' type sensors with a valid sensor_code and rating curve
+                sensor_code = sensor_info['sensor_code']
+                portata_Q = calculate_discharge(sensor_code, value_numeric)
+                if portata_Q is not None and pd.notna(portata_Q):
+                    portata_display = f"{portata_Q:.2f}"
+                # else: portata_display remains "-" if Q is None or NaN
+            
             status = "ALLERTA" if alert_active else ("OK" if pd.notna(value_numeric) else "N/D")
             threshold_display = f"{float(threshold):.1f}" if threshold is not None else "-"
             table_rows.append({"Stazione": get_station_label(col_name, short=True), "Valore H": value_display, "Portata Q (m³/s)": portata_display, "Soglia H": threshold_display, "Stato": status, "Valore Numerico H": value_numeric, "Soglia Numerica H": float(threshold) if threshold else None})
