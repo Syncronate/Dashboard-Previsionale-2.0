@@ -37,7 +37,6 @@ GSHEET_ID = "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA" # ID Foglio per Dashb
 WEATHERLINK_SHEET_NAME = "Dati Stazioni Weatherlink"
 WEATHERLINK_COLS = [
     'Data_Ora',
-    'Montignano - Direzione Vento (gradi)',
     'Montignano - Intensità Pioggia (mm/hr)',
     'Montignano - Pioggia Giornaliera (mm)',
     'Montignano - Raffica Vento 10 min (km/h)',
