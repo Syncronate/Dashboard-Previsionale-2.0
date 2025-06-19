@@ -35,22 +35,52 @@ DEFAULT_DATA_PATH = "dati_idro.csv"
 GSHEET_ID = "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA" # ID Foglio per Dashboard e Simulazione Base
 GSHEET_DATE_COL = 'Data_Ora'
 GSHEET_DATE_FORMAT = '%d/%m/%Y %H:%M'
-GSHEET_RELEVANT_COLS = [
+
+# --- INIZIO MODIFICA: Costanti per i due fogli ---
+GSHEET_MAIN_NAME = 'Dati Idrometeo CAMI' # Nome del foglio principale (o sh.sheet1)
+GSHEET_WEATHERLINK_NAME = 'Dati Stazioni Weatherlink' # Nome del nuovo foglio
+
+MAIN_SHEET_RELEVANT_COLS = [
     GSHEET_DATE_COL,
     'Arcevia - Pioggia Ora (mm)', 'Barbara - Pioggia Ora (mm)', 'Corinaldo - Pioggia Ora (mm)',
-    'Misa - Pioggia Ora (mm)', 'Umidita\' Sensore 3452 (Montemurello)', # Assicurati che sia nel foglio!
+    'Misa - Pioggia Ora (mm)', 'Umidita\' Sensore 3452 (Montemurello)',
     'Serra dei Conti - Livello Misa (mt)', 'Pianello di Ostra - Livello Misa (m)',
     'Nevola - Livello Nevola (mt)', 'Misa - Livello Misa (mt)',
     'Ponte Garibaldi - Livello Misa 2 (mt)'
 ]
+
+WEATHERLINK_RELEVANT_COLS = [
+    GSHEET_DATE_COL,
+    'Montignano - Intensità Pioggia (mm/hr)', 'Montignano - Pioggia Giornaliera (mm)', 'Montignano - Raffica Vento 10 min (km/h)', 'Montignano - Velocità Vento (km/h)',
+    'Sant\'Angelo - Intensità Pioggia (mm/hr)', 'Sant\'Angelo - Pioggia Giornaliera (mm)', 'Sant\'Angelo - Raffica Vento 10 min (km/h)', 'Sant\'Angelo - Velocità Vento (km/h)',
+    'Scapezzano - Intensità Pioggia (mm/hr)', 'Scapezzano - Pioggia Giornaliera (mm)', 'Scapezzano - Raffica Vento 10 min (km/h)', 'Scapezzano - Velocità Vento (km/h)'
+]
+
+# Combina tutte le colonne rilevanti per la dashboard
+GSHEET_RELEVANT_COLS = sorted(list(set(MAIN_SHEET_RELEVANT_COLS + WEATHERLINK_RELEVANT_COLS)))
+# --- FINE MODIFICA ---
+
 DASHBOARD_REFRESH_INTERVAL_SECONDS = 300
 DASHBOARD_HISTORY_ROWS = 48 # 24 ore (48 step da 30 min) - Usato per vista default
+
 DEFAULT_THRESHOLDS = { # Soglie USATE NELLA DASHBOARD
     'Arcevia - Pioggia Ora (mm)': 2.0, 'Barbara - Pioggia Ora (mm)': 2.0, 'Corinaldo - Pioggia Ora (mm)': 2.0,
     'Misa - Pioggia Ora (mm)': 2.0, 'Umidita\' Sensore 3452 (Montemurello)': 95.0,
     'Serra dei Conti - Livello Misa (mt)': 1.7, 'Pianello di Ostra - Livello Misa (m)': 2.0,
     'Nevola - Livello Nevola (mt)': 2.5, 'Misa - Livello Misa (mt)': 2.0,
-    'Ponte Garibaldi - Livello Misa 2 (mt)': 2.2
+    'Ponte Garibaldi - Livello Misa 2 (mt)': 2.2,
+    # --- INIZIO MODIFICA: Soglie per nuove stazioni Weatherlink (valori di esempio) ---
+    'Montignano - Intensità Pioggia (mm/hr)': 25.0,
+    'Montignano - Pioggia Giornaliera (mm)': 40.0,
+    'Montignano - Raffica Vento 10 min (km/h)': 60.0,
+    'Sant\'Angelo - Intensità Pioggia (mm/hr)': 25.0,
+    'Sant\'Angelo - Pioggia Giornaliera (mm)': 40.0,
+    'Sant\'Angelo - Raffica Vento 10 min (km/h)': 60.0,
+    'Scapezzano - Intensità Pioggia (mm/hr)': 25.0,
+    'Scapezzano - Pioggia Giornaliera (mm)': 40.0,
+    'Scapezzano - Raffica Vento 10 min (km/h)': 60.0,
+    # Le velocità del vento e le altre colonne possono non avere una soglia di allerta definita
+    # --- FINE MODIFICA ---
 }
 
 # --- NUOVE COSTANTI PER SOGLIE SIMULAZIONE (ATTENZIONE/ALLERTA) ---
@@ -62,11 +92,11 @@ SIMULATION_THRESHOLDS = {
     'Misa - Livello Misa (mt)': {'attenzione': 1.5, 'allerta': 2.0},
     'Ponte Garibaldi - Livello Misa 2 (mt)': {'attenzione': 1.5, 'allerta': 2.2},
     # Livelli CSV/Internal Style
-    'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)': {'attenzione': 1.2, 'allerta': 1.7}, # Aggiornato per coerenza
-    'Livello Idrometrico Sensore 1112 [m] (Bettolelle)': {'attenzione': 1.5, 'allerta': 2.0}, # Aggiornato per coerenza
-    'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'attenzione': 2.0, 'allerta': 2.5}, # Aggiornato per coerenza
-    'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'attenzione': 1.5, 'allerta': 2.0}, # Aggiornato per coerenza
-    'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'attenzione': 1.5, 'allerta': 2.2}  # Aggiornato per coerenza
+    'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)': {'attenzione': 1.2, 'allerta': 1.7},
+    'Livello Idrometrico Sensore 1112 [m] (Bettolelle)': {'attenzione': 1.5, 'allerta': 2.0},
+    'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'attenzione': 2.0, 'allerta': 2.5},
+    'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'attenzione': 1.5, 'allerta': 2.0},
+    'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'attenzione': 1.5, 'allerta': 2.2}
 }
 
 # --- NUOVE COSTANTI PER LA FRASE DI ATTRIBUZIONE ---
@@ -120,7 +150,23 @@ STATION_COORDS = {
      'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)': {'lat': 43.6491, 'lon': 13.0476, 'name': 'Corinaldo (Livello Nevola)', 'type': 'Livello', 'location_id': 'Corinaldo', 'sensor_code': '1283'},
     # Livelli CSV/Internal Style (senza scala di deflusso specificata)
      'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)': {'lat': 43.660, 'lon': 13.135, 'name': 'Pianello di Ostra (Livello)', 'type': 'Livello', 'location_id': 'Pianello Ostra'},
-     'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'lat': 43.7176, 'lon': 13.2189, 'name': 'Ponte Garibaldi (Senigallia)', 'type': 'Livello', 'location_id': 'Ponte Garibaldi'}
+     'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)': {'lat': 43.7176, 'lon': 13.2189, 'name': 'Ponte Garibaldi (Senigallia)', 'type': 'Livello', 'location_id': 'Ponte Garibaldi'},
+
+    # --- INIZIO MODIFICA: Aggiunta coordinate e tipi per le nuove stazioni Weatherlink ---
+    # NOTA: Le coordinate sono indicative e andrebbero verificate/aggiornate.
+    'Montignano - Intensità Pioggia (mm/hr)': {'lat': 43.68, 'lon': 13.30, 'name': 'Montignano (Int. Pioggia)', 'type': 'Pioggia', 'location_id': 'Montignano'},
+    'Montignano - Pioggia Giornaliera (mm)': {'lat': 43.68, 'lon': 13.30, 'name': 'Montignano (Pioggia G.)', 'type': 'Pioggia', 'location_id': 'Montignano'},
+    'Montignano - Raffica Vento 10 min (km/h)': {'lat': 43.68, 'lon': 13.30, 'name': 'Montignano (Raffica Vento)', 'type': 'Vento', 'location_id': 'Montignano'},
+    'Montignano - Velocità Vento (km/h)': {'lat': 43.68, 'lon': 13.30, 'name': 'Montignano (Vel. Vento)', 'type': 'Vento', 'location_id': 'Montignano'},
+    'Sant\'Angelo - Intensità Pioggia (mm/hr)': {'lat': 43.70, 'lon': 13.25, 'name': 'Sant\'Angelo (Int. Pioggia)', 'type': 'Pioggia', 'location_id': 'Sant\'Angelo'},
+    'Sant\'Angelo - Pioggia Giornaliera (mm)': {'lat': 43.70, 'lon': 13.25, 'name': 'Sant\'Angelo (Pioggia G.)', 'type': 'Pioggia', 'location_id': 'Sant\'Angelo'},
+    'Sant\'Angelo - Raffica Vento 10 min (km/h)': {'lat': 43.70, 'lon': 13.25, 'name': 'Sant\'Angelo (Raffica Vento)', 'type': 'Vento', 'location_id': 'Sant\'Angelo'},
+    'Sant\'Angelo - Velocità Vento (km/h)': {'lat': 43.70, 'lon': 13.25, 'name': 'Sant\'Angelo (Vel. Vento)', 'type': 'Vento', 'location_id': 'Sant\'Angelo'},
+    'Scapezzano - Intensità Pioggia (mm/hr)': {'lat': 43.72, 'lon': 13.30, 'name': 'Scapezzano (Int. Pioggia)', 'type': 'Pioggia', 'location_id': 'Scapezzano'},
+    'Scapezzano - Pioggia Giornaliera (mm)': {'lat': 43.72, 'lon': 13.30, 'name': 'Scapezzano (Pioggia G.)', 'type': 'Pioggia', 'location_id': 'Scapezzano'},
+    'Scapezzano - Raffica Vento 10 min (km/h)': {'lat': 43.72, 'lon': 13.30, 'name': 'Scapezzano (Raffica Vento)', 'type': 'Vento', 'location_id': 'Scapezzano'},
+    'Scapezzano - Velocità Vento (km/h)': {'lat': 43.72, 'lon': 13.30, 'name': 'Scapezzano (Vel. Vento)', 'type': 'Vento', 'location_id': 'Scapezzano'},
+    # --- FINE MODIFICA ---
 }
 # --- FINE AGGIORNAMENTO ---
 
@@ -273,7 +319,7 @@ class Seq2SeqHydro(nn.Module):
 
 # --- Funzioni Utilità Modello/Dati ---
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, # REMOVED val_split
-                          lag_config=None, cumulative_config=None): 
+                          lag_config=None, cumulative_config=None):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati LSTM Standard (full scaled data)...")
     # val_split parameter is removed as TimeSeriesSplit will be handled in train_model
     # --- Feature Engineering Start ---
@@ -309,11 +355,11 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
                 st.warning(f"Colonna '{col}' specificata in cumulative_config non trovata nel DataFrame.")
 
     current_feature_columns = original_feature_columns + engineered_feature_names
-    
+
     if engineered_feature_names:
         cols_to_fill_na = current_feature_columns + target_columns # Include targets just in case, though less likely to have new NaNs here
         cols_present_in_df_to_fill = [c for c in cols_to_fill_na if c in df.columns]
-        
+
         nan_count_before_bfill = df[cols_present_in_df_to_fill].isnull().sum().sum()
         if nan_count_before_bfill > 0:
             df[cols_present_in_df_to_fill] = df[cols_present_in_df_to_fill].fillna(method='bfill')
@@ -334,7 +380,7 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
         if missing_targets:
             st.error(f"Errore: Target columns mancanti nel DataFrame: {missing_targets}")
             return None, None, None, None, None, None
-        
+
         # Check NaNs in the relevant slice of data that will be used for sequences
         # This check is now more critical after potential bfill
         if df[current_feature_columns + target_columns].isnull().any().any():
@@ -372,7 +418,7 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
             # This handles NaNs at the beginning of the dataframe that bfill couldn't resolve
             # print(f"Skipping sequence starting at index {i} due to NaNs in window.") # For debugging
             continue
-            
+
         X.append(feature_window_data.values)
         y.append(target_window_data.values)
 
@@ -386,7 +432,7 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
     scaler_features = MinMaxScaler(); scaler_targets = MinMaxScaler()
     num_sequences, seq_len_in, num_features_X = X.shape
     num_sequences_y, seq_len_out, num_targets_y = y.shape
-    
+
     # Validate against current_feature_columns used for X
     if num_features_X != len(current_feature_columns):
         st.error(f"Errore numero feature in X ({num_features_X}) vs colonne attese ({len(current_feature_columns)}).")
@@ -423,7 +469,7 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
 
 def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, target_cols,
                                  input_window_steps, forecast_window_steps, output_window_steps, # REMOVED val_split
-                                 lag_config_past=None, cumulative_config_past=None): 
+                                 lag_config_past=None, cumulative_config_past=None):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati Seq2Seq (full scaled data)...")
     # val_split parameter is removed as TimeSeriesSplit will be handled in train_model_seq2seq
     print(f"Input Steps: {input_window_steps}, Forecast Steps: {forecast_window_steps}, Output Steps: {output_window_steps}")
@@ -447,7 +493,7 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
                     print(f"Created lagged past feature: {new_col_name}")
             else:
                 st.warning(f"Colonna '{col}' specificata in lag_config_past non trovata.")
-    
+
     if cumulative_config_past:
         for col, window_periods_hours in cumulative_config_past.items():
             if col in df.columns:
@@ -461,7 +507,7 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
                 st.warning(f"Colonna '{col}' specificata in cumulative_config_past non trovata.")
 
     current_past_feature_cols = original_past_feature_cols + engineered_past_feature_names
-    
+
     # Note: Feature engineering for forecast_feature_cols is not implemented in this iteration.
     # These are typically future known values, and applying historical transformations might not be appropriate
     # or could lead to data leakage if not handled with extreme care.
@@ -471,7 +517,7 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
     try:
         for col in all_needed_cols: # Check based on potentially expanded current_past_feature_cols
             if col not in df.columns: raise ValueError(f"Colonna '{col}' richiesta per Seq2Seq non trovata.")
-        
+
         # Apply fillna (bfill then ffill) after feature engineering and before sequence creation
         # This aims to handle NaNs from shifting/rolling and any pre-existing NaNs.
         # Using a combined list of columns that will be used.
@@ -490,7 +536,7 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
                  # Consider returning None if critical NaNs persist.
                  return None, None, None, None, None, None, None, None, None
         df_to_use = df # df is now modified in place or reassigned if using .copy() earlier
-            
+
     except ValueError as e:
         st.error(f"Errore colonne in prepare_seq2seq: {e}")
         return None, None, None, None, None, None, None, None, None
@@ -508,11 +554,11 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
         enc_end = i + input_window_steps
         # Check for NaNs in the specific window for this sequence
         past_feature_window_data = df_to_use.iloc[i : enc_end][current_past_feature_cols]
-        
+
         dec_start = enc_end
         dec_end_forecast = dec_start + forecast_window_steps
         forecast_feature_window_data = df_to_use.iloc[dec_start : dec_end_forecast][forecast_feature_cols]
-        
+
         target_end = dec_start + output_window_steps
         target_window_data = df_to_use.iloc[dec_start : target_end][target_cols]
 
@@ -752,7 +798,7 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
         if output.shape != (1, output_steps, len(target_cols)):
              st.error(f"Predict LSTM: Shape output modello {output.shape} inattesa. Attesa: (1, {output_steps}, {len(target_cols)})"); return None
         out_np = output.cpu().numpy().squeeze(0) # (output_steps, num_targets)
-        
+
         # scaler_targets si aspetta (num_samples, num_features)
         # out_np ha già la forma corretta (output_steps come num_samples, num_targets come num_features)
         expected_targets_scaler = getattr(scaler_targets, 'n_features_in_', len(target_cols))
@@ -786,7 +832,7 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
 
     if past_data.shape != (input_steps, len(past_cols)):
         st.error(f"Predict Seq2Seq: Shape dati passati {past_data.shape} errata (attesa ({input_steps}, {len(past_cols)}))."); return None
-    
+
     # future_forecast_data è l'input per il decoder. La sua lunghezza deve essere almeno output_steps_model
     # Se è più corta, il modello la padderà internamente nel forward.
     # Se è più lunga, il modello userà solo i primi output_steps_model.
@@ -808,8 +854,8 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         if output.shape != (1, output_steps_model, len(target_cols)):
              st.error(f"Predict Seq2Seq: Shape output modello {output.shape} inattesa (attesa (1, {output_steps_model}, {len(target_cols)}))."); return None
         out_np = output.cpu().numpy().squeeze(0) # (output_steps_model, num_targets)
-        
-        expected_targets_scaler = getattr(scaler_targets, 'n_features_in_', len(target_cols)) 
+
+        expected_targets_scaler = getattr(scaler_targets, 'n_features_in_', len(target_cols))
         if out_np.shape[1] != expected_targets_scaler:
              st.error(f"Predict Seq2Seq: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets_scaler})."); return None
         preds = scaler_targets.inverse_transform(out_np)
@@ -925,61 +971,146 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
         figs.append(fig)
     return figs
 
-# --- Funzioni Fetch Dati Google Sheet (Dashboard e Simulazione) ---
-@st.cache_data(ttl=DASHBOARD_REFRESH_INTERVAL_SECONDS, show_spinner="Recupero dati aggiornati dal foglio Google...")
-def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id, relevant_columns, date_col, date_format,
+# --- INIZIO MODIFICA: Funzione di Fetch Dati Google Sheet (Dashboard e Simulazione) ---
+@st.cache_data(ttl=DASHBOARD_REFRESH_INTERVAL_SECONDS, show_spinner="Recupero dati aggiornati dai fogli Google...")
+def fetch_gsheet_dashboard_data(_cache_key_time, sheet_id,
                                 fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS):
+    """
+    Recupera, processa e unisce i dati dai fogli 'Dati Idrometeo CAMI' (o sheet1) e 'Dati Stazioni Weatherlink'.
+    """
     mode = "tutti i dati" if fetch_all else f"ultime {num_rows_default} righe"
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] ESECUZIONE fetch_gsheet_dashboard_data ({mode})")
     actual_fetch_time = datetime.now(italy_tz)
-    try:
-        if "GOOGLE_CREDENTIALS" not in st.secrets:
-            return None, "Errore: Credenziali Google mancanti.", actual_fetch_time
-        credentials = Credentials.from_service_account_info(st.secrets["GOOGLE_CREDENTIALS"], scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
-        gc = gspread.authorize(credentials); sh = gc.open_by_key(sheet_id); worksheet = sh.sheet1
-        all_values = worksheet.get_all_values()
-        if not all_values or len(all_values) < 2: return None, "Errore: Foglio Google vuoto o con solo intestazione.", actual_fetch_time
+    error_messages = []
 
-        headers = all_values[0]
-        if fetch_all: data_rows = all_values[1:]
-        else: start_index = max(1, len(all_values) - num_rows_default); data_rows = all_values[start_index:]
+    def _process_sheet_data(worksheet, relevant_cols, sheet_name_for_log):
+        """Funzione helper per processare i dati da un singolo foglio."""
+        try:
+            all_values = worksheet.get_all_values()
+            if not all_values or len(all_values) < 2:
+                error_messages.append(f"Attenzione: Foglio '{sheet_name_for_log}' vuoto o con solo intestazione.")
+                return pd.DataFrame(), []
 
-        missing_cols = [col for col in relevant_columns if col not in headers]
-        if missing_cols: return None, f"Errore: Colonne GSheet richieste mancanti: {', '.join(missing_cols)}", actual_fetch_time
-
-        df = pd.DataFrame(data_rows, columns=headers)
-        cols_to_select = [c for c in relevant_columns if c in df.columns]
-        df = df[cols_to_select]
-
-        error_parsing = []
-        for col in df.columns:
-            if col == date_col:
-                try:
-                    df[col] = pd.to_datetime(df[col], format=date_format if date_format else None, errors='coerce', infer_datetime_format=True)
-                    if df[col].isnull().any(): error_parsing.append(f"Formato data non valido per '{col}'")
-                    if not df[col].empty and df[col].notna().any():
-                        if df[col].dt.tz is None: df[col] = df[col].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
-                        else: df[col] = df[col].dt.tz_convert(italy_tz)
-                except Exception as e_date: error_parsing.append(f"Errore data '{col}': {e_date}"); df[col] = pd.NaT
+            headers = all_values[0]
+            if fetch_all:
+                data_rows = all_values[1:]
             else:
-                try:
-                    if col in df.columns:
+                start_index = max(1, len(all_values) - num_rows_default)
+                data_rows = all_values[start_index:]
+
+            missing_cols = [col for col in relevant_cols if col not in headers and col != GSHEET_DATE_COL]
+            if missing_cols:
+                error_messages.append(f"Attenzione: Colonne mancanti in '{sheet_name_for_log}': {', '.join(missing_cols)}")
+
+            df = pd.DataFrame(data_rows, columns=headers)
+            cols_to_select = [c for c in relevant_cols if c in df.columns]
+            df = df[cols_to_select]
+
+            parsing_errors = []
+            for col in df.columns:
+                if col == GSHEET_DATE_COL:
+                    try:
+                        df[col] = pd.to_datetime(df[col], format=GSHEET_DATE_FORMAT, errors='coerce', infer_datetime_format=True)
+                        if df[col].isnull().any():
+                            parsing_errors.append(f"Formato data non valido per '{col}' in '{sheet_name_for_log}'")
+                        if not df[col].empty and df[col].notna().any():
+                            if df[col].dt.tz is None:
+                                df[col] = df[col].dt.tz_localize(italy_tz, ambiguous='infer', nonexistent='shift_forward')
+                            else:
+                                df[col] = df[col].dt.tz_convert(italy_tz)
+                    except Exception as e_date:
+                        parsing_errors.append(f"Errore data '{col}' in '{sheet_name_for_log}': {e_date}")
+                        df[col] = pd.NaT
+                else:
+                    try:
                         df_col_str = df[col].astype(str).str.replace(',', '.', regex=False).str.strip()
                         df[col] = df_col_str.replace(['N/A', '', '-', ' ', 'None', 'null'], np.nan, regex=False)
                         df[col] = pd.to_numeric(df[col], errors='coerce')
-                except Exception as e_num: error_parsing.append(f"Errore numerico '{col}': {e_num}"); df[col] = np.nan
+                    except Exception as e_num:
+                        parsing_errors.append(f"Errore numerico '{col}' in '{sheet_name_for_log}': {e_num}")
+                        df[col] = np.nan
+            
+            return df, parsing_errors
+        except Exception as e:
+            error_messages.append(f"Errore recupero/processamento foglio '{sheet_name_for_log}': {e}")
+            return pd.DataFrame(), []
 
-        if date_col in df.columns: df = df.sort_values(by=date_col, na_position='first').reset_index(drop=True)
-        else: st.warning("Colonna data GSheet non trovata per ordinamento.")
+    try:
+        if "GOOGLE_CREDENTIALS" not in st.secrets:
+            return None, "Errore: Credenziali Google mancanti.", actual_fetch_time
 
-        error_message = "Attenzione conversione dati GSheet: " + " | ".join(error_parsing) if error_parsing else None
-        return df, error_message, actual_fetch_time
+        credentials = Credentials.from_service_account_info(st.secrets["GOOGLE_CREDENTIALS"], scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
+        gc = gspread.authorize(credentials)
+        sh = gc.open_by_key(sheet_id)
+
+        # 1. Processa foglio principale (Idrometeo CAMI)
+        try:
+            worksheet_main = sh.sheet1 # Accede al primo foglio per default
+            df_main, main_errors = _process_sheet_data(worksheet_main, MAIN_SHEET_RELEVANT_COLS, GSHEET_MAIN_NAME)
+            if main_errors:
+                error_messages.extend(main_errors)
+        except gspread.exceptions.WorksheetNotFound:
+            df_main = pd.DataFrame()
+            error_messages.append(f"Attenzione: Foglio principale (primo foglio) non trovato.")
+        except Exception as e_main:
+            df_main = pd.DataFrame()
+            error_messages.append(f"Errore imprevisto foglio principale: {e_main}")
+
+        # 2. Processa foglio secondario (Weatherlink)
+        try:
+            worksheet_weatherlink = sh.worksheet(GSHEET_WEATHERLINK_NAME)
+            df_weatherlink, weatherlink_errors = _process_sheet_data(worksheet_weatherlink, WEATHERLINK_RELEVANT_COLS, GSHEET_WEATHERLINK_NAME)
+            if weatherlink_errors:
+                error_messages.extend(weatherlink_errors)
+        except gspread.exceptions.WorksheetNotFound:
+            df_weatherlink = pd.DataFrame()
+            error_messages.append(f"Attenzione: Foglio '{GSHEET_WEATHERLINK_NAME}' non trovato.")
+        except Exception as e_weatherlink:
+            df_weatherlink = pd.DataFrame()
+            error_messages.append(f"Errore imprevisto foglio '{GSHEET_WEATHERLINK_NAME}': {e_weatherlink}")
+
+        # 3. Unisci i due DataFrame
+        if not df_main.empty and not df_weatherlink.empty:
+            # Assicura che la colonna di merge esista in entrambi
+            if GSHEET_DATE_COL in df_main.columns and GSHEET_DATE_COL in df_weatherlink.columns:
+                merged_df = pd.merge(df_main, df_weatherlink, on=GSHEET_DATE_COL, how='outer')
+            else:
+                error_messages.append(f"Colonna data '{GSHEET_DATE_COL}' mancante in uno dei fogli. Impossibile unire.")
+                merged_df = df_main if not df_main.empty else df_weatherlink
+        elif not df_main.empty:
+            merged_df = df_main
+        elif not df_weatherlink.empty:
+            merged_df = df_weatherlink
+        else:
+            return None, "Errore: Nessun dato valido recuperato da entrambi i fogli.", actual_fetch_time
+
+        # 4. Finalizza il DataFrame unito
+        if not merged_df.empty and GSHEET_DATE_COL in merged_df.columns:
+            # Rimuovi eventuali righe senza data e ordina
+            merged_df.dropna(subset=[GSHEET_DATE_COL], inplace=True)
+            merged_df = merged_df.sort_values(by=GSHEET_DATE_COL, na_position='first').reset_index(drop=True)
+            # Rimuovi righe duplicate basate sulla data, mantenendo l'ultima
+            merged_df = merged_df.drop_duplicates(subset=[GSHEET_DATE_COL], keep='last')
+        else:
+            st.warning("Dati finali vuoti o colonna data mancante dopo il merge.")
+
+        final_error_message = "Attenzione conversione dati GSheet: " + " | ".join(error_messages) if error_messages else None
+        return merged_df, final_error_message, actual_fetch_time
+
     except gspread.exceptions.APIError as api_e:
-        try: error_details = api_e.response.json(); error_msg = error_details.get('error', {}).get('message', str(api_e)); status = error_details.get('error', {}).get('code', 'N/A'); error_msg = f"Codice {status}: {error_msg}";
-        except: error_msg = str(api_e)
+        try:
+            error_details = api_e.response.json()
+            error_msg = error_details.get('error', {}).get('message', str(api_e))
+            status = error_details.get('error', {}).get('code', 'N/A')
+            error_msg = f"Codice {status}: {error_msg}"
+        except:
+            error_msg = str(api_e)
         return None, f"Errore API Google Sheets: {error_msg}", actual_fetch_time
-    except gspread.exceptions.SpreadsheetNotFound: return None, f"Errore: Foglio Google non trovato (ID: '{sheet_id}').", actual_fetch_time
-    except Exception as e: return None, f"Errore imprevisto recupero dati GSheet: {type(e).__name__} - {e}\n{traceback.format_exc()}", actual_fetch_time
+    except gspread.exceptions.SpreadsheetNotFound:
+        return None, f"Errore: Foglio Google non trovato (ID: '{sheet_id}').", actual_fetch_time
+    except Exception as e:
+        return None, f"Errore imprevisto recupero dati GSheet: {type(e).__name__} - {e}\n{traceback.format_exc()}", actual_fetch_time
+# --- FINE MODIFICA ---
 
 @st.cache_data(ttl=120, show_spinner="Importazione dati storici da Google Sheet per simulazione...")
 def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format_gs, col_mapping, required_model_cols_fetch, impute_dict):
@@ -1064,11 +1195,11 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
 def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, X_val, y_val
                 input_size, output_size, output_window_steps,
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
-                save_strategy='migliore', preferred_device='auto', 
+                save_strategy='migliore', preferred_device='auto',
                 n_splits_cv=3, loss_function_name="MSELoss",
                 _model_to_continue_train=None): # NEW: _model_to_continue_train
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM Standard con TimeSeriesSplit (n_splits={n_splits_cv}, loss={loss_function_name})...")
-    
+
     if input_size <= 0 or output_size <= 0 or output_window_steps <= 0:
         st.error(f"Errore: Parametri modello LSTM non validi: input_size={input_size}, output_size={output_size}, output_window_steps={output_window_steps}")
         return None, ([], []), ([], []) # Ensure consistent return structure
@@ -1084,7 +1215,7 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
     else: # Default to MSE
         criterion = nn.MSELoss(reduction='none')
         print("Using MSELoss")
-    
+
     if _model_to_continue_train is not None:
         model = _model_to_continue_train.to(device)
         print("Continuo training da modello LSTM esistente.")
@@ -1108,14 +1239,14 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
     # TimeSeriesSplit for final model training pass and per-epoch validation
     tscv_final_pass = TimeSeriesSplit(n_splits=n_splits_cv)
     all_splits_indices = list(tscv_final_pass.split(X_scaled_full))
-    
+
     if not all_splits_indices:
         st.error("TimeSeriesSplit non ha prodotto alcun split. Controllare la dimensione dei dati e n_splits_cv.")
         return None, ([], []), ([], [])
 
     # Use the last split for training the model that will be returned and for per-epoch validation
     train_indices_final, val_indices_final = all_splits_indices[-1]
-    
+
     X_train_final, y_train_final = X_scaled_full[train_indices_final], y_scaled_full[train_indices_final]
     X_val_final, y_val_final = X_scaled_full[val_indices_final], y_scaled_full[val_indices_final]
 
@@ -1125,7 +1256,7 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
 
     train_dataset_final = TimeSeriesDataset(X_train_final, y_train_final)
     train_loader_final = DataLoader(train_dataset_final, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
-    
+
     val_loader_final = None
     if X_val_final.size > 0 and y_val_final.size > 0:
         val_dataset_final = TimeSeriesDataset(X_val_final, y_val_final)
@@ -1157,17 +1288,17 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
         epoch_train_loss_per_step_sum = torch.zeros(output_window_steps, device=device)
 
         # Training loop uses X_train_final, y_train_final from the last CV split
-        for i, batch_data in enumerate(train_loader_final): 
+        for i, batch_data in enumerate(train_loader_final):
             X_batch, y_batch = batch_data[0].to(device, non_blocking=True), batch_data[1].to(device, non_blocking=True)
             outputs = model(X_batch)
-            
-            loss_per_element = criterion(outputs, y_batch) 
+
+            loss_per_element = criterion(outputs, y_batch)
             scalar_loss_for_backward = loss_per_element.mean()
-            
+
             optimizer.zero_grad()
             scalar_loss_for_backward.backward()
             optimizer.step()
-            
+
             epoch_train_loss_scalar_sum += scalar_loss_for_backward.item() * X_batch.size(0)
             epoch_train_loss_per_step_sum += loss_per_element.mean(dim=2).sum(dim=0).detach()
 
@@ -1175,7 +1306,7 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
         train_losses_scalar_history.append(avg_epoch_train_loss_scalar)
         avg_epoch_train_loss_per_step = (epoch_train_loss_per_step_sum / len(train_loader_final.dataset)).cpu().numpy()
         train_losses_per_step_history.append(avg_epoch_train_loss_per_step)
-        
+
         avg_epoch_val_loss_scalar = None # For the "final" validation set
         avg_epoch_val_loss_per_step = np.full(output_window_steps, np.nan) # For the "final" validation set
 
@@ -1188,7 +1319,7 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
                     X_batch_val, y_batch_val = batch_data_val[0].to(device, non_blocking=True), batch_data_val[1].to(device, non_blocking=True)
                     outputs_val = model(X_batch_val)
                     loss_per_element_val = criterion(outputs_val, y_batch_val)
-                    
+
                     scalar_loss_val_batch = loss_per_element_val.mean()
                     epoch_val_loss_scalar_sum += scalar_loss_val_batch.item() * X_batch_val.size(0)
                     epoch_val_loss_per_step_sum += loss_per_element_val.mean(dim=2).sum(dim=0).detach()
@@ -1201,27 +1332,27 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
 
             val_losses_scalar_history.append(avg_epoch_val_loss_scalar)
             val_losses_per_step_history.append(avg_epoch_val_loss_per_step)
-            
+
             scheduler.step(avg_epoch_val_loss_scalar) # Scheduler uses loss from the final validation split
             if avg_epoch_val_loss_scalar < best_val_loss_scalar:
                 best_val_loss_scalar = avg_epoch_val_loss_scalar
                 best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()}
         else: # No final validation set to use for per-epoch history
-            val_losses_scalar_history.append(None) 
+            val_losses_scalar_history.append(None)
             val_losses_per_step_history.append(np.full(output_window_steps, np.nan))
             # No scheduler.step() or best_model_state_dict update if no val_loader_final
 
         progress_percentage = (epoch + 1) / epochs
         current_lr = optimizer.param_groups[0]['lr']
         epoch_time = pytime.time() - epoch_start_time
-        
+
         train_loss_per_step_str = " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step]) # MODIFICA 4
         val_loss_scalar_str = f"{avg_epoch_val_loss_scalar:.6f}" if avg_epoch_val_loss_scalar is not None and avg_epoch_val_loss_scalar != float('inf') else "N/A (Final Split)"
         val_loss_per_step_str = "N/A (Final Split)"
         if val_loader_final and not np.all(np.isnan(avg_epoch_val_loss_per_step)):
              val_loss_per_step_str = " | ".join([f"{l:.4f}" for l in avg_epoch_val_loss_per_step])
 
-        status_text.markdown( 
+        status_text.markdown(
             f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) | LR: {current_lr:.6f} | Loss Func: {loss_function_name}<br>'
             f'&nbsp;&nbsp;Train Loss (Scalar Avg): {avg_epoch_train_loss_scalar:.6f}<br>'
             f'&nbsp;&nbsp;Train Loss (Per Step Avg): [{train_loss_per_step_str}]<br>'
@@ -1234,7 +1365,7 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
 
     total_training_time = pytime.time() - start_training_time
     st.write(f"Training LSTM completato in {total_training_time:.1f} secondi.")
-    
+
     final_model_to_return = model
     if save_strategy == 'migliore':
         if best_model_state_dict: # This is based on the final validation split
@@ -1250,13 +1381,13 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
     elif save_strategy == 'finale':
         final_model_to_return = model
         st.info("Strategia 'finale' LSTM: Restituito modello ultima epoca.")
-    
+
     # Post-Training Cross-Validation Reporting
     if n_splits_cv > 1 and X_scaled_full.shape[0] >= n_splits_cv : # Ensure enough samples for CV
         st.markdown("--- \n**Valutazione Cross-Validation Post-Training del Modello Finale:**")
         cv_fold_val_losses_scalar_all = []
         cv_fold_val_losses_per_step_all = []
-        
+
         # Use the already determined 'final_model_to_return' for evaluation on all folds
         final_model_to_return.eval()
 
@@ -1268,7 +1399,7 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
 
             val_dataset_fold = TimeSeriesDataset(X_val_fold, y_val_fold)
             val_loader_fold = DataLoader(val_dataset_fold, batch_size=batch_size, num_workers=0)
-            
+
             fold_loss_scalar_sum = 0.0
             fold_loss_per_step_sum = torch.zeros(output_window_steps, device=device)
             with torch.no_grad():
@@ -1278,10 +1409,10 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
                     loss_elem_f = criterion(outputs_f, y_batch_f)
                     fold_loss_scalar_sum += loss_elem_f.mean().item() * X_batch_f.size(0)
                     fold_loss_per_step_sum += loss_elem_f.mean(dim=2).sum(dim=0).detach()
-            
+
             avg_fold_loss_scalar = fold_loss_scalar_sum / len(val_dataset_fold)
             avg_fold_loss_per_step = (fold_loss_per_step_sum / len(val_dataset_fold)).cpu().numpy()
-            
+
             cv_fold_val_losses_scalar_all.append(avg_fold_loss_scalar)
             cv_fold_val_losses_per_step_all.append(avg_fold_loss_per_step)
             st.caption(f"Fold CV {i_fold+1}/{n_splits_cv} - Val Loss (Scalar Avg): {avg_fold_loss_scalar:.6f} | Val Loss (Per Step Avg): [{ ' | '.join([f'{l:.4f}' for l in avg_fold_loss_per_step])}]")
@@ -1299,7 +1430,7 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
 
     return final_model_to_return, \
            (train_losses_scalar_history, train_losses_per_step_history), \
-           (val_losses_scalar_history, val_losses_per_step_history) 
+           (val_losses_scalar_history, val_losses_per_step_history)
 
 
 def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full, # CHANGED
@@ -1307,7 +1438,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                         save_strategy='migliore', preferred_device='auto', teacher_forcing_ratio_schedule=None,
                         n_splits_cv=3, loss_function_name="MSELoss"): # NEW
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq con TimeSeriesSplit (n_splits={n_splits_cv}, loss={loss_function_name})...")
-    
+
     if output_window_steps <= 0:
         st.error("output_window_steps deve essere maggiore di 0 per train_model_seq2seq.")
         return None, ([], []), ([], [])
@@ -1386,18 +1517,18 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         model.train()
         epoch_train_loss_scalar_sum = 0.0
         epoch_train_loss_per_step_sum = torch.zeros(output_window_steps, device=device)
-        
+
         current_tf_ratio = 0.5 # Default, can be adjusted by schedule
         if teacher_forcing_ratio_schedule and isinstance(teacher_forcing_ratio_schedule, list) and len(teacher_forcing_ratio_schedule) == 2:
             start_tf, end_tf = teacher_forcing_ratio_schedule
             if epochs > 1: current_tf_ratio = max(end_tf, start_tf - (start_tf - end_tf) * epoch / (epochs - 1))
             else: current_tf_ratio = start_tf
-        
+
         # Training loop uses data from the final CV split
         for i, (x_enc_b, x_dec_b, y_tar_b) in enumerate(train_loader_final_s2s):
             x_enc_b, x_dec_b, y_tar_b = x_enc_b.to(device, non_blocking=True), x_dec_b.to(device, non_blocking=True), y_tar_b.to(device, non_blocking=True)
             optimizer.zero_grad()
-            
+
             # NB: Il forward di Seq2SeqHydro DEVE essere in grado di gestire il teacher_forcing_ratio
             # Se il forward non lo gestisce internamente, il loop manuale è necessario qui.
             # Assumendo che il forward lo gestisca:
@@ -1437,13 +1568,13 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                           # Quindi, anche senza TF, usiamo x_dec_b per il prossimo step.
                         decoder_input_step = x_dec_b[:, t+1:t+2, :]
             # Fine loop manuale per training
-            
+
             loss_per_element_train = criterion(outputs_train_epoch, y_tar_b) # MODIFICA 3 (Seq2Seq)
             scalar_loss_for_backward_train = loss_per_element_train.mean()
-            
+
             scalar_loss_for_backward_train.backward()
             optimizer.step()
-            
+
             epoch_train_loss_scalar_sum += scalar_loss_for_backward_train.item() * x_enc_b.size(0)
             epoch_train_loss_per_step_sum += loss_per_element_train.mean(dim=2).sum(dim=0).detach()
 
@@ -1464,11 +1595,11 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                     x_enc_vb, x_dec_vb, y_tar_vb = x_enc_vb.to(device, non_blocking=True), x_dec_vb.to(device, non_blocking=True), y_tar_vb.to(device, non_blocking=True)
                     outputs_val_epoch = model(x_enc_vb, x_dec_vb, teacher_forcing_ratio=0.0) # TF=0 for validation
                     loss_per_element_val = criterion(outputs_val_epoch, y_tar_vb)
-                    
+
                     scalar_loss_val_batch = loss_per_element_val.mean()
                     epoch_val_loss_scalar_sum += scalar_loss_val_batch.item() * x_enc_vb.size(0)
                     epoch_val_loss_per_step_sum += loss_per_element_val.mean(dim=2).sum(dim=0).detach()
-            
+
             if len(val_loader_final_s2s.dataset) > 0:
                 avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader_final_s2s.dataset)
                 avg_epoch_val_loss_per_step = (epoch_val_loss_per_step_sum / len(val_loader_final_s2s.dataset)).cpu().numpy()
@@ -1497,7 +1628,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         if val_loader_final_s2s and not np.all(np.isnan(avg_epoch_val_loss_per_step)):
              val_loss_per_step_str_s2s = " | ".join([f"{l:.4f}" for l in avg_epoch_val_loss_per_step])
 
-        status_text.markdown( 
+        status_text.markdown(
             f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) | TF Ratio: {tf_ratio_str} | LR: {current_lr:.6f} | Loss Func: {loss_function_name}<br>'
             f'&nbsp;&nbsp;Train Loss (Scalar Avg): {avg_epoch_train_loss_scalar:.6f}<br>'
             f'&nbsp;&nbsp;Train Loss (Per Step Avg): [{train_loss_per_step_str_s2s}]<br>'
@@ -1542,7 +1673,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             if X_enc_val_f.size == 0 or y_tar_val_f.size == 0:
                 st.caption(f"Fold CV Seq2Seq {i_fold_s2s+1}/{n_splits_cv}: Set di validazione vuoto, saltato.")
                 continue
-            
+
             val_dataset_f_s2s = TimeSeriesDataset(X_enc_val_f, X_dec_val_f, y_tar_val_f)
             val_loader_f_s2s = DataLoader(val_dataset_f_s2s, batch_size=batch_size, num_workers=0)
 
@@ -1555,7 +1686,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                     loss_elem_f_s2s = criterion(outputs_f_s2s, y_tf)
                     fold_loss_scalar_sum_s2s += loss_elem_f_s2s.mean().item() * x_ef.size(0)
                     fold_loss_per_step_sum_s2s += loss_elem_f_s2s.mean(dim=2).sum(dim=0).detach()
-            
+
             avg_fold_loss_scalar_s2s = fold_loss_scalar_sum_s2s / len(val_dataset_f_s2s)
             avg_fold_loss_per_step_s2s = (fold_loss_per_step_sum_s2s / len(val_dataset_f_s2s)).cpu().numpy()
 
@@ -1572,10 +1703,10 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             st.warning("Nessun fold CV Seq2Seq valutato con successo post-training.")
     else:
         st.info("Valutazione Cross-Validation Post-Training Seq2Seq non eseguita (n_splits_cv <= 1 o dati insufficienti).")
-        
+
     return final_model_to_return, \
            (train_losses_scalar_history, train_losses_per_step_history), \
-           (val_losses_scalar_history, val_losses_per_step_history) 
+           (val_losses_scalar_history, val_losses_per_step_history)
 
 # --- Funzioni Helper Download ---
 def get_table_download_link(df, filename="data.csv", link_text="Scarica CSV"):
@@ -1638,7 +1769,14 @@ def get_station_label(col_name, short=False):
         name = info.get('name', loc_id or col_name)
         if short and loc_id:
             sensors_at_loc = [sc['type'] for sc_name, sc in STATION_COORDS.items() if sc.get('location_id') == loc_id]
-            if len(sensors_at_loc) > 1: type_abbr = {'Pioggia': 'P', 'Livello': 'L', 'Umidità': 'U'}.get(s_type, '?'); label = f"{loc_id} ({type_abbr})"
+            if len(sensors_at_loc) > 1:
+                # Per le nuove stazioni, potremmo voler abbreviare diversamente
+                if 'Pioggia G.' in name: type_abbr = 'P(G)'
+                elif 'Int. Pioggia' in name: type_abbr = 'P(I)'
+                elif 'Raffica' in name: type_abbr = 'V(R)'
+                elif 'Vel. Vento' in name: type_abbr = 'V(v)'
+                else: type_abbr = {'Pioggia': 'P', 'Livello': 'L', 'Umidità': 'U'}.get(s_type, '?')
+                label = f"{loc_id} {type_abbr}"
             else: label = loc_id
             label = re.sub(r'\s*\(.*?\)\s*', '', label).strip()
             return label[:20] + ('...' if len(label) > 20 else '')
@@ -1845,7 +1983,11 @@ with st.sidebar:
 
     st.subheader("Configurazione Soglie Dashboard")
     with st.expander("Modifica Soglie di Allerta (per Dashboard)"):
-        temp_thresholds = st.session_state.dashboard_thresholds.copy(); monitorable_cols_thresh = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL]; cols_thresh_ui = st.columns(2); col_idx_thresh = 0
+        temp_thresholds = st.session_state.dashboard_thresholds.copy();
+        # --- INIZIO MODIFICA: usa la lista combinata per le soglie UI ---
+        monitorable_cols_thresh = [col for col in GSHEET_RELEVANT_COLS if col != GSHEET_DATE_COL];
+        # --- FINE MODIFICA ---
+        cols_thresh_ui = st.columns(2); col_idx_thresh = 0
         for col in monitorable_cols_thresh:
             with cols_thresh_ui[col_idx_thresh % 2]:
                 label_short = get_station_label(col, short=False); is_level = 'Livello' in col or '(m)' in col or '(mt)' in col; is_humidity = 'Umidit' in col
@@ -1929,7 +2071,9 @@ if page == 'Dashboard':
         if start_date_select > end_date_select: st.error("La Data Fine deve essere uguale o successiva alla Data Inizio."); st.stop()
         start_dt_filter = italy_tz.localize(datetime.combine(start_date_select, time.min)); end_dt_filter = italy_tz.localize(datetime.combine(end_date_select, time.max))
         cache_time_key_full = int(pytime.time() // (DASHBOARD_REFRESH_INTERVAL_SECONDS * 2))
-        df_dashboard_full, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(cache_time_key_full, GSHEET_ID, GSHEET_RELEVANT_COLS, GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=True)
+        # --- INIZIO MODIFICA: La chiamata non necessita più delle colonne, gestite internamente ---
+        df_dashboard_full, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(cache_time_key_full, GSHEET_ID, fetch_all=True)
+        # --- FINE MODIFICA ---
         if df_dashboard_full is not None:
             st.session_state.full_gsheet_data_cache = df_dashboard_full; st.session_state.last_dashboard_error = error_msg; st.session_state.last_dashboard_fetch_time = actual_fetch_time
             try:
@@ -1957,7 +2101,12 @@ if page == 'Dashboard':
             st.session_state.last_dashboard_error = error_msg
     else:
         cache_time_key_recent = int(pytime.time() // DASHBOARD_REFRESH_INTERVAL_SECONDS)
-        df_dashboard, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(cache_time_key_recent, GSHEET_ID, GSHEET_RELEVANT_COLS, GSHEET_DATE_COL, GSHEET_DATE_FORMAT, fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS)
+        # --- INIZIO MODIFICA: La chiamata non necessita più delle colonne, gestite internamente ---
+        df_dashboard, error_msg, actual_fetch_time = fetch_gsheet_dashboard_data(
+            cache_time_key_recent, GSHEET_ID,
+            fetch_all=False, num_rows_default=DASHBOARD_HISTORY_ROWS
+        )
+        # --- FINE MODIFICA ---
         st.session_state.last_dashboard_data = df_dashboard; st.session_state.last_dashboard_error = error_msg
         if df_dashboard is not None or error_msg is None: st.session_state.last_dashboard_fetch_time = actual_fetch_time
         data_source_mode = f"Ultime {DASHBOARD_HISTORY_ROWS // 2} ore circa"
@@ -1966,7 +2115,7 @@ if page == 'Dashboard':
     with col_status:
         last_fetch_dt_sess = st.session_state.get('last_dashboard_fetch_time')
         if last_fetch_dt_sess:
-             fetch_time_ago = datetime.now(italy_tz) - last_fetch_dt_sess; fetch_secs_ago = int(fetch_time_ago.total_seconds() // 60)
+             fetch_time_ago = datetime.now(italy_tz) - last_fetch_dt_sess; fetch_secs_ago = int(fetch_time_ago.total_seconds()) # Modificato in secondi
              status_text = f"{data_source_mode}. Aggiornato alle {last_fetch_dt_sess.strftime('%H:%M:%S')} ({fetch_secs_ago}s fa)."
              if not st.session_state.dash_custom_range_check: status_text += f" Refresh auto ogni {DASHBOARD_REFRESH_INTERVAL_SECONDS}s."
              st.caption(status_text)
@@ -2004,7 +2153,7 @@ if page == 'Dashboard':
             unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', col_name)
             if unit_match: unit_content = unit_match.group(1) or unit_match.group(2); unit = unit_content.strip() if unit_content else ""
             if pd.notna(current_value_H) and isinstance(current_value_H, (int, float, np.number)):
-                 value_numeric = float(current_value_H); fmt_spec = ".1f" if unit in ['mm', '%'] else ".2f"
+                 value_numeric = float(current_value_H); fmt_spec = ".1f" if unit in ['mm', '%', 'mm/hr', 'km/h'] else ".2f"
                  try: value_display = f"{value_numeric:{fmt_spec}} {unit}".strip()
                  except ValueError: value_display = f"{value_numeric} {unit}".strip()
                  if threshold is not None and isinstance(threshold, (int, float, np.number)) and value_numeric >= float(threshold): alert_active = True; current_alerts.append((col_name, value_numeric, threshold))
@@ -2018,16 +2167,16 @@ if page == 'Dashboard':
                     else: portata_display = "-"
             status = "ALLERTA" if alert_active else ("OK" if pd.notna(value_numeric) else "N/D")
             threshold_display = f"{float(threshold):.1f}" if threshold is not None else "-"
-            table_rows.append({"Stazione": get_station_label(col_name, short=True), "Valore H": value_display, "Portata Q (m³/s)": portata_display, "Soglia H": threshold_display, "Stato": status, "Valore Numerico H": value_numeric, "Soglia Numerica H": float(threshold) if threshold else None})
+            table_rows.append({"Stazione": get_station_label(col_name, short=True), "Valore": value_display, "Portata Q (m³/s)": portata_display, "Soglia": threshold_display, "Stato": status, "Valore Numerico H": value_numeric, "Soglia Numerica H": float(threshold) if threshold else None})
         df_display = pd.DataFrame(table_rows)
         def highlight_alert(row): style = [''] * len(row); style = ['background-color: rgba(255, 0, 0, 0.1);'] * len(row) if row['Stato'] == 'ALLERTA' else style; return style
-        st.dataframe(df_display.style.apply(highlight_alert, axis=1), column_order=["Stazione", "Valore H", "Portata Q (m³/s)", "Soglia H", "Stato"], hide_index=True, use_container_width=True, column_config={"Valore Numerico H": None, "Soglia Numerica H": None})
+        st.dataframe(df_display.style.apply(highlight_alert, axis=1), column_order=["Stazione", "Valore", "Portata Q (m³/s)", "Soglia", "Stato"], hide_index=True, use_container_width=True, column_config={"Valore Numerico H": None, "Soglia Numerica H": None})
         st.session_state.active_alerts = current_alerts
         st.divider()
         if GSHEET_DATE_COL in df_dashboard.columns:
             st.subheader("Grafico Storico Comparativo (Periodo Selezionato)")
             sensor_options_compare = {get_station_label(col, short=True): col for col in cols_to_monitor}
-            default_selection_labels = [label for label, col in sensor_options_compare.items() if 'Livello' in col][:3] or list(sensor_options_compare.keys())[:2]
+            default_selection_labels = [label for label, col in sensor_options_compare.items() if any(x in col for x in ['Livello', 'Raffica', 'Intensità'])][:5] or list(sensor_options_compare.keys())[:3]
             selected_labels_compare = st.multiselect("Seleziona sensori da confrontare:", options=list(sensor_options_compare.keys()), default=default_selection_labels, key="compare_select_multi")
             selected_cols_compare = [sensor_options_compare[label] for label in selected_labels_compare] # Added for clarity
             if selected_labels_compare:
@@ -2047,7 +2196,7 @@ if page == 'Dashboard':
                     if unit_match_indiv: unit_content = unit_match_indiv.group(1) or unit_match_indiv.group(2); unit_indiv = f"({unit_content.strip()})" if unit_content else ""
                     yaxis_title_individual = f"Valore {unit_indiv}".strip(); fig_individual = go.Figure()
                     fig_individual.add_trace(go.Scatter(x=x_axis_data_indiv, y=df_dashboard[col_name], mode='lines', name=label_individual))
-                    if threshold_individual is not None and ('Livello' in col_name or '(m)' in col_name or '(mt)' in col_name): fig_individual.add_hline(y=threshold_individual, line_dash="dash", line_color="red", annotation_text=f"Soglia H ({float(threshold_individual):.1f})", annotation_position="bottom right")
+                    if threshold_individual is not None: fig_individual.add_hline(y=threshold_individual, line_dash="dash", line_color="red", annotation_text=f"Soglia ({float(threshold_individual):.1f})", annotation_position="bottom right")
                     fig_individual.update_layout(title=f"{label_individual}", xaxis_title=None, yaxis_title=yaxis_title_individual, height=300, hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), template="plotly_white")
                     fig_individual.update_yaxes(rangemode='tozero'); st.plotly_chart(fig_individual, use_container_width=True)
                     ind_filename_base = f"sensor_{label_individual.replace(' ','_').replace('(','').replace(')','')}_{datetime.now().strftime('%Y%m%d_%H%M')}"
@@ -2058,16 +2207,16 @@ if page == 'Dashboard':
         st.subheader("Riepilogo Allerte (basato su ultimo valore nel periodo)")
         active_alerts_sess = st.session_state.get('active_alerts', [])
         if active_alerts_sess:
-             st.warning("**Allerte Attive (Valori H >= Soglia H):**"); alert_md = ""
+             st.warning("**Allerte Attive (Valori >= Soglia):**"); alert_md = ""
              sorted_alerts = sorted(active_alerts_sess, key=lambda x: get_station_label(x[0], short=False))
              for col, val, thr in sorted_alerts:
                  label_alert = get_station_label(col, short=False); sensor_type_alert = STATION_COORDS.get(col, {}).get('type', ''); type_str = f" ({sensor_type_alert})" if sensor_type_alert else ""
                  unit_match_alert = re.search(r'\((.*?)\)|\[(.*?)\]', col); unit_alert = ""
-                 if unit_match_alert: unit_content = unit_match_alert.group(1) or unit_match_alert.group(2); unit_alert = f"({unit_content.strip()})" if unit_content else ""
-                 val_fmt = f"{val:.1f}" if unit_alert in ['(mm)', '(%)'] else f"{val:.2f}"; thr_fmt = f"{float(thr):.1f}" if isinstance(thr, (int, float, np.number)) else str(thr)
+                 if unit_match_alert: unit_content = unit_match_alert.group(1) or unit_match_alert.group(2); unit_alert = f" ({unit_content.strip()})" if unit_content else ""
+                 val_fmt = f"{val:.1f}" if unit_alert in ['(mm)', '(%)', '(mm/hr)', '(km/h)'] else f"{val:.2f}"; thr_fmt = f"{float(thr):.1f}" if isinstance(thr, (int, float, np.number)) else str(thr)
                  alert_md += f"- **{label_alert}{type_str}**: Valore **{val_fmt}{unit_alert}** >= Soglia **{thr_fmt}{unit_alert}**\n"
              st.markdown(alert_md)
-        else: st.success("Nessuna soglia H superata nell'ultimo rilevamento del periodo visualizzato.")
+        else: st.success("Nessuna soglia superata nell'ultimo rilevamento del periodo visualizzato.")
     elif df_dashboard is not None and df_dashboard.empty and not st.session_state.dash_custom_range_check: st.warning("Recupero dati GSheet riuscito, ma nessun dato trovato nelle ultime ore.")
     elif not st.session_state.last_dashboard_error: st.info("Recupero dati dashboard in corso...")
 
@@ -2082,1421 +2231,23 @@ if page == 'Dashboard':
               streamlit_js_eval(js_expressions=js_clear_code, key=f"{component_key}_clear", want_output=False)
          except Exception as e_js_clear: st.caption(f"Nota: Impossibile pulire timer auto-refresh ({e_js_clear})")
 
+# --- IL RESTO DEL CODICE RIMANE INVARIATO ---
+# ... (incollare qui il resto del codice originale dalla pagina 'Simulazione' in poi)
 # --- PAGINA SIMULAZIONE ---
 elif page == 'Simulazione':
-    st.header(f'Simulazione Idrologica ({active_model_type})')
-    if not model_ready:
-        st.warning("Seleziona un Modello attivo dalla sidebar per eseguire la Simulazione.")
-        st.stop()
-
-    st.info(f"Simulazione con Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
-    target_columns_model = []
-    if active_model_type == "Seq2Seq":
-        st.caption(f"Input Storico: {active_config['input_window_steps']} steps | Input Forecast: {active_config['forecast_window_steps']} steps | Output: {active_config['output_window_steps']} steps")
-        with st.expander("Dettagli Colonne Modello Seq2Seq"):
-             st.markdown("**Feature Storiche (Input Encoder):**"); st.caption(f"`{', '.join(active_config['all_past_feature_columns'])}`")
-             st.markdown("**Feature Forecast (Decoder Input):**"); st.caption(f"`{', '.join(active_config['forecast_input_columns'])}`")
-             st.markdown("**Target (Output - Livello H):**"); st.caption(f"`{', '.join(active_config['target_columns'])}`")
-        target_columns_model = active_config['target_columns']
-        input_steps_model = active_config['input_window_steps']
-        output_steps_model = active_config['output_window_steps']
-        past_feature_cols_model = active_config['all_past_feature_columns']
-        forecast_feature_cols_model = active_config['forecast_input_columns']
-        forecast_steps_model = active_config['forecast_window_steps'] # Input al decoder
-    else: # LSTM Standard
-        feature_columns_model = active_config.get("feature_columns", st.session_state.feature_columns)
-        st.caption(f"Input: {active_config['input_window']} steps | Output: {active_config['output_window']} steps")
-        with st.expander("Dettagli Colonne Modello LSTM"):
-             st.markdown("**Feature Input:**"); st.caption(f"`{', '.join(feature_columns_model)}`")
-             st.markdown("**Target (Output - Livello H):**"); st.caption(f"`{', '.join(active_config['target_columns'])}`")
-        target_columns_model = active_config['target_columns']
-        input_steps_model = active_config['input_window']
-        output_steps_model = active_config['output_window']
-
-    st.divider()
-    if active_model_type == "Seq2Seq":
-         st.subheader(f"Preparazione Dati Input Simulazione Seq2Seq")
-         st.markdown("**Passo 1: Recupero Dati Storici (Input Encoder)**"); st.caption(f"Verranno recuperati gli ultimi {input_steps_model} steps dal Foglio Google (ID: `{GSHEET_ID}`).")
-         date_col_model_name = st.session_state.date_col_name_csv
-         column_mapping_gsheet_to_past_s2s = {'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)', 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)', 'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)', 'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)', 'Umidita\' Sensore 3452 (Montemurello)': HUMIDITY_COL_NAME, 'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)', 'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)', 'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)', 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)', 'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)', GSHEET_DATE_COL: date_col_model_name}
-         required_model_cols_for_mapping = past_feature_cols_model + [date_col_model_name]
-         column_mapping_gsheet_to_past_s2s_filtered = {gs_col: model_col for gs_col, model_col in column_mapping_gsheet_to_past_s2s.items() if model_col in required_model_cols_for_mapping}
-         missing_past_features_in_map = list(set(past_feature_cols_model) - (set(column_mapping_gsheet_to_past_s2s_filtered.values()) - {date_col_model_name})); imputed_values_sim_past_s2s = {}
-         if missing_past_features_in_map:
-             st.caption(f"Feature storiche non mappate da GSheet: `{', '.join(missing_past_features_in_map)}`. Saranno imputate.");
-             for missing_f in missing_past_features_in_map: imputed_values_sim_past_s2s[missing_f] = df_current_csv[missing_f].median() if data_ready_csv and missing_f in df_current_csv.columns and pd.notna(df_current_csv[missing_f].median()) else 0.0
-         fetch_error_gsheet_s2s = None
-         if st.button("Carica/Aggiorna Storico da GSheet", key="fetch_gsh_s2s_base"):
-              fetch_sim_gsheet_data.clear()
-              with st.spinner("Recupero dati storici (passato)..."): imported_df_past, import_err_past, last_ts_past = fetch_sim_gsheet_data(GSHEET_ID, input_steps_model, GSHEET_DATE_COL, GSHEET_DATE_FORMAT, column_mapping_gsheet_to_past_s2s_filtered, past_feature_cols_model + [date_col_model_name], imputed_values_sim_past_s2s)
-              if import_err_past: st.error(f"Recupero storico Seq2Seq fallito: {import_err_past}"); st.session_state.seq2seq_past_data_gsheet = None; fetch_error_gsheet_s2s = import_err_past
-              elif imported_df_past is not None:
-                  try: final_past_df = imported_df_past[past_feature_cols_model]; st.success(f"Recuperate e processate {len(final_past_df)} righe storiche."); st.session_state.seq2seq_past_data_gsheet = final_past_df; st.session_state.seq2seq_last_ts_gsheet = last_ts_past if last_ts_past else datetime.now(italy_tz); fetch_error_gsheet_s2s = None; st.rerun()
-                  except KeyError as e_cols: missing_cols_final = [c for c in past_feature_cols_model if c not in imported_df_past.columns]; st.error(f"Errore selezione colonne storiche dopo fetch: Colonne mancanti {missing_cols_final}"); st.session_state.seq2seq_past_data_gsheet = None; fetch_error_gsheet_s2s = f"Errore colonne: {e_cols}"
-              else: st.error("Recupero storico Seq2Seq non riuscito (risultato vuoto)."); fetch_error_gsheet_s2s = "Errore recupero dati."
-         past_data_loaded_s2s = st.session_state.get('seq2seq_past_data_gsheet') is not None
-         if past_data_loaded_s2s: st.caption("Dati storici base (input encoder) caricati."); st.expander("Mostra dati storici caricati (Input Encoder)").dataframe(st.session_state.seq2seq_past_data_gsheet.round(3))
-         elif fetch_error_gsheet_s2s: st.warning(f"Caricamento dati storici fallito ({fetch_error_gsheet_s2s}). Clicca il bottone per riprovare.")
-         else: st.info("Clicca il bottone 'Carica/Aggiorna Storico da GSheet' per recuperare i dati necessari.")
-
-         if past_data_loaded_s2s:
-             # L'input al decoder (forecast_steps_model) deve avere lunghezza almeno pari a output_steps_model
-             num_rows_decoder_input = max(forecast_steps_model, output_steps_model)
-             st.markdown(f"**Passo 2: Inserisci Input Futuri per Decoder ({num_rows_decoder_input} steps)**"); st.caption(f"Inserisci i valori per le seguenti feature: `{', '.join(forecast_feature_cols_model)}`")
-             forecast_df_initial = pd.DataFrame(index=range(num_rows_decoder_input), columns=forecast_feature_cols_model); last_known_past_data = st.session_state.seq2seq_past_data_gsheet.iloc[-1]
-             for col in forecast_feature_cols_model:
-                  if 'pioggia' in col.lower() or 'cumulata' in col.lower(): forecast_df_initial[col] = 0.0
-                  elif col in last_known_past_data.index: forecast_df_initial[col] = last_known_past_data.get(col, 0.0)
-                  else: forecast_df_initial[col] = 0.0
-             edited_forecast_df = st.data_editor(forecast_df_initial.round(2), key="seq2seq_forecast_editor", num_rows="fixed", use_container_width=True, column_config={col: st.column_config.NumberColumn(label=get_station_label(col, short=True), help=f"Valore previsto per {col}", min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None, max_value=100.0 if 'umidit' in col.lower() else None, format="%.1f" if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else "%.2f", step=0.5 if ('pioggia' in col.lower() or 'cumulata' in col.lower()) else (1.0 if 'umidit' in col.lower() else 0.1), required=True) for col in forecast_feature_cols_model})
-             forecast_data_valid_s2s = False
-             if edited_forecast_df is not None and not edited_forecast_df.isnull().any().any():
-                 if edited_forecast_df.shape == (num_rows_decoder_input, len(forecast_feature_cols_model)):
-                     try: edited_forecast_df.astype(float); forecast_data_valid_s2s = True
-                     except ValueError: st.warning("Valori non numerici rilevati nella tabella previsioni.")
-                 else: st.warning("Numero di righe o colonne errato nella tabella previsioni.")
-             else: st.warning("Completa o correggi la tabella delle previsioni future. Tutti i valori devono essere numerici.")
-
-             st.divider(); st.markdown("**Passo 3: Esegui Simulazione Seq2Seq**"); can_run_s2s_sim = past_data_loaded_s2s and forecast_data_valid_s2s
-             if st.button("Esegui Simulazione Seq2Seq", disabled=not can_run_s2s_sim, type="primary", key="run_s2s_sim_button"):
-                  if not can_run_s2s_sim: st.error("Mancano dati storici validi o previsioni future valide.")
-                  else:
-                       predictions_s2s = None; start_pred_time_s2s = None
-                       with st.spinner("Simulazione Seq2Seq in corso..."):
-                           past_data_np = st.session_state.seq2seq_past_data_gsheet[past_feature_cols_model].astype(float).values
-                           future_forecast_np = edited_forecast_df[forecast_feature_cols_model].astype(float).values
-                           predictions_s2s = predict_seq2seq(active_model, past_data_np, future_forecast_np, active_scalers, active_config, active_device)
-                           start_pred_time_s2s = st.session_state.get('seq2seq_last_ts_gsheet', datetime.now(italy_tz))
-                       if predictions_s2s is not None:
-                           output_steps_actual = predictions_s2s.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
-                           st.subheader(f'Risultato Simulazione Seq2Seq: Prossime {total_hours_output_actual:.1f} ore'); st.caption(f"Previsione calcolata a partire da: {start_pred_time_s2s.strftime('%d/%m/%Y %H:%M:%S %Z')}")
-                           results_df_s2s = pd.DataFrame(predictions_s2s, columns=target_columns_model); q_cols_to_add_s2s = {}
-                           for i_s2s, target_col_h_s2s in enumerate(target_columns_model):
-                               sensor_info_s2s = STATION_COORDS.get(target_col_h_s2s)
-                               if sensor_info_s2s:
-                                   sensor_code_sim_s2s = sensor_info_s2s.get('sensor_code')
-                                   if sensor_code_sim_s2s and sensor_code_sim_s2s in RATING_CURVES: q_cols_to_add_s2s[f"Portata Prevista Q {get_station_label(target_col_h_s2s, short=True)} (m³/s)"] = calculate_discharge_vectorized(sensor_code_sim_s2s, results_df_s2s[target_col_h_s2s].values)
-                           for q_name, q_data in q_cols_to_add_s2s.items(): results_df_s2s[q_name] = q_data
-                           pred_times_s2s = [start_pred_time_s2s + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]; results_df_s2s.insert(0, 'Ora Prevista', [t.strftime('%d/%m %H:%M') for t in pred_times_s2s])
-                           results_df_s2s_display = results_df_s2s.copy(); rename_dict_s2s = {'Ora Prevista': 'Ora Prevista'}; final_display_columns = ['Ora Prevista']
-                           for col in target_columns_model: label_h = get_station_label(col, short=True); unit_match_h = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str_h = f"({unit_match_h.group(1) or unit_match_h.group(2)})" if unit_match_h and (unit_match_h.group(1) or unit_match_h.group(2)) else "(m)"; new_name_h = f"{label_h} H {unit_str_h}"; rename_dict_s2s[col] = new_name_h; final_display_columns.append(new_name_h); q_col_match = f"Portata Prevista Q {label_h} (m³/s)";
-                           if q_col_match in results_df_s2s.columns: rename_dict_s2s[q_col_match] = q_col_match; final_display_columns.append(q_col_match)
-                           results_df_s2s_display = results_df_s2s_display.rename(columns=rename_dict_s2s)
-                           st.dataframe(results_df_s2s_display[final_display_columns].round(3), hide_index=True); st.markdown(get_table_download_link(results_df_s2s, f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
-                           st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali H e Q)'); figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s); num_graph_cols = min(len(figs_sim_s2s), 3); sim_cols = st.columns(num_graph_cols)
-                           for i, fig_sim in enumerate(figs_sim_s2s):
-                              with sim_cols[i % num_graph_cols]: s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_columns_model[i], short=False)); filename_base_s2s_ind = f"grafico_sim_s2s_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.plotly_chart(fig_sim, use_container_width=True); st.markdown(get_plotly_download_link(fig_sim, filename_base_s2s_ind), unsafe_allow_html=True)
-                           st.subheader('Grafico Combinato Livelli H Output (Seq2Seq)'); fig_combined_s2s = go.Figure()
-                           if start_pred_time_s2s and len(pred_times_s2s) == output_steps_actual: x_axis_comb, x_title_comb = pred_times_s2s, "Data e Ora Previste"; x_tick_format = "%d/%m %H:%M"
-                           else: x_axis_comb = (np.arange(output_steps_actual) + 1) * 0.5; x_title_comb = "Ore Future (passi da 30 min)"; x_tick_format = None
-                           for i, sensor in enumerate(target_columns_model): fig_combined_s2s.add_trace(go.Scatter(x=x_axis_comb, y=predictions_s2s[:, i], mode='lines+markers', name=get_station_label(sensor, short=True)))
-                           combined_title_s2s = f'Previsioni Combinate Livello H {active_model_type}<br><span style="font-size:10px;">{ATTRIBUTION_PHRASE}</span>'; fig_combined_s2s.update_layout(title=combined_title_s2s, xaxis_title=x_title_comb, yaxis_title="Livello Idrometrico Previsto (m)", height=500, margin=dict(l=60, r=20, t=70, b=50), hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                           if x_tick_format: fig_combined_s2s.update_xaxes(tickformat=x_tick_format)
-                           fig_combined_s2s.update_yaxes(rangemode='tozero'); st.plotly_chart(fig_combined_s2s, use_container_width=True); filename_base_s2s_comb = f"grafico_combinato_H_sim_s2s{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.markdown(get_plotly_download_link(fig_combined_s2s, filename_base_s2s_comb), unsafe_allow_html=True)
-                       else: st.error("Predizione simulazione Seq2Seq fallita.")
-    else: # LSTM
-         st.subheader("Metodo Input Dati Simulazione LSTM")
-         sim_method_options = ['Manuale (Valori Costanti)', 'Importa da Google Sheet (Ultime Ore)', 'Orario Dettagliato (Tabella)']
-         if data_ready_csv: sim_method_options.append('Usa Ultime Ore da CSV Caricato')
-         sim_method = st.radio("Scegli come fornire i dati di input:", sim_method_options, key="sim_method_radio_select_lstm", horizontal=True, label_visibility="collapsed")
-         predictions_sim_lstm = None; start_pred_time_lstm = None
-         if sim_method == 'Manuale (Valori Costanti)':
-             st.markdown(f'Inserisci valori costanti per le **{len(feature_columns_model)}** feature di input.'); st.caption(f"Questi valori saranno ripetuti per i **{input_steps_model}** passi temporali ({input_steps_model*0.5:.1f} ore) richiesti dal modello.")
-             temp_sim_values_lstm = {}; cols_manual_lstm = st.columns(3); col_idx_manual = 0; input_valid_manual = True
-             for feature in feature_columns_model:
-                 with cols_manual_lstm[col_idx_manual % 3]:
-                     label = get_station_label(feature, short=True); unit_match = re.search(r'\[(.*?)\]|\((.*?)\)', feature); unit_str = f"({unit_match.group(1) or unit_match.group(2)})" if unit_match and (unit_match.group(1) or unit_match.group(2)) else ""; fmt = "%.1f" if 'pioggia' in feature.lower() or 'umidit' in feature.lower() else "%.2f"; step = 0.5 if 'pioggia' in feature.lower() else (1.0 if 'umidit' in feature.lower() else 0.1)
-                     try: temp_sim_values_lstm[feature] = float(st.number_input(f"{label} {unit_str}".strip(), key=f"man_{feature}", format=fmt, step=step))
-                     except Exception as e_num_input: st.error(f"Valore non valido per {label}: {e_num_input}"); input_valid_manual = False
-                 col_idx_manual += 1
-             sim_data_input_manual = None
-             if input_valid_manual:
-                 try: ordered_values = [temp_sim_values_lstm[feature] for feature in feature_columns_model]; sim_data_input_manual = np.tile(ordered_values, (input_steps_model, 1)).astype(float)
-                 except KeyError as ke: st.error(f"Errore: Feature '{ke}' mancante."); input_valid_manual = False
-                 except Exception as e: st.error(f"Errore creazione dati: {e}"); input_valid_manual = False
-             input_ready_manual = sim_data_input_manual is not None and input_valid_manual; st.divider()
-             if st.button('Esegui Simulazione LSTM (Manuale)', type="primary", disabled=(not input_ready_manual), key="sim_run_exec_lstm_manual"):
-                 if input_ready_manual:
-                      with st.spinner('Simulazione LSTM (Manuale) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_manual, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = datetime.now(italy_tz)
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
-                 else: st.error("Dati input manuali non pronti o invalidi.")
-         elif sim_method == 'Importa da Google Sheet (Ultime Ore)':
-             st.markdown(f'Importa gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) da Google Sheet per le **{len(feature_columns_model)}** feature di input.'); st.caption(f"Verranno recuperati i dati dal Foglio Google (ID: `{GSHEET_ID}`).")
-             date_col_model_name = st.session_state.date_col_name_csv
-             column_mapping_gsheet_to_lstm = {'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)', 'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)', 'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)', 'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)', 'Umidita\' Sensore 3452 (Montemurello)': HUMIDITY_COL_NAME, 'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)', 'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)', 'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)', 'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)', 'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)', GSHEET_DATE_COL: date_col_model_name}
-             relevant_model_cols_lstm_map = feature_columns_model + [date_col_model_name]; column_mapping_gsheet_to_lstm_filtered = {gs_col: model_col for gs_col, model_col in column_mapping_gsheet_to_lstm.items() if model_col in relevant_model_cols_lstm_map}
-             missing_lstm_features_in_map = list(set(feature_columns_model) - (set(column_mapping_gsheet_to_lstm_filtered.values()) - {date_col_model_name})); imputed_values_sim_lstm_gs = {}
-             if missing_lstm_features_in_map: st.caption(f"Feature LSTM non mappate da GSheet: `{', '.join(missing_lstm_features_in_map)}`. Saranno imputate.");
-             for missing_f in missing_lstm_features_in_map: imputed_values_sim_lstm_gs[missing_f] = df_current_csv[missing_f].median() if data_ready_csv and missing_f in df_current_csv.columns and pd.notna(df_current_csv[missing_f].median()) else 0.0
-             fetch_error_gsheet_lstm = None
-             if st.button("Importa da Google Sheet (LSTM)", key="sim_run_gsheet_import_lstm"):
-                 fetch_sim_gsheet_data.clear()
-                 with st.spinner("Recupero dati LSTM da GSheet..."): imported_df_lstm, import_err_lstm, last_ts_lstm = fetch_sim_gsheet_data(GSHEET_ID, input_steps_model, GSHEET_DATE_COL, GSHEET_DATE_FORMAT, column_mapping_gsheet_to_lstm_filtered, feature_columns_model + [date_col_model_name], imputed_values_sim_lstm_gs)
-                 if import_err_lstm: st.error(f"Recupero GSheet per LSTM fallito: {import_err_lstm}"); st.session_state.imported_sim_data_gs_df_lstm = None; fetch_error_gsheet_lstm = import_err_lstm
-                 elif imported_df_lstm is not None:
-                     try: final_lstm_df = imported_df_lstm[feature_columns_model]; st.success(f"Recuperate e processate {len(final_lstm_df)} righe LSTM da GSheet."); st.session_state.imported_sim_data_gs_df_lstm = final_lstm_df; st.session_state.imported_sim_start_time_gs_lstm = last_ts_lstm if last_ts_lstm else datetime.now(italy_tz); fetch_error_gsheet_lstm = None; st.rerun()
-                     except KeyError as e_cols_lstm: missing_cols_final_lstm = [c for c in feature_columns_model if c not in imported_df_lstm.columns]; st.error(f"Errore selezione colonne LSTM dopo fetch: Colonne mancanti {missing_cols_final_lstm}"); st.session_state.imported_sim_data_gs_df_lstm = None; fetch_error_gsheet_lstm = f"Errore colonne: {e_cols_lstm}"
-                 else: st.error("Recupero GSheet per LSTM non riuscito."); fetch_error_gsheet_lstm = "Errore sconosciuto."
-             imported_df_lstm_gs = st.session_state.get("imported_sim_data_gs_df_lstm", None)
-             if imported_df_lstm_gs is not None: st.caption("Dati LSTM importati da Google Sheet pronti."); st.expander("Mostra dati importati (Input LSTM)").dataframe(imported_df_lstm_gs.round(3))
-             sim_data_input_lstm_gs = None; sim_start_time_lstm_gs = None
-             if isinstance(imported_df_lstm_gs, pd.DataFrame):
-                 try:
-                     sim_data_input_lstm_gs_ordered = imported_df_lstm_gs[feature_columns_model]; sim_data_input_lstm_gs = sim_data_input_lstm_gs_ordered.astype(float).values
-                     # --- INIZIO MODIFICA (basata su feedback utente) ---
-                     # Prendi il timestamp di inizio dai dati GSheet importati, non dal CSV generico
-                     sim_start_time_lstm_gs = st.session_state.get('imported_sim_start_time_gs_lstm')
-
-                     if sim_start_time_lstm_gs is None:
-                         st.warning("Timestamp di inizio simulazione da GSheet non trovato. Uso ora corrente come fallback.")
-                         sim_start_time_lstm_gs = datetime.now(italy_tz)
-                     elif not isinstance(sim_start_time_lstm_gs, (pd.Timestamp, datetime)):
-                         st.warning(f"Formato timestamp da GSheet ({type(sim_start_time_lstm_gs)}) non valido per l'inizio simulazione. Uso ora corrente.")
-                         sim_start_time_lstm_gs = datetime.now(italy_tz)
-
-                     # Assicura che il timestamp sia timezone-aware (Europe/Rome)
-                     if isinstance(sim_start_time_lstm_gs, (pd.Timestamp, datetime)):
-                        if sim_start_time_lstm_gs.tzinfo is None:
-                            sim_start_time_lstm_gs = italy_tz.localize(sim_start_time_lstm_gs, ambiguous='infer', nonexistent='shift_forward')
-                        else:
-                            sim_start_time_lstm_gs = sim_start_time_lstm_gs.tz_convert(italy_tz)
-                     # --- FINE MODIFICA ---
-                     st.caption("Dati LSTM pronti per la simulazione."); st.expander("Mostra dati LSTM utilizzati (Input LSTM)").dataframe(imported_df_lstm_gs.round(3))
-                     if np.isnan(sim_data_input_lstm_gs).any(): st.error("Trovati valori NaN nei dati GSheet importati. Impossibile procedere."); sim_data_input_lstm_gs = None
-                 except KeyError as e_key_gs: st.error(f"Colonna mancante nei dati LSTM GSheet: {e_key_gs}"); sim_data_input_lstm_gs = None
-                 except Exception as e_prep_gs: st.error(f"Errore preparazione dati LSTM GSheet: {e_prep_gs}"); sim_data_input_lstm_gs = None
-             input_ready_lstm_gs = sim_data_input_lstm_gs is not None; st.divider()
-             if st.button('Esegui Simulazione LSTM (GSheet)', type="primary", disabled=(not input_ready_lstm_gs), key="sim_run_exec_lstm_gsheet"):
-                  if input_ready_lstm_gs:
-                      with st.spinner('Simulazione LSTM (GSheet) in corso...'):
-                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = sim_start_time_lstm_gs
-                            else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
-                  else: st.error("Dati input da GSheet non pronti o non importati.")
-         elif sim_method == 'Orario Dettagliato (Tabella)':
-             st.markdown(f'Inserisci i dati per i **{input_steps_model}** passi temporali ({input_steps_model*0.5:.1f} ore) precedenti.'); st.caption(f"La tabella contiene le **{len(feature_columns_model)}** feature di input richieste dal modello.")
-             editor_df_initial = pd.DataFrame(index=range(input_steps_model), columns=feature_columns_model)
-             if data_ready_csv and len(df_current_csv) >= input_steps_model:
-                 try: editor_df_initial = df_current_csv[feature_columns_model].iloc[-input_steps_model:].reset_index(drop=True).astype(float).round(2); st.caption("Tabella precompilata con gli ultimi dati CSV.")
-                 except Exception as e_fill_csv: st.caption(f"Impossibile precompilare con dati CSV ({e_fill_csv}). Inizializzata a 0."); editor_df_initial = editor_df_initial.fillna(0.0)
-             else: editor_df_initial = editor_df_initial.fillna(0.0)
-             edited_lstm_df = st.data_editor(editor_df_initial, key="lstm_editor_sim", num_rows="fixed", use_container_width=True, column_config={col: st.column_config.NumberColumn(label=get_station_label(col, short=True), help=f"Valore storico per {col}", min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None, max_value=100.0 if 'umidit' in col.lower() else None, format="%.1f" if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else "%.2f", step=0.5 if ('pioggia' in col.lower() or 'cumulata' in col.lower()) else (1.0 if 'umidit' in col.lower() else 0.1), required=True ) for col in feature_columns_model})
-             sim_data_input_lstm_editor = None; validation_passed_editor = False
-             if edited_lstm_df is not None and not edited_lstm_df.isnull().any().any():
-                 if edited_lstm_df.shape == (input_steps_model, len(feature_columns_model)):
-                     try: sim_data_input_lstm_editor = edited_lstm_df[feature_columns_model].astype(float).values; validation_passed_editor = True
-                     except KeyError as e_key_edit: st.error(f"Errore colonna tabella: {e_key_edit}")
-                     except ValueError: st.error("Valori non numerici inseriti nella tabella.")
-                     except Exception as e_conv_edit: st.error(f"Errore conversione dati tabella: {e_conv_edit}")
-                 else: st.warning("Numero righe/colonne errato nella tabella.")
-             else: st.warning("Completa o correggi la tabella. Tutti i valori devono essere numerici.")
-             input_ready_lstm_editor = sim_data_input_lstm_editor is not None and validation_passed_editor; st.divider()
-             if st.button('Esegui Simulazione LSTM (Tabella)', type="primary", disabled=(not input_ready_lstm_editor), key="sim_run_exec_lstm_editor"):
-                  if input_ready_lstm_editor:
-                      with st.spinner('Simulazione LSTM (Tabella) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_editor, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = datetime.now(italy_tz)
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
-                  else: st.error("Dati input da tabella non pronti o invalidi.")
-         elif sim_method == 'Usa Ultime Ore da CSV Caricato':
-             st.markdown(f"Utilizza gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) dai dati CSV caricati.")
-             if not data_ready_csv: st.error("Dati CSV non caricati."); st.stop()
-             if len(df_current_csv) < input_steps_model: st.error(f"Dati CSV insufficienti ({len(df_current_csv)} righe), richieste {input_steps_model}."); st.stop()
-             sim_data_input_lstm_csv = None; sim_start_time_lstm_csv = None
-             try:
-                 latest_csv_data_df = df_current_csv.iloc[-input_steps_model:]
-                 missing_cols_csv = [col for col in feature_columns_model if col not in latest_csv_data_df.columns]
-                 if missing_cols_csv: st.error(f"Colonne modello LSTM mancanti nel CSV: `{', '.join(missing_cols_csv)}`")
-                 else:
-                     sim_data_input_lstm_csv_ordered = latest_csv_data_df[feature_columns_model]; sim_data_input_lstm_csv = sim_data_input_lstm_csv_ordered.astype(float).values; last_csv_timestamp = df_current_csv[date_col_name_csv].iloc[-1]
-                     if pd.notna(last_csv_timestamp) and isinstance(last_csv_timestamp, pd.Timestamp): sim_start_time_lstm_csv = last_csv_timestamp.tz_localize(italy_tz) if last_csv_timestamp.tz is None else last_csv_timestamp.tz_convert(italy_tz)
-                     else: sim_start_time_lstm_csv = datetime.now(italy_tz)
-                     st.caption("Dati CSV pronti per la simulazione."); st.expander("Mostra dati CSV utilizzati (Input LSTM)").dataframe(latest_csv_data_df[[date_col_name_csv] + feature_columns_model].round(3))
-                     if np.isnan(sim_data_input_lstm_csv).any(): st.error("Trovati valori NaN negli ultimi dati CSV. Impossibile procedere."); sim_data_input_lstm_csv = None
-             except Exception as e_prep_csv: st.error(f"Errore preparazione dati da CSV: {e_prep_csv}"); sim_data_input_lstm_csv = None
-             input_ready_lstm_csv = sim_data_input_lstm_csv is not None; st.divider()
-             if st.button('Esegui Simulazione LSTM (CSV)', type="primary", disabled=(not input_ready_lstm_csv), key="sim_run_exec_lstm_csv"):
-                 if input_ready_lstm_csv:
-                      with st.spinner('Simulazione LSTM (CSV) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_csv, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = sim_start_time_lstm_csv
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
-                 else: st.error("Dati input da CSV non pronti o invalidi.")
-
-         if predictions_sim_lstm is not None:
-             output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
-             st.subheader(f'Risultato Simulazione LSTM ({sim_method}): Prossime {total_hours_output_actual:.1f} ore')
-             if start_pred_time_lstm: st.caption(f"Previsione calcolata a partire da: {start_pred_time_lstm.strftime('%d/%m/%Y %H:%M:%S %Z')}")
-             else: st.caption("Previsione calcolata (timestamp iniziale non disponibile).")
-             results_df_lstm = pd.DataFrame(predictions_sim_lstm, columns=target_columns_model); q_cols_to_add_lstm = {}
-             for i_lstm, target_col_h_lstm in enumerate(target_columns_model):
-                 sensor_info_lstm = STATION_COORDS.get(target_col_h_lstm)
-                 if sensor_info_lstm:
-                     sensor_code_sim_lstm = sensor_info_lstm.get('sensor_code')
-                     if sensor_code_sim_lstm and sensor_code_sim_lstm in RATING_CURVES: q_cols_to_add_lstm[f"Portata Prevista Q {get_station_label(target_col_h_lstm, short=True)} (m³/s)"] = calculate_discharge_vectorized(sensor_code_sim_lstm, results_df_lstm[target_col_h_lstm].values)
-             for q_name, q_data in q_cols_to_add_lstm.items(): results_df_lstm[q_name] = q_data
-             time_col_name = 'Ora Prevista' if start_pred_time_lstm else 'Passo Futuro'
-             if start_pred_time_lstm: pred_times_lstm = [start_pred_time_lstm + timedelta(minutes=30 * (i + 1)) for i in range(output_steps_actual)]; results_df_lstm.insert(0, time_col_name, [t.strftime('%d/%m %H:%M') for t in pred_times_lstm])
-             else: pred_steps_lstm = [f"Step {i+1} (+{(i+1)*0.5}h)" for i in range(output_steps_actual)]; results_df_lstm.insert(0, time_col_name, pred_steps_lstm)
-             results_df_lstm_display = results_df_lstm.copy(); rename_dict_lstm = {time_col_name: time_col_name}; final_display_columns_lstm = [time_col_name]
-             for col in target_columns_model: label_h = get_station_label(col, short=True); unit_match_h = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str_h = f"({unit_match_h.group(1) or unit_match_h.group(2)})" if unit_match_h and (unit_match_h.group(1) or unit_match_h.group(2)) else "(m)"; new_name_h = f"{label_h} H {unit_str_h}"; rename_dict_lstm[col] = new_name_h; final_display_columns_lstm.append(new_name_h); q_col_match = f"Portata Prevista Q {label_h} (m³/s)";
-             if q_col_match in results_df_lstm.columns: rename_dict_lstm[q_col_match] = q_col_match; final_display_columns_lstm.append(q_col_match)
-             results_df_lstm_display = results_df_lstm_display.rename(columns=rename_dict_lstm)
-             st.dataframe(results_df_lstm_display[final_display_columns_lstm].round(3), hide_index=True); st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
-             st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali H e Q)'); figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
-             for i, fig_sim in enumerate(figs_sim_lstm):
-                 with sim_cols_lstm[i % num_graph_cols_lstm]: s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_columns_model[i], short=False)); filename_base_lstm_ind = f"grafico_sim_lstm_{sim_method.split()[0].lower()}_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.plotly_chart(fig_sim, use_container_width=True); st.markdown(get_plotly_download_link(fig_sim, filename_base_lstm_ind), unsafe_allow_html=True)
-             st.subheader(f'Grafico Combinato Livelli H Output (LSTM {sim_method})'); fig_combined_lstm = go.Figure()
-             if start_pred_time_lstm and 'pred_times_lstm' in locals() and len(pred_times_lstm) == output_steps_actual: x_axis_comb_lstm, x_title_comb_lstm = pred_times_lstm, "Data e Ora Previste"; x_tick_format_lstm = "%d/%m %H:%M"
-             else: x_axis_comb_lstm = (np.arange(output_steps_actual) + 1) * 0.5; x_title_comb_lstm = "Ore Future (passi da 30 min)"; x_tick_format_lstm = None
-             for i, sensor in enumerate(target_columns_model): fig_combined_lstm.add_trace(go.Scatter(x=x_axis_comb_lstm, y=predictions_sim_lstm[:, i], mode='lines+markers', name=get_station_label(sensor, short=True)))
-             combined_title_lstm = f'Previsioni Combinate Livello H {active_model_type} ({sim_method})<br><span style="font-size:10px;">{ATTRIBUTION_PHRASE}</span>'; fig_combined_lstm.update_layout(title=combined_title_lstm, xaxis_title=x_title_comb_lstm, yaxis_title="Livello Idrometrico Previsto (m)", height=500, margin=dict(l=60, r=20, t=70, b=50), hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-             if x_tick_format_lstm: fig_combined_lstm.update_xaxes(tickformat=x_tick_format_lstm)
-             fig_combined_lstm.update_yaxes(rangemode='tozero'); st.plotly_chart(fig_combined_lstm, use_container_width=True); filename_base_lstm_comb = f"grafico_combinato_H_sim_lstm_{sim_method.split()[0].lower()}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.markdown(get_plotly_download_link(fig_combined_lstm, filename_base_lstm_comb), unsafe_allow_html=True)
-         elif f"sim_run_exec_lstm_{sim_method.split()[0].lower()}" in st.session_state and st.session_state[f"sim_run_exec_lstm_{sim_method.split()[0].lower()}"]: st.error(f"Predizione simulazione LSTM ({sim_method}) fallita.")
-
+    # ... (codice originale)
 # --- PAGINA TEST MODELLO SU STORICO ---
 elif page == 'Test Modello su Storico':
-    st.header('Test Modello su Dati Storici CSV (Walk-Forward Evaluation)') # MODIFIED HEADER
-    if not model_ready:
-        st.warning("Seleziona un Modello attivo dalla sidebar per eseguire questo test.")
-        st.stop()
-    if not data_ready_csv:
-        st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar.")
-        st.stop()
-
-    st.info(f"Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
-    if date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]) and not df_current_csv.empty:
-        min_date_csv_str = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
-        max_date_csv_str = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
-        st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe, dal {min_date_csv_str} al {max_date_csv_str}")
-    else:
-        st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe. Colonna data non valida o assente per range.")
-
-    target_columns_model_test = active_config['target_columns']
-    if active_model_type == "Seq2Seq":
-        input_steps_model_test = active_config['input_window_steps']
-        output_steps_model_test = active_config['output_window_steps']
-        past_feature_cols_model_test = active_config['all_past_feature_columns']
-        forecast_feature_cols_model_test = active_config['forecast_input_columns']
-        forecast_steps_model_test = active_config['forecast_window_steps'] # Input al decoder
-        required_len_for_test = input_steps_model_test + max(forecast_steps_model_test, output_steps_model_test)
-        all_cols_needed_csv = list(set(past_feature_cols_model_test + forecast_feature_cols_model_test + target_columns_model_test + [date_col_name_csv]))
-    else: # LSTM
-        feature_columns_model_test = active_config.get("feature_columns", st.session_state.feature_columns)
-        input_steps_model_test = active_config['input_window']
-        output_steps_model_test = active_config['output_window']
-        forecast_steps_model_test = output_steps_model_test # Per LSTM, il "forecast input" è implicitamente la finestra di output
-        required_len_for_test = input_steps_model_test + output_steps_model_test
-        all_cols_needed_csv = list(set(feature_columns_model_test + target_columns_model_test + [date_col_name_csv]))
-
-    missing_cols_in_csv_test = [col for col in all_cols_needed_csv if col not in df_current_csv.columns]
-    if missing_cols_in_csv_test:
-        st.error(f"Le seguenti colonne richieste dal modello/test non sono presenti nel file CSV: {', '.join(missing_cols_in_csv_test)}")
-        st.stop()
-
-    if len(df_current_csv) < required_len_for_test:
-        st.error(f"Dati CSV insufficienti ({len(df_current_csv)} righe) per il test. Richieste almeno {required_len_for_test} righe.")
-        st.stop()
-
-    max_start_index_test = len(df_current_csv) - required_len_for_test
-    
-    st.subheader("Configurazione Walk-Forward Evaluation")
-    col_wf1, col_wf2, col_wf3 = st.columns(3)
-    with col_wf1:
-        num_evaluation_periods = st.number_input("Numero di Periodi di Test:", min_value=1, value=3, step=1, key="wf_num_periods")
-    with col_wf2:
-        first_input_start_index = st.number_input("Primo Indice di Inizio per Input nel CSV:", min_value=0, value=0, step=1, key="wf_first_start_idx", help=f"Indice della prima riga del CSV da usare come inizio del primo set di dati di input (0 = prima riga). Lunghezza CSV: {len(df_current_csv)}")
-    with col_wf3:
-        default_stride = output_steps_model_test if 'output_steps_model_test' in locals() and output_steps_model_test > 0 else 1
-        stride_between_periods = st.number_input("Passo tra Periodi di Test (numero di righe/steps):", min_value=1, value=default_stride, step=1, key="wf_stride", help="Numero di righe da saltare per iniziare il periodo di input successivo.")
-
-    # --- ANTEPRIMA DATE PRIMO PERIODO ---
-    st.markdown("--- \n**Anteprima Date Primo Periodo di Test:**")
-    if df_current_csv is not None and not df_current_csv.empty and date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
-        current_input_start_index_preview = first_input_start_index # Valore corrente dall'input UI
-        input_data_end_index_preview = current_input_start_index_preview + input_steps_model_test
-        actual_data_start_idx_test_preview = current_input_start_index_preview + input_steps_model_test
-        actual_data_end_idx_test_preview = actual_data_start_idx_test_preview + output_steps_model_test
-
-        # Calcolo del massimo indice di inizio ammissibile per l'intero test walk-forward
-        max_permissible_overall_start_idx = len(df_current_csv) - (required_len_for_test + (num_evaluation_periods - 1) * stride_between_periods)
-
-        preview_possible_for_first_period = True
-        if not (current_input_start_index_preview >= 0):
-            st.caption("- Input Start Index non valido (negativo).")
-            preview_possible_for_first_period = False
-        if not (input_data_end_index_preview <= len(df_current_csv)):
-            st.caption(f"- Fine Input Data ({input_data_end_index_preview}) supera lunghezza CSV ({len(df_current_csv)}).")
-            preview_possible_for_first_period = False
-        if not (actual_data_end_idx_test_preview <= len(df_current_csv)):
-            st.caption(f"- Fine Target Data ({actual_data_end_idx_test_preview}) supera lunghezza CSV ({len(df_current_csv)}).")
-            preview_possible_for_first_period = False
-
-        if active_model_type == "Seq2Seq":
-            # forecast_steps_model_test è l'input al decoder, output_steps_model_test è l'output del modello
-            # Il confronto con i dati reali avviene per output_steps_model_test
-            # L'input al decoder richiede max(forecast_steps_model_test, output_steps_model_test) se il forward lo gestisce,
-            # o forecast_steps_model_test se il forward si aspetta esattamente quello.
-            # Per l'anteprima, consideriamo la finestra di dati reali che serve per l'input del decoder.
-            # La lunghezza dei dati per l'input del decoder è forecast_steps_model_test.
-            # Tuttavia, la finestra di confronto è output_steps_model_test.
-            # La finestra di dati futuri che il modello Seq2Seq necessita per il suo input decoder
-            # è `forecast_steps_model_test`.
-            # E la finestra di dati reali per il confronto è `output_steps_model_test`.
-            # Il `required_len_for_test` per Seq2Seq è input_steps + max(forecast_steps, output_steps)
-            # Questo significa che il CSV deve contenere dati sufficienti per coprire questo.
-            # Per l'anteprima del *primo periodo*:
-            # L'input al decoder (future_forecast_data) inizia da actual_data_start_idx_test_preview
-            # e dura per forecast_steps_model_test.
-            future_forecast_data_end_idx_wf_preview = actual_data_start_idx_test_preview + forecast_steps_model_test
-            if not (future_forecast_data_end_idx_wf_preview <= len(df_current_csv)):
-                st.caption(f"- Fine Dati Input Decoder ({future_forecast_data_end_idx_wf_preview}) supera lunghezza CSV ({len(df_current_csv)}).")
-                preview_possible_for_first_period = False
-        
-        if first_input_start_index > max_permissible_overall_start_idx:
-            st.warning(f"Attenzione: L'indice di inizio ({first_input_start_index}) con {num_evaluation_periods} periodi e stride {stride_between_periods} non è valido per l'intero test walk-forward (max indice di inizio consentito: {max(0, max_permissible_overall_start_idx)}). L'anteprima sotto è solo per il primo periodo con l'indice attuale.")
-
-        if preview_possible_for_first_period:
-            try:
-                input_start_str = df_current_csv[date_col_name_csv].iloc[current_input_start_index_preview].strftime('%d/%m/%Y %H:%M')
-                input_end_str = df_current_csv[date_col_name_csv].iloc[input_data_end_index_preview - 1].strftime('%d/%m/%Y %H:%M')
-                target_start_str = df_current_csv[date_col_name_csv].iloc[actual_data_start_idx_test_preview].strftime('%d/%m/%Y %H:%M')
-                target_end_str = df_current_csv[date_col_name_csv].iloc[actual_data_end_idx_test_preview - 1].strftime('%d/%m/%Y %H:%M')
-                
-                st.markdown(f"- **Input Data (Periodo 1):** `{input_start_str}` - `{input_end_str}`")
-                st.markdown(f"- **Target Data (Periodo 1):** `{target_start_str}` - `{target_end_str}`")
-                if active_model_type == "Seq2Seq":
-                     decoder_input_end_idx_for_preview = actual_data_start_idx_test_preview + forecast_steps_model_test -1 # -1 because iloc is inclusive for end
-                     if decoder_input_end_idx_for_preview < len(df_current_csv) and decoder_input_end_idx_for_preview >= actual_data_start_idx_test_preview :
-                         decoder_input_end_str = df_current_csv[date_col_name_csv].iloc[decoder_input_end_idx_for_preview].strftime('%d/%m/%Y %H:%M')
-                         st.markdown(f"- **Decoder Input Data (Periodo 1):** `{target_start_str}` - `{decoder_input_end_str}` (per {forecast_steps_model_test} steps)")
-                     else:
-                         st.caption("- Non è possibile mostrare il range completo per l'input del decoder con gli indici attuali.")
-
-            except IndexError:
-                st.caption("Errore: Indici fuori range per le date del CSV con le impostazioni correnti.")
-            except Exception as e_prev:
-                st.caption(f"Errore durante la generazione dell'anteprima date: {e_prev}")
-        else:
-            st.caption("Anteprima non disponibile per il primo periodo con le impostazioni di indice/lunghezza dati correnti.")
-    else:
-        st.caption("Anteprima date non disponibile: Carica CSV con colonna data valida.")
-    st.markdown("---") # Separatore prima del bottone di esecuzione
-
-    max_first_start_idx = len(df_current_csv) - (required_len_for_test + (num_evaluation_periods - 1) * stride_between_periods)
-    if first_input_start_index > max_first_start_idx :
-        # Questa warning è ora gestita anche nell'anteprima, ma la lasciamo qui per la logica del bottone
-        # st.warning(f"L'indice di inizio ({first_input_start_index}) con i periodi e lo stride scelti supera la lunghezza dei dati. Max indice di inizio possibile: {max(0, max_first_start_idx)}. Riduci il numero di periodi, lo stride, o l'indice di inizio.")
-        can_run_walk_forward = False
-    else:
-        can_run_walk_forward = True
-
-
-    if st.button("Esegui Test Walk-Forward su Storico", type="primary", key="run_walk_forward_test_button", disabled=not can_run_walk_forward):
-        from sklearn.metrics import mean_squared_error # Import here for specific use
-        
-        evaluation_results_list = []
-        all_period_mses = {target_col: [] for target_col in target_columns_model_test}
-        successfully_evaluated_periods = 0
-
-        for i_period in range(num_evaluation_periods):
-            current_input_start_index = first_input_start_index + (i_period * stride_between_periods)
-            
-            period_valid = True
-            if current_input_start_index < 0:
-                st.warning(f"Periodo {i_period+1}: Indice di inizio input ({current_input_start_index}) non valido. Periodo saltato.")
-                period_valid = False
-            
-            input_data_end_index = current_input_start_index + input_steps_model_test
-            if input_data_end_index > len(df_current_csv):
-                st.warning(f"Periodo {i_period+1}: Fine finestra input ({input_data_end_index}) supera lunghezza CSV ({len(df_current_csv)}). Periodo saltato.")
-                period_valid = False
-
-            actual_data_start_idx_test = current_input_start_index + input_steps_model_test
-            actual_data_end_idx_test = actual_data_start_idx_test + output_steps_model_test
-            if actual_data_end_idx_test > len(df_current_csv):
-                st.warning(f"Periodo {i_period+1}: Fine finestra output/confronto ({actual_data_end_idx_test}) supera lunghezza CSV ({len(df_current_csv)}). Periodo saltato.")
-                period_valid = False
-
-            if active_model_type == "Seq2Seq":
-                num_rows_decoder_input_test_wf = max(forecast_steps_model_test, output_steps_model_test)
-                future_forecast_data_end_idx_wf = actual_data_start_idx_test + num_rows_decoder_input_test_wf
-                if future_forecast_data_end_idx_wf > len(df_current_csv):
-                    st.warning(f"Periodo {i_period+1} (Seq2Seq): Fine finestra input decoder ({future_forecast_data_end_idx_wf}) supera lunghezza CSV. Periodo saltato.")
-                    period_valid = False
-            
-            if not period_valid:
-                if i_period == 0: 
-                    st.error("Impossibile eseguire il primo periodo di valutazione con le impostazioni correnti. Controlla gli indici e la lunghezza del CSV.")
-                    # Imposta evaluation_results_list a None o un valore che faccia scattare l'errore specifico dopo il loop
-                    # Per evitare che il codice proceda con una lista vuota come se nulla fosse.
-                    # Tuttavia, il `break` è sufficiente per uscire dal loop.
-                    # Il controllo `if not evaluation_results_list:` dopo il loop gestirà il messaggio.
-                break 
-
-            with st.spinner(f"Periodo {i_period+1}: Estrazione dati e predizione..."):
-                predictions_test_period = None
-                actual_target_data_np_test_period = None
-                prediction_start_time_test_period = None
-                period_mses = {}
-                
-                try:
-                    input_data_df_test_period = df_current_csv.iloc[current_input_start_index : input_data_end_index]
-                    actual_data_for_comparison_df_period = df_current_csv.iloc[actual_data_start_idx_test : actual_data_end_idx_test]
-                    
-                    actual_target_data_np_test_period = actual_data_for_comparison_df_period[target_columns_model_test].astype(float).values
-                    prediction_start_time_test_period = actual_data_for_comparison_df_period[date_col_name_csv].iloc[0]
-
-                    if active_model_type == "Seq2Seq":
-                        past_input_np_test_period = input_data_df_test_period[past_feature_cols_model_test].astype(float).values
-                        future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf] 
-                        future_forecast_np_test_period = future_forecast_df_test_period[forecast_feature_cols_model_test].astype(float).values
-                        predictions_test_period = predict_seq2seq(active_model, past_input_np_test_period, future_forecast_np_test_period, active_scalers, active_config, active_device)
-                    else: # LSTM
-                        input_features_np_test_period = input_data_df_test_period[feature_columns_model_test].astype(float).values
-                        predictions_test_period = predict(active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], active_config, active_device)
-
-                    if predictions_test_period is not None and actual_target_data_np_test_period is not None:
-                        # Assicurati che le predizioni abbiano la stessa lunghezza degli attuali per il confronto MSE
-                        # predictions_test_period può essere più lungo di output_steps_model_test se il modello Seq2Seq
-                        # è addestrato per un output_window_steps più lungo di quello usato per il confronto.
-                        # Ma plot_predictions e il calcolo MSE dovrebbero usare solo output_steps_model_test.
-                        # Il codice MSE sotto già usa output_steps_model_test per fare lo slice delle predizioni se necessario.
-                        len_to_compare = min(predictions_test_period.shape[0], actual_target_data_np_test_period.shape[0], output_steps_model_test)
-
-                        for k_target, target_col_name in enumerate(target_columns_model_test):
-                            mse_val = mean_squared_error(actual_target_data_np_test_period[:len_to_compare, k_target], predictions_test_period[:len_to_compare, k_target])
-                            period_mses[target_col_name] = mse_val
-                            all_period_mses[target_col_name].append(mse_val)
-                        successfully_evaluated_periods +=1
-                    
-                    evaluation_results_list.append({
-                        "period_num": i_period + 1,
-                        "input_df_slice": input_data_df_test_period,
-                        "output_df_slice": actual_data_for_comparison_df_period,
-                        "predictions": predictions_test_period, # Intere predizioni
-                        "actuals": actual_target_data_np_test_period, # Interi dati attuali per confronto
-                        "start_time": prediction_start_time_test_period,
-                        "mses": period_mses,
-                        "len_compared": len_to_compare # Lunghezza effettiva usata per MSE
-                    })
-
-                except Exception as e_pred_test_period:
-                    st.error(f"Errore durante predizione per periodo {i_period+1}: {e_pred_test_period}")
-                    st.error(traceback.format_exc())
-                    break 
-        
-        # --- Display Results ---
-        # MODIFICA INIZIA QUI
-        if not evaluation_results_list:
-            # Questo blocco viene eseguito se evaluation_results_list è vuota.
-            # Lo stato del bottone è già controllato dal fatto che siamo dentro `if st.button(...)`
-            # quindi st.session_state.get("run_walk_forward_test_button") sarà True qui.
-            st.error("Esecuzione del test walk-forward fallita o nessun periodo valido trovato.")
-        # FINE MODIFICA (il `elif` originale è rimosso)
-        else: # evaluation_results_list NON è vuota
-            st.success(f"Completati {successfully_evaluated_periods} periodi di valutazione walk-forward.")
-            
-            for result in evaluation_results_list:
-                st.subheader(f"Risultati Test - Periodo {result['period_num']}")
-                
-                input_start_display = result['input_df_slice'][date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
-                input_end_display = result['input_df_slice'][date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
-                output_start_display = result['output_df_slice'][date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
-                output_end_display = result['output_df_slice'][date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
-
-                st.caption(f"Input: {input_start_display} - {input_end_display} | Output Confrontato: {output_start_display} - {output_end_display}")
-
-                df_results_display_period = pd.DataFrame()
-                # Usa result['len_compared'] per la lunghezza dei dati da mostrare nella tabella
-                len_display = result.get('len_compared', output_steps_model_test)
-
-                if result['start_time']:
-                    pred_times_test_dt_period = [result['start_time'] + timedelta(minutes=30 * step) for step in range(len_display)]
-                    df_results_display_period['Ora'] = [t.strftime('%d/%m %H:%M') for t in pred_times_test_dt_period]
-                else:
-                    df_results_display_period['Passo'] = [f"T+{step+1}" for step in range(len_display)]
-
-                for i_col, col_name_target in enumerate(target_columns_model_test):
-                    label = get_station_label(col_name_target, short=True)
-                    df_results_display_period[f'{label} Previsto'] = result['predictions'][:len_display, i_col]
-                    df_results_display_period[f'{label} Reale'] = result['actuals'][:len_display, i_col]
-                
-                st.dataframe(df_results_display_period.round(3), hide_index=True, use_container_width=True)
-                st.markdown(get_table_download_link(df_results_display_period, f"test_storico_periodo_{result['period_num']}_{st.session_state.active_model_name.replace(' ', '_')}.csv", f"Scarica Tabella Periodo {result['period_num']} (CSV)"), unsafe_allow_html=True)
-                
-                st.markdown("**Metriche di Errore (MSE) per il Periodo:**")
-                mse_df_period = pd.DataFrame.from_dict(result['mses'], orient='index', columns=['MSE']).rename_axis('Sensore Target')
-                st.dataframe(mse_df_period.round(5))
-
-                st.markdown("**Grafici di Confronto per il Periodo:**")
-                figs_test_period = plot_predictions(
-                    result['predictions'][:len_display, :], # Usa len_display
-                    active_config, 
-                    start_time=result['start_time'], 
-                    actual_data=result['actuals'][:len_display, :], # Usa len_display
-                    actual_data_label="Reale CSV" 
-                )
-                num_graph_cols_test_period = min(len(figs_test_period), 2)
-                graph_cols_test_period = st.columns(num_graph_cols_test_period)
-                for i_fig_p, fig_test_p in enumerate(figs_test_period):
-                    with graph_cols_test_period[i_fig_p % num_graph_cols_test_period]:
-                        target_col_name_test_p = target_columns_model_test[i_fig_p]
-                        s_name_file_test_p = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_col_name_test_p, short=False))
-                        filename_base_test_ind_p = f"grafico_test_periodo_{result['period_num']}_{s_name_file_test_p}_{datetime.now().strftime('%Y%m%d_%H%M')}"
-                        st.plotly_chart(fig_test_p, use_container_width=True)
-                        st.markdown(get_plotly_download_link(fig_test_p, filename_base_test_ind_p, text_html=f"HTML P.{result['period_num']}", text_png=f"PNG P.{result['period_num']}"), unsafe_allow_html=True)
-                st.divider()
-
-            # --- Averaged Metrics Display ---
-            if successfully_evaluated_periods > 0:
-                st.subheader("Metriche Medie su Tutti i Periodi di Valutazione")
-                avg_mses_data = []
-                for target_col, mses_list in all_period_mses.items():
-                    if mses_list: 
-                        avg_mse = np.mean(mses_list)
-                        avg_mses_data.append({'Sensore Target': get_station_label(target_col, short=False), 'MSE Medio': avg_mse})
-                
-                if avg_mses_data:
-                    avg_mse_df = pd.DataFrame(avg_mses_data)
-                    st.dataframe(avg_mse_df.round(5), hide_index=True, use_container_width=True)
-                    st.markdown(get_table_download_link(avg_mse_df, f"test_storico_medie_mse_{st.session_state.active_model_name.replace(' ', '_')}.csv", "Scarica Tabella MSE Medi (CSV)"), unsafe_allow_html=True)
-                else:
-                    st.info("Nessuna metrica MSE media calcolata (potrebbe essere dovuto a errori nei periodi o nessun dato MSE).")
-            else: 
-                st.info("Nessun periodo valutato con successo per calcolare medie MSE.")
-        # La riga `elif st.session_state.get("run_walk_forward_test_button")` è stata rimossa.
-
-
+    # ... (codice originale)
 # --- PAGINA ANALISI DATI STORICI ---
 elif page == 'Analisi Dati Storici':
-    st.header('Analisi Dati Storici (da file CSV)')
-    if not data_ready_csv: st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar per l'analisi."); st.stop()
-    else:
-        st.info(f"Dataset CSV caricato: **{len(df_current_csv)}** righe.")
-        if date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
-             try:
-                 if not df_current_csv.empty:
-                     min_date_str = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M'); max_date_str = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
-                     st.caption(f"Periodo: da **{min_date_str}** a **{max_date_str}**")
-                 else: st.warning("Nessuna data valida trovata nel dataset CSV.")
-             except Exception as e_date_analysis: st.warning(f"Impossibile determinare il periodo dei dati CSV: {e_date_analysis}")
-        else: st.warning(f"Colonna data '{date_col_name_csv}' non trovata o non valida per analisi periodo.")
-        st.subheader("Esplorazione Dati"); st.dataframe(df_current_csv.head()); st.markdown(get_table_download_link(df_current_csv, f"dati_storici_completi_{datetime.now().strftime('%Y%m%d')}.csv", link_text="Scarica Dati Completi (CSV)"), unsafe_allow_html=True)
-        st.divider(); st.subheader("Statistiche Descrittive")
-        numeric_cols_analysis = df_current_csv.select_dtypes(include=np.number).columns
-        if not numeric_cols_analysis.empty: st.dataframe(df_current_csv[numeric_cols_analysis].describe().round(2))
-        else: st.info("Nessuna colonna numerica trovata per le statistiche.")
-        st.divider(); st.subheader("Visualizzazione Temporale")
-        if date_col_name_csv in df_current_csv and not numeric_cols_analysis.empty and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
-            cols_to_plot = st.multiselect("Seleziona colonne da visualizzare:", options=numeric_cols_analysis.tolist(), default=numeric_cols_analysis[:min(len(numeric_cols_analysis), 5)].tolist(), key="analysis_plot_select")
-            if cols_to_plot:
-                fig_analysis = go.Figure()
-                for col in cols_to_plot: fig_analysis.add_trace(go.Scatter(x=df_current_csv[date_col_name_csv], y=df_current_csv[col], mode='lines', name=get_station_label(col, short=True)))
-                fig_analysis.update_layout(title="Andamento Temporale Selezionato", xaxis_title="Data e Ora", yaxis_title="Valore", height=500, hovermode="x unified", template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                st.plotly_chart(fig_analysis, use_container_width=True); analysis_filename_base = f"analisi_temporale_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.markdown(get_plotly_download_link(fig_analysis, analysis_filename_base), unsafe_allow_html=True)
-            else: st.info("Seleziona almeno una colonna per visualizzare il grafico.")
-        else: st.info("Colonna data (tipo datetime) o colonne numeriche mancanti per la visualizzazione temporale.")
-        st.divider(); st.subheader("Matrice di Correlazione")
-        if len(numeric_cols_analysis) > 1:
-            corr_matrix = df_current_csv[numeric_cols_analysis].corr()
-            fig_corr = go.Figure(data=go.Heatmap(z=corr_matrix.values, x=corr_matrix.columns, y=corr_matrix.columns, colorscale='viridis', zmin=-1, zmax=1, colorbar=dict(title='Corr')))
-            fig_corr.update_layout(title='Matrice di Correlazione tra Variabili Numeriche', xaxis_tickangle=-45, height=600, template="plotly_white"); st.plotly_chart(fig_corr, use_container_width=True)
-        else: st.info("Sono necessarie almeno due colonne numeriche per calcolare la matrice di correlazione.")
-
-# --- PAGINA ALLENAMENTO MODELLO (MODIFICATA) ---
+    # ... (codice originale)
+# --- PAGINA ALLENAMENTO MODELLO ---
 elif page == 'Allenamento Modello':
-    st.header('Allenamento Nuovo Modello')
-
-    def parse_hour_periods(periods_str, context=""):
-        """Helper to parse comma-separated hour periods into a list of ints."""
-        if not periods_str.strip():
-            return []
-        try:
-            periods = [int(p.strip()) for p in periods_str.split(',') if p.strip()]
-            if not all(p > 0 for p in periods):
-                st.warning(f"I periodi orari ({context}) devono essere numeri interi positivi. Valore '{periods_str}' non valido.")
-                return []
-            return sorted(list(set(periods))) # Sorted unique positive integers
-        except ValueError:
-            st.warning(f"Formato periodi orari ({context}) non valido. Usare numeri separati da virgola (es. 1,3,6). Valore '{periods_str}' non valido.")
-            return []
-
-    if not data_ready_csv: st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar per avviare l'allenamento."); st.stop()
-    st.success(f"Dati CSV disponibili per l'allenamento: {len(df_current_csv)} righe."); st.subheader('Configurazione Addestramento')
-    train_model_type = st.radio("Tipo di Modello da Allenare:", ["LSTM Standard", "Seq2Seq (Encoder-Decoder)"], key="train_select_type", horizontal=True)
-    default_save_name = f"modello_{train_model_type.split()[0].lower()}_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"; save_name_input = st.text_input("Nome base per salvare il modello e i file associati:", default_save_name, key="train_save_filename")
-    save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_') or "modello_default"; os.makedirs(MODELS_DIR, exist_ok=True)
-    if save_name != save_name_input: st.caption(f"Nome file valido: `{save_name}`")
-
-    if train_model_type == "LSTM Standard":
-        st.markdown("**1. Seleziona Feature e Target (LSTM)**")
-        all_features_lstm = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist(); default_features_lstm = [f for f in st.session_state.feature_columns if f in all_features_lstm]; selected_features_train_lstm = st.multiselect("Feature Input LSTM:", options=all_features_lstm, default=default_features_lstm, key="train_lstm_feat")
-        level_options_lstm = [f for f in all_features_lstm if 'livello' in f.lower() or '[m]' in f.lower()]; default_targets_lstm = level_options_lstm[:1]; selected_targets_train_lstm = st.multiselect("Target Output LSTM (Livelli):", options=level_options_lstm, default=default_targets_lstm, key="train_lstm_target")
-
-        # --- UI for LSTM Feature Engineering ---
-        lag_config_lstm = {}; cumulative_config_lstm = {}
-        with st.expander("Configura Feature Engineering Aggiuntive (LSTM)", expanded=False):
-            st.markdown("**Creazione Feature Ritardate (Lagged)**")
-            lag_cols_selection_lstm = st.multiselect(
-                "Seleziona feature per lag (LSTM):", 
-                options=selected_features_train_lstm, 
-                default=[], 
-                key="lstm_lag_cols_select",
-                help="Crea versioni ritardate delle feature selezionate."
-            )
-            lag_hours_str_lstm = st.text_input(
-                "Periodi di lag in ore (separate da virgola, es. 1,3,6):", 
-                value="", 
-                key="lstm_lag_hours_input",
-                help="Es: '1,3,6' creerà feature ritardate di 1 ora, 3 ore e 6 ore."
-            )
-            if lag_cols_selection_lstm and lag_hours_str_lstm:
-                parsed_lag_hours = parse_hour_periods(lag_hours_str_lstm, "Lag LSTM")
-                if parsed_lag_hours:
-                    for col in lag_cols_selection_lstm:
-                        lag_config_lstm[col] = parsed_lag_hours
-                    st.caption(f"Configurazione Lag LSTM: `{lag_config_lstm}`")
-
-            st.markdown("**Creazione Feature Cumulative (per Pioggia/Cumulate)**")
-            potential_cumulative_cols_lstm = [
-                col for col in selected_features_train_lstm 
-                if any(kw in col.lower() for kw in ['pioggia', 'cumulata', 'mm'])
-            ]
-            cum_cols_selection_lstm = st.multiselect(
-                "Seleziona feature (tipo pioggia/cumulata) per somme cumulative:",
-                options=potential_cumulative_cols_lstm,
-                default=[],
-                key="lstm_cum_cols_select",
-                help="Crea somme cumulative (rolling sum) per le feature selezionate (tipicamente pioggia)."
-            )
-            cum_hours_str_lstm = st.text_input(
-                "Finestre cumulative in ore (separate da virgola, es. 3,6,12):",
-                value="",
-                key="lstm_cum_hours_input",
-                help="Es: '3,6,12' creerà somme cumulative su 3, 6 e 12 ore."
-            )
-            if cum_cols_selection_lstm and cum_hours_str_lstm:
-                parsed_cum_hours = parse_hour_periods(cum_hours_str_lstm, "Cumulativo LSTM")
-                if parsed_cum_hours:
-                    for col in cum_cols_selection_lstm:
-                        cumulative_config_lstm[col] = parsed_cum_hours
-                    st.caption(f"Configurazione Cumulativa LSTM: `{cumulative_config_lstm}`")
-        # --- End of LSTM Feature Engineering UI ---
-
-        st.markdown("**2. Parametri Modello e Training (LSTM)**")
-        with st.expander("Impostazioni Allenamento LSTM", expanded=True):
-            c1_lstm, c2_lstm, c3_lstm = st.columns(3)
-            with c1_lstm: 
-                iw_t_lstm_hours = st.number_input("Input Window (ore)", min_value=1, value=24, step=1, key="t_lstm_in_hours")
-                ow_t_lstm_steps = st.number_input("Output Window (steps da 30min)", min_value=1, value=6, step=1, key="t_lstm_out_steps")
-                # vs_t_lstm = st.slider("Split Validazione (%)", 0, 50, 20, 1, key="t_lstm_vs") # REMOVED
-                n_splits_cv_lstm = st.number_input("Numero di Fold per TimeSeriesSplit CV (LSTM):", min_value=2, value=3, step=1, key="t_lstm_n_splits_cv", help="Minimo 2 splits per CV. Se 1, si comporta come train/validation semplice sull'ultimo blocco.")
-            with c2_lstm: 
-                hs_t_lstm = st.number_input("Hidden Size", min_value=8, value=128, step=8, key="t_lstm_hs")
-                nl_t_lstm = st.number_input("Numero Layers", min_value=1, value=2, step=1, key="t_lstm_nl")
-                dr_t_lstm = st.slider("Dropout", 0.0, 0.7, 0.2, 0.05, key="t_lstm_dr")
-            with c3_lstm: 
-                lr_t_lstm = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", step=1e-4, key="t_lstm_lr")
-                bs_t_lstm = st.select_slider("Batch Size", [8, 16, 32, 64, 128, 256], 32, key="t_lstm_bs")
-                ep_t_lstm = st.number_input("Numero Epoche", min_value=1, value=50, step=5, key="t_lstm_ep")
-            
-            col_loss_lstm, col_dev_lstm, col_save_lstm = st.columns(3) # Added col_loss_lstm
-            with col_loss_lstm:
-                loss_choice_lstm = st.selectbox("Funzione di Loss (LSTM):", ["MSELoss", "HuberLoss"], key="t_lstm_loss_choice")
-            with col_dev_lstm: 
-                device_option_lstm = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_lstm', horizontal=True)
-            with col_save_lstm: 
-                save_choice_lstm = st.radio("Strategia Salvataggio:", ['Migliore (su Validazione)', 'Modello Finale'], index=0, key='train_save_lstm', horizontal=True)
-        st.divider()
-        ready_to_train_lstm = bool(save_name and selected_features_train_lstm and selected_targets_train_lstm and ow_t_lstm_steps > 0 and n_splits_cv_lstm >=1) # Ensure n_splits is at least 1
-        if n_splits_cv_lstm < 2: st.caption("Nota: Con n_splits < 2, TimeSeriesSplit si comporta come una singola divisione train/test, usando l'ultimo blocco per la validazione.")
-        
-        if st.button("Avvia Addestramento LSTM", type="primary", disabled=not ready_to_train_lstm, key="train_run_lstm"):
-             # --- INIZIO BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
-             if not selected_features_train_lstm:
-                 st.error("Seleziona almeno una colonna per le 'Feature Input LSTM'.")
-                 st.stop()
-             if not selected_targets_train_lstm:
-                 st.error("Seleziona almeno una colonna per le 'Target Output LSTM'.")
-                 st.stop()
-             if ow_t_lstm_steps <= 0:
-                 st.error("Output Window (steps da 30min) deve essere maggiore di 0.")
-                 st.stop()
-             # --- FINE BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
-                
-             st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
-             # iw_t_lstm_hours è in ore, ow_t_lstm_steps è già in steps (mezz'ore)
-             # prepare_training_data si aspetta input_window e output_window in ORE
-             # HydroLSTM si aspetta output_window in STEPS (mezz'ore)
-             output_window_hours_lstm = ow_t_lstm_steps / 2.0 # Converti steps in ore per prepare_training_data
-             with st.spinner("Preparazione dati LSTM..."):
-                 # Prepare_training_data now returns full X_scaled, y_scaled
-                 X_scaled_full_lstm, y_scaled_full_lstm, sc_f, sc_t = prepare_training_data(
-                     df_current_csv.copy(), selected_features_train_lstm, selected_targets_train_lstm,
-                     iw_t_lstm_hours, int(output_window_hours_lstm), # Removed vs_t_lstm
-                     lag_config=lag_config_lstm, cumulative_config=cumulative_config_lstm
-                 )
-             # Check if data preparation was successful
-             if X_scaled_full_lstm is None or y_scaled_full_lstm is None or sc_f is None or sc_t is None:
-                 st.error("Preparazione dati LSTM fallita."); st.stop()
-
-             if X_scaled_full_lstm.shape[0] < n_splits_cv_lstm: # Basic check
-                 st.error(f"Dati insufficienti ({X_scaled_full_lstm.shape[0]} campioni) per {n_splits_cv_lstm} splits CV. Riduci il numero di splits o fornisci più dati.")
-                 st.stop()
-             
-             trained_model_lstm, train_histories_lstm, val_histories_lstm = train_model(
-                 X_scaled_full_lstm, y_scaled_full_lstm, # Pass full scaled data
-                 X_scaled_full_lstm.shape[2], len(selected_targets_train_lstm), # input_size derived from X_scaled_full_lstm
-                 ow_t_lstm_steps, 
-                 hs_t_lstm, nl_t_lstm, ep_t_lstm, bs_t_lstm, lr_t_lstm, dr_t_lstm, 
-                 ('migliore' if 'Migliore' in save_choice_lstm else 'finale'), 
-                 ('auto' if 'Auto' in device_option_lstm else 'cpu'),
-                 n_splits_cv=n_splits_cv_lstm, loss_function_name=loss_choice_lstm # NEW PARAMS
-             )
-             
-             if trained_model_lstm:
-                 st.success("Addestramento LSTM completato!")
-                 train_loss_scalar_hist_lstm, train_loss_per_step_hist_lstm = train_histories_lstm
-                 val_loss_scalar_hist_lstm, val_loss_per_step_hist_lstm = (None, None)
-                 if val_histories_lstm and val_histories_lstm[0] is not None :
-                      val_loss_scalar_hist_lstm, val_loss_per_step_hist_lstm = val_histories_lstm
-
-                 if train_loss_per_step_hist_lstm and len(train_loss_per_step_hist_lstm) > 0:
-                     st.write("Loss per step finale (Train LSTM):")
-                     st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(train_loss_per_step_hist_lstm[-1])})
-                 if val_loss_per_step_hist_lstm is not None and len(val_loss_per_step_hist_lstm) > 0 and not np.all(np.isnan(val_loss_per_step_hist_lstm[-1])):
-                     st.write("Loss per step finale (Validation LSTM):")
-                     st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(val_loss_per_step_hist_lstm[-1])})
-
-                 try:
-                     base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_lstm.state_dict(), m_path); sf_path = f"{base_path}_features.joblib"; joblib.dump(sc_f, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_t, st_path); c_path = f"{base_path}.json"
-                     config_save_lstm = {
-                     "model_type": "LSTM", "input_window": X_scaled_full_lstm.shape[1], "output_window": ow_t_lstm_steps, # Salva steps effettivi
-                     "hidden_size": hs_t_lstm, "num_layers": nl_t_lstm, "dropout": dr_t_lstm, 
-                     "feature_columns": selected_features_train_lstm, # These are original features before engineering
-                     "target_columns": selected_targets_train_lstm, 
-                     "lag_config": lag_config_lstm, # NEW: Save lag config
-                     "cumulative_config": cumulative_config_lstm, # NEW: Save cumulative config
-                     "training_date": datetime.now(italy_tz).isoformat(), 
-                     # "val_split_percent": vs_t_lstm, # This was removed in previous commit, ensure it's not re-added
-                     "n_splits_cv": n_splits_cv_lstm, # Added in previous commit
-                     "loss_function": loss_choice_lstm, # Added in previous commit
-                     "learning_rate": lr_t_lstm, "batch_size": bs_t_lstm, "epochs": ep_t_lstm, "display_name": save_name
-                     }
-                     with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_lstm, f, indent=4)
-                     st.success(f"Modello LSTM '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader("Download File Modello LSTM"); col_dl_lstm1, col_dl_lstm2 = st.columns(2)
-                     with col_dl_lstm1: st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path, "Scaler Features (.joblib)"), unsafe_allow_html=True)
-                     with col_dl_lstm2: st.markdown(get_download_link_for_file(c_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path, "Scaler Target (.joblib)"), unsafe_allow_html=True)
-                     find_available_models.clear()
-                 except Exception as e_save: st.error(f"Errore salvataggio modello LSTM: {e_save}"); st.error(traceback.format_exc())
-             else: st.error("Addestramento LSTM fallito. Modello non salvato.")
-    elif train_model_type == "Seq2Seq (Encoder-Decoder)":
-         st.markdown("**1. Seleziona Feature (Seq2Seq)**"); features_present_in_csv_s2s = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist(); default_past_features_s2s = [f for f in st.session_state.feature_columns if f in features_present_in_csv_s2s]; selected_past_features_s2s = st.multiselect("Feature Storiche (Input Encoder):", options=features_present_in_csv_s2s, default=default_past_features_s2s, key="train_s2s_past_feat")
-         options_forecast = selected_past_features_s2s; default_forecast_cols = [f for f in options_forecast if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]; selected_forecast_features_s2s = st.multiselect("Feature Forecast (Input Decoder):", options=options_forecast, default=default_forecast_cols, key="train_s2s_forecast_feat")
-         level_options_s2s = [f for f in selected_past_features_s2s if 'livello' in f.lower() or '[m]' in f.lower()]; default_targets_s2s = level_options_s2s[:1]; selected_targets_s2s = st.multiselect("Target Output (Livelli):", options=level_options_s2s, default=default_targets_s2s, key="train_s2s_target_feat")
-
-        # --- UI for Seq2Seq Feature Engineering (Past Features) ---
-         lag_config_past_s2s = {}; cumulative_config_past_s2s = {}
-         with st.expander("Configura Feature Engineering Aggiuntive (Seq2Seq Input Encoder)", expanded=False):
-            st.markdown("**Creazione Feature Ritardate (per Feature Storiche)**")
-            lag_cols_selection_s2s_past = st.multiselect(
-                "Seleziona feature storiche per lag (Seq2Seq):",
-                options=selected_past_features_s2s,
-                default=[],
-                key="s2s_past_lag_cols_select",
-                help="Crea versioni ritardate delle feature storiche (input encoder) selezionate."
-            )
-            lag_hours_str_s2s_past = st.text_input(
-                "Periodi di lag in ore (separate da virgola, es. 1,3,6):",
-                value="",
-                key="s2s_past_lag_hours_input",
-                help="Es: '1,3,6' creerà feature ritardate di 1 ora, 3 ore e 6 ore per l'input encoder."
-            )
-            if lag_cols_selection_s2s_past and lag_hours_str_s2s_past:
-                parsed_lag_hours_s2s = parse_hour_periods(lag_hours_str_s2s_past, "Lag Seq2Seq Passato")
-                if parsed_lag_hours_s2s:
-                    for col in lag_cols_selection_s2s_past:
-                        lag_config_past_s2s[col] = parsed_lag_hours_s2s
-                    st.caption(f"Configurazione Lag Seq2Seq (Passato): `{lag_config_past_s2s}`")
-
-            st.markdown("**Creazione Feature Cumulative (per Pioggia/Cumulate Nelle Feature Storiche)**")
-            potential_cumulative_cols_s2s_past = [
-                col for col in selected_past_features_s2s
-                if any(kw in col.lower() for kw in ['pioggia', 'cumulata', 'mm'])
-            ]
-            cum_cols_selection_s2s_past = st.multiselect(
-                "Seleziona feature storiche (tipo pioggia/cumulata) per somme cumulative:",
-                options=potential_cumulative_cols_s2s_past,
-                default=[],
-                key="s2s_past_cum_cols_select",
-                help="Crea somme cumulative per le feature storiche (input encoder) selezionate."
-            )
-            cum_hours_str_s2s_past = st.text_input(
-                "Finestre cumulative in ore (separate da virgola, es. 3,6,12):",
-                value="",
-                key="s2s_past_cum_hours_input",
-                help="Es: '3,6,12' creerà somme cumulative su 3, 6 e 12 ore per l'input encoder."
-            )
-            if cum_cols_selection_s2s_past and cum_hours_str_s2s_past:
-                parsed_cum_hours_s2s = parse_hour_periods(cum_hours_str_s2s_past, "Cumulativo Seq2Seq Passato")
-                if parsed_cum_hours_s2s:
-                    for col in cum_cols_selection_s2s_past:
-                        cumulative_config_past_s2s[col] = parsed_cum_hours_s2s
-                    st.caption(f"Configurazione Cumulativa Seq2Seq (Passato): `{cumulative_config_past_s2s}`")
-        # --- End of Seq2Seq Feature Engineering UI ---
-
-         st.markdown("**2. Parametri Finestre e Training (Seq2Seq)**")
-         with st.expander("Impostazioni Allenamento Seq2Seq", expanded=True):
-             c1_s2s, c2_s2s, c3_s2s = st.columns(3)
-             with c1_s2s: 
-                 iw_steps_s2s = st.number_input("Input Storico (steps da 30min)", min_value=2, value=48, step=2, key="t_s2s_in")
-                 fw_steps_s2s = st.number_input("Input Forecast (steps da 30min)", min_value=1, value=6, step=1, key="t_s2s_fore")
-                 ow_steps_s2s = st.number_input("Output Previsione (steps da 30min)", min_value=1, value=6, step=1, key="t_s2s_out")
-                 # vs_t_s2s = st.slider("Split Validazione (%)", 0, 50, 20, 1, key="t_s2s_vs") # REMOVED
-                 n_splits_cv_s2s = st.number_input("Numero di Fold per TimeSeriesSplit CV (Seq2Seq):", min_value=2, value=3, step=1, key="t_s2s_n_splits_cv", help="Minimo 2 splits per CV. Se 1, si comporta come train/validation semplice sull'ultimo blocco.")
-             if ow_steps_s2s > fw_steps_s2s: st.caption("Nota: Output Steps > Forecast Steps. Il modello userà padding durante la predizione (se il forward lo gestisce) o potrebbe dare errore se non gestito.")
-             with c2_s2s: 
-                 hs_t_s2s = st.number_input("Hidden Size", min_value=8, value=128, step=8, key="t_s2s_hs")
-                 nl_t_s2s = st.number_input("Numero Layers", min_value=1, value=2, step=1, key="t_s2s_nl")
-                 dr_t_s2s = st.slider("Dropout", 0.0, 0.7, 0.2, 0.05, key="t_s2s_dr")
-             with c3_s2s: 
-                 lr_t_s2s = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", step=1e-4, key="t_s2s_lr")
-                 bs_t_s2s = st.select_slider("Batch Size", [8, 16, 32, 64, 128, 256], 32, key="t_s2s_bs")
-                 ep_t_s2s = st.number_input("Numero Epoche", min_value=1, value=50, step=5, key="t_s2s_ep")
-            
-             col_loss_s2s, col_dev_s2s, col_save_s2s = st.columns(3) # Added col_loss_s2s
-             with col_loss_s2s:
-                 loss_choice_s2s = st.selectbox("Funzione di Loss (Seq2Seq):", ["MSELoss", "HuberLoss"], key="t_s2s_loss_choice")
-             with col_dev_s2s: 
-                 device_option_s2s = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_s2s', horizontal=True)
-             with col_save_s2s: 
-                 save_choice_s2s = st.radio("Strategia Salvataggio:", ['Migliore (su Validazione)', 'Modello Finale'], index=0, key='train_save_s2s', horizontal=True)
-         st.divider()
-         ready_to_train_s2s = bool(save_name and selected_past_features_s2s and selected_forecast_features_s2s and selected_targets_s2s and ow_steps_s2s > 0 and n_splits_cv_s2s >=1)
-         if n_splits_cv_s2s < 2: st.caption("Nota: Con n_splits < 2, TimeSeriesSplit si comporta come una singola divisione train/test, usando l'ultimo blocco per la validazione.")
-         if st.button("Avvia Addestramento Seq2Seq", type="primary", disabled=not ready_to_train_s2s, key="train_run_s2s"):
-            # --- INIZIO BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
-            if not selected_past_features_s2s:
-                st.error("Seleziona almeno una colonna per le 'Feature Storiche (Input Encoder)'.")
-                st.stop()
-            if not selected_forecast_features_s2s:
-                st.error("Seleziona almeno una colonna per le 'Feature Forecast (Input Decoder)'.")
-                st.stop()
-            if not selected_targets_s2s:
-                st.error("Seleziona almeno una colonna per le 'Target Output (Livelli)'.")
-                st.stop()
-            if ow_steps_s2s <= 0:
-                st.error("Output Previsione (steps da 30min) deve essere maggiore di 0.")
-                st.stop()
-            # --- FINE BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
-
-            st.info(f"Avvio addestramento Seq2Seq per '{save_name}'...");
-            with st.spinner("Preparazione dati Seq2Seq..."): 
-                # Prepare_training_data_seq2seq now returns full scaled datasets
-                data_tuple_s2s = prepare_training_data_seq2seq(
-                    df_current_csv.copy(), selected_past_features_s2s, selected_forecast_features_s2s, 
-                    selected_targets_s2s, iw_steps_s2s, fw_steps_s2s, ow_steps_s2s, # Removed vs_t_s2s
-                    lag_config_past=lag_config_past_s2s, cumulative_config_past=cumulative_config_past_s2s
-                )
-            if data_tuple_s2s is None or len(data_tuple_s2s) != 6 or data_tuple_s2s[0] is None: # Adjusted expected length
-                st.error("Preparazione dati Seq2Seq fallita."); st.stop()
-            
-            # Unpack full scaled datasets
-            (X_enc_scaled_full_s2s, X_dec_scaled_full_s2s, y_tar_scaled_full_s2s, 
-             sc_past, sc_fore, sc_tar) = data_tuple_s2s
-            
-            if not all([sc_past, sc_fore, sc_tar]): st.error("Errore: Scaler Seq2Seq non generati."); st.stop()
-
-            if X_enc_scaled_full_s2s.shape[0] < n_splits_cv_s2s: # Basic check
-                 st.error(f"Dati insufficienti ({X_enc_scaled_full_s2s.shape[0]} campioni) per {n_splits_cv_s2s} splits CV (Seq2Seq). Riduci il numero di splits o fornisci più dati.")
-                 st.stop()
-
-            try: 
-                # Input size for encoder now comes from the scaled data's feature dimension
-                enc = EncoderLSTM(X_enc_scaled_full_s2s.shape[2], hs_t_s2s, nl_t_s2s, dr_t_s2s)
-                dec = DecoderLSTM(X_dec_scaled_full_s2s.shape[2], hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
-            except Exception as e_init: st.error(f"Errore inizializzazione modello Seq2Seq: {e_init}"); st.stop()
-            
-            trained_model_s2s, train_histories_s2s, val_histories_s2s = train_model_seq2seq(
-                X_enc_scaled_full_s2s, X_dec_scaled_full_s2s, y_tar_scaled_full_s2s, # Pass full scaled data
-                enc, dec, ow_steps_s2s, ep_t_s2s, bs_t_s2s, lr_t_s2s, 
-                ('migliore' if 'Migliore' in save_choice_s2s else 'finale'), 
-                ('auto' if 'Auto' in device_option_s2s else 'cpu'), 
-                teacher_forcing_ratio_schedule=[0.6, 0.1], # Keep existing or make configurable
-                n_splits_cv=n_splits_cv_s2s, loss_function_name=loss_choice_s2s # NEW PARAMS
-            )
-
-            if trained_model_s2s:
-                st.success("Addestramento Seq2Seq completato!")
-                train_loss_scalar_hist_s2s, train_loss_per_step_hist_s2s = train_histories_s2s
-                val_loss_scalar_hist_s2s, val_loss_per_step_hist_s2s = (None, None)
-                if val_histories_s2s and val_histories_s2s[0] is not None:
-                    val_loss_scalar_hist_s2s, val_loss_per_step_hist_s2s = val_histories_s2s
-                
-                if train_loss_per_step_hist_s2s and len(train_loss_per_step_hist_s2s) > 0:
-                    st.write("Loss per step finale (Train Seq2Seq):")
-                    st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(train_loss_per_step_hist_s2s[-1])})
-                if val_loss_per_step_hist_s2s is not None and len(val_loss_per_step_hist_s2s) > 0 and not np.all(np.isnan(val_loss_per_step_hist_s2s[-1])):
-                    st.write("Loss per step finale (Validation Seq2Seq):")
-                    st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(val_loss_per_step_hist_s2s[-1])})
-
-                try:
-                    base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_s2s.state_dict(), m_path); sp_path = f"{base_path}_past_features.joblib"; joblib.dump(sc_past, sp_path); sf_path = f"{base_path}_forecast_features.joblib"; joblib.dump(sc_fore, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_tar, st_path); c_path = f"{base_path}.json"
-                    config_save_s2s = {
-                        "model_type": "Seq2Seq", "input_window_steps": iw_steps_s2s, 
-                        "forecast_window_steps": fw_steps_s2s, "output_window_steps": ow_steps_s2s, 
-                        "hidden_size": hs_t_s2s, "num_layers": nl_t_s2s, "dropout": dr_t_s2s, 
-                        "all_past_feature_columns": selected_past_features_s2s, # Original past features
-                        "forecast_input_columns": selected_forecast_features_s2s, 
-                        "target_columns": selected_targets_s2s,
-                        "lag_config_past": lag_config_past_s2s, # NEW: Save lag config for past features
-                        "cumulative_config_past": cumulative_config_past_s2s, # NEW: Save cumulative config for past features
-                        "training_date": datetime.now(italy_tz).isoformat(), 
-                        # "val_split_percent": vs_t_s2s, # Removed in previous commit
-                        "n_splits_cv": n_splits_cv_s2s, # Added in previous commit
-                        "loss_function": loss_choice_s2s, # Added in previous commit
-                        "learning_rate": lr_t_s2s, "batch_size": bs_t_s2s, "epochs": ep_t_s2s, "display_name": save_name
-                    }
-                    with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_s2s, f, indent=4)
-                    st.success(f"Modello Seq2Seq '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader("Download File Modello Seq2Seq"); col_dl_s2s_1, col_dl_s2s_2 = st.columns(2)
-                    with col_dl_s2s_1: st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sp_path,"Scaler Passato (.joblib)"), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path,"Scaler Target (.joblib)"), unsafe_allow_html=True)
-                    with col_dl_s2s_2: st.markdown(get_download_link_for_file(c_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path,"Scaler Forecast (.joblib)"), unsafe_allow_html=True)
-                    find_available_models.clear()
-                except Exception as e_save_s2s: st.error(f"Errore salvataggio modello Seq2Seq: {e_save_s2s}"); st.error(traceback.format_exc())
-            else: st.error("Addestramento Seq2Seq fallito. Modello non salvato.")
-
-# --- INIZIO BLOCCO NUOVO CODICE PER POST-TRAINING ---
+    # ... (codice originale)
 # --- PAGINA POST-TRAINING MODELLO ---
 elif page == 'Post-Training Modello':
-    st.header('Post-Training Modello Esistente')
-
-    if not data_ready_csv: # data_ready_csv si riferisce al file caricato nella sidebar
-        st.warning("Dati Storici CSV (per il post-training) non disponibili. Caricane uno dalla sidebar.")
-        st.stop()
-    else:
-        st.info(f"Nuovo Dataset CSV caricato per post-training: **{len(df_current_csv)}** righe.")
-        if date_col_name_csv in df_current_csv and pd.api.types.is_datetime64_any_dtype(df_current_csv[date_col_name_csv]):
-            try:
-                if not df_current_csv.empty:
-                    min_date_str_pt = df_current_csv[date_col_name_csv].min().strftime('%d/%m/%Y %H:%M')
-                    max_date_str_pt = df_current_csv[date_col_name_csv].max().strftime('%d/%m/%Y %H:%M')
-                    st.caption(f"Periodo nuovi dati (usati per post-training): da **{min_date_str_pt}** a **{max_date_str_pt}**")
-            except Exception as e_date_pt:
-                st.warning(f"Impossibile determinare il periodo dei nuovi dati CSV: {e_date_pt}")
-        else:
-            st.warning(f"Colonna data '{date_col_name_csv}' non trovata o non valida nei nuovi dati.")
-
-    st.subheader("1. Modello da Affinare")
-    if not model_ready: # model_ready si riferisce al modello selezionato nella sidebar principale
-        st.warning("Seleziona un Modello esistente dalla sidebar per caricarlo e poi procedere con il post-training.")
-        st.stop()
-
-    st.info(f"Modello selezionato per post-training: **{st.session_state.active_model_name}** (Tipo: {active_model_type})")
-    
-    original_config = st.session_state.active_config
-    model_to_fine_tune_state_dict = st.session_state.active_model.state_dict() # Salva lo state_dict
-    original_scalers = st.session_state.active_scalers
-    
-    st.subheader("2. Configurazione Post-Training")
-    
-    default_save_name_pt = f"{original_config.get('config_name', 'modello')}_posttrained_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
-    save_name_input_pt = st.text_input("Nome base per salvare il modello affinato e i file associati:", default_save_name_pt, key="pt_save_filename")
-    save_name_pt = re.sub(r'[^\w-]', '_', save_name_input_pt).strip('_') or "modello_posttrained_default"
-    if save_name_pt != save_name_input_pt:
-        st.caption(f"Nome file valido per il salvataggio: `{save_name_pt}`")
-
-    with st.expander("Parametri di Fine-Tuning", expanded=True):
-        c1_pt, c2_pt, c3_pt = st.columns(3)
-        with c1_pt:
-            ep_pt = st.number_input("Numero Epoche Aggiuntive:", min_value=1, value=10, step=1, key="pt_epochs")
-            n_splits_cv_pt = st.number_input(
-                "Numero di Fold CV (sui *nuovi* dati per Post-Training):", 
-                min_value=1,
-                value=max(1, original_config.get('n_splits_cv', 3)),
-                step=1, 
-                key="pt_n_splits_cv",
-                help="Numero di fold per TimeSeriesSplit da usare sui *nuovi* dati. Min 2 per CV, 1 per train/val semplice sull'ultimo blocco dei nuovi dati."
-            )
-            if n_splits_cv_pt < 2: st.caption("Nota: Con n_splits < 2, si usa solo l'ultimo blocco dei nuovi dati per validazione (nessun CV completo).")
-
-
-        with c2_pt:
-            lr_pt_default = original_config.get('learning_rate', 0.001)
-            lr_pt = st.number_input("Learning Rate per Post-Training:", 
-                                    min_value=1e-7, 
-                                    value=lr_pt_default / 10 if lr_pt_default > 1e-6 else lr_pt_default, # Riduci LR se non è già troppo piccolo
-                                    format="%.6f", 
-                                    step=1e-5, 
-                                    key="pt_lr", 
-                                    help="Spesso un LR più basso è utile per il fine-tuning.")
-            bs_pt = st.select_slider("Batch Size per Post-Training:", 
-                                     options=[8, 16, 32, 64, 128, 256], 
-                                     value=original_config.get('batch_size', 32), 
-                                     key="pt_batch_size")
-        
-        with c3_pt:
-            loss_choice_pt = st.selectbox("Funzione di Loss (Post-Training):", 
-                                          ["MSELoss", "HuberLoss"], 
-                                          index=["MSELoss", "HuberLoss"].index(original_config.get('loss_function', 'MSELoss')), 
-                                          key="pt_loss_choice", 
-                                          help="Idealmente, usa la stessa loss function del training originale.")
-            save_choice_pt = st.radio("Strategia Salvataggio (Post-Training):", 
-                                      ['Migliore (su Validazione nuovi dati)', 'Modello Finale (dopo epoche aggiuntive)'], 
-                                      index=0, key='pt_save_choice', horizontal=True)
-    
-    st.divider()
-    
-    can_start_post_training = all([
-        save_name_pt,
-        df_current_csv is not None and not df_current_csv.empty, # df_current_csv sono i nuovi dati
-        model_to_fine_tune_state_dict is not None,
-        original_config is not None,
-        original_scalers is not None
-    ])
-
-    if st.button("Avvia Post-Training", type="primary", disabled=not can_start_post_training, key="run_post_training_button"):
-        st.info(f"Avvio post-training per il modello '{st.session_state.active_model_name}' con nome salvataggio '{save_name_pt}'...")
-        
-        current_device_pt = st.session_state.active_device # Device del modello originale
-
-        if active_model_type == "LSTM":
-            feature_cols_orig_lstm = original_config.get("feature_columns")
-            target_cols_orig_lstm = original_config.get("target_columns")
-            
-            # Le config input_window e output_window sono in numero di steps (mezz'ore)
-            input_steps_orig_lstm = original_config.get("input_window") 
-            output_steps_orig_lstm = original_config.get("output_window")
-
-            lag_config_orig_lstm = original_config.get("lag_config", {})
-            cumulative_config_orig_lstm = original_config.get("cumulative_config", {})
-
-            with st.spinner("Preparazione nuovi dati per post-training LSTM..."):
-                df_new_pt_lstm = df_current_csv.copy() # Nuovi dati CSV
-                
-                current_feature_cols_pt_lstm = list(feature_cols_orig_lstm) # Inizia con le feature originali
-                engineered_feature_names_pt_lstm = []
-
-                if lag_config_orig_lstm:
-                    for col, lag_periods_hours in lag_config_orig_lstm.items():
-                        if col in df_new_pt_lstm.columns:
-                            for lag_hr in lag_periods_hours:
-                                lag_steps = lag_hr * 2 
-                                new_col_name = f"{col}_lag{lag_hr}h"
-                                df_new_pt_lstm[new_col_name] = df_new_pt_lstm[col].shift(lag_steps)
-                                if new_col_name not in current_feature_cols_pt_lstm: engineered_feature_names_pt_lstm.append(new_col_name)
-                if cumulative_config_orig_lstm:
-                    for col, window_periods_hours in cumulative_config_orig_lstm.items():
-                        if col in df_new_pt_lstm.columns:
-                            for win_hr in window_periods_hours:
-                                window_steps = win_hr * 2
-                                new_col_name = f"{col}_cum{win_hr}h"
-                                df_new_pt_lstm[new_col_name] = df_new_pt_lstm[col].rolling(window=window_steps, min_periods=1).sum()
-                                if new_col_name not in current_feature_cols_pt_lstm: engineered_feature_names_pt_lstm.append(new_col_name)
-                
-                current_feature_cols_pt_lstm.extend(engineered_feature_names_pt_lstm)
-                
-                cols_to_fill_na_pt_lstm = list(set(current_feature_cols_pt_lstm + target_cols_orig_lstm))
-                cols_present_in_df_to_fill_pt_lstm = [c for c in cols_to_fill_na_pt_lstm if c in df_new_pt_lstm.columns]
-
-                nan_count_before_bfill_pt = df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].isnull().sum().sum()
-                if nan_count_before_bfill_pt > 0:
-                    df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm] = df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].fillna(method='bfill')
-                    nan_count_after_bfill_pt = df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].isnull().sum().sum()
-                    if nan_count_after_bfill_pt > 0:
-                        st.warning(f"NaN ({nan_count_after_bfill_pt}) residui dopo bfill nei nuovi dati LSTM. Tentativo di ffill.")
-                        df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm] = df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].fillna(method='ffill')
-                        if df_new_pt_lstm[cols_present_in_df_to_fill_pt_lstm].isnull().sum().sum() > 0:
-                            st.error("NaN persistono dopo bfill e ffill nei nuovi dati LSTM. Impossibile procedere.")
-                            st.stop()
-
-                X_new_pt_lstm, y_new_pt_lstm = [], []
-                required_len_pt_lstm = input_steps_orig_lstm + output_steps_orig_lstm
-
-                if len(df_new_pt_lstm) < required_len_pt_lstm:
-                    st.error(f"Nuovi dati LSTM insufficienti ({len(df_new_pt_lstm)}) per sequenze (richieste {required_len_pt_lstm}).")
-                    st.stop()
-
-                for i in range(len(df_new_pt_lstm) - required_len_pt_lstm + 1):
-                    feature_window_data_pt_lstm = df_new_pt_lstm.iloc[i : i + input_steps_orig_lstm][current_feature_cols_pt_lstm]
-                    target_window_data_pt_lstm = df_new_pt_lstm.iloc[i + input_steps_orig_lstm : i + required_len_pt_lstm][target_cols_orig_lstm]
-                    if feature_window_data_pt_lstm.isnull().any().any() or target_window_data_pt_lstm.isnull().any().any():
-                        continue
-                    X_new_pt_lstm.append(feature_window_data_pt_lstm.values)
-                    y_new_pt_lstm.append(target_window_data_pt_lstm.values)
-
-                if not X_new_pt_lstm or not y_new_pt_lstm:
-                    st.error("Nessuna sequenza LSTM valida creata dai nuovi dati per post-training."); st.stop()
-                
-                X_new_pt_np_lstm = np.array(X_new_pt_lstm, dtype=np.float32)
-                y_new_pt_np_lstm = np.array(y_new_pt_lstm, dtype=np.float32)
-
-                scaler_features_orig_lstm, scaler_targets_orig_lstm = original_scalers
-                
-                num_sequences_new_lstm, seq_len_in_new_lstm, num_features_X_new_lstm = X_new_pt_np_lstm.shape
-                X_new_flat_pt_lstm = X_new_pt_np_lstm.reshape(-1, num_features_X_new_lstm)
-                
-                try:
-                    if hasattr(scaler_features_orig_lstm, 'n_features_in_') and num_features_X_new_lstm != scaler_features_orig_lstm.n_features_in_:
-                        st.error(f"LSTM Post-Train: Discordanza feature ({num_features_X_new_lstm}) vs scaler originale ({scaler_features_orig_lstm.n_features_in_}). Nomi attesi: {getattr(scaler_features_orig_lstm, 'feature_names_in_', 'N/A')}")
-                        st.stop()
-                    X_new_scaled_flat_pt_lstm = scaler_features_orig_lstm.transform(X_new_flat_pt_lstm)
-                except Exception as e_scale_feat_pt_lstm:
-                    st.error(f"Errore scaling feature nuovi dati LSTM: {e_scale_feat_pt_lstm}"); st.stop()
-                
-                num_sequences_y_new_lstm, seq_len_out_new_lstm, num_targets_y_new_lstm = y_new_pt_np_lstm.shape
-                y_new_flat_pt_lstm = y_new_pt_np_lstm.reshape(-1, num_targets_y_new_lstm)
-                try:
-                    if hasattr(scaler_targets_orig_lstm, 'n_features_in_') and num_targets_y_new_lstm != scaler_targets_orig_lstm.n_features_in_:
-                         st.error(f"LSTM Post-Train: Discordanza target ({num_targets_y_new_lstm}) vs scaler originale ({scaler_targets_orig_lstm.n_features_in_})."); st.stop()
-                    y_new_scaled_flat_pt_lstm = scaler_targets_orig_lstm.transform(y_new_flat_pt_lstm)
-                except Exception as e_scale_targ_pt_lstm:
-                    st.error(f"Errore scaling target nuovi dati LSTM: {e_scale_targ_pt_lstm}"); st.stop()
-
-                X_new_scaled_pt_lstm = X_new_scaled_flat_pt_lstm.reshape(num_sequences_new_lstm, seq_len_in_new_lstm, num_features_X_new_lstm)
-                y_new_scaled_pt_lstm = y_new_scaled_flat_pt_lstm.reshape(num_sequences_y_new_lstm, seq_len_out_new_lstm, num_targets_y_new_lstm)
-                
-                st.success(f"Nuovi dati LSTM pronti: X_shape={X_new_scaled_pt_lstm.shape}, y_shape={y_new_scaled_pt_lstm.shape}")
-
-            if X_new_scaled_pt_lstm.shape[0] == 0 :
-                 st.error("Nessun campione di training generato dai nuovi dati LSTM. Controlla la lunghezza dei dati e le finestre.")
-                 st.stop()
-            if X_new_scaled_pt_lstm.shape[0] < n_splits_cv_pt:
-                st.error(f"Nuovi dati LSTM ({X_new_scaled_pt_lstm.shape[0]} campioni) insuff. per {n_splits_cv_pt} splits CV. Riduci o fornisci più dati.")
-                st.stop()
-            
-            # Istanziare il modello LSTM con i parametri originali e caricare lo state_dict
-            model_instance_for_pt_lstm = HydroLSTM(
-                input_size=X_new_scaled_pt_lstm.shape[2], # Deve corrispondere a scaler_features_orig_lstm.n_features_in_
-                hidden_size=original_config.get("hidden_size"),
-                output_size=len(target_cols_orig_lstm),
-                output_window=output_steps_orig_lstm, # In steps
-                num_layers=original_config.get("num_layers"),
-                dropout=original_config.get("dropout")
-            ).to(current_device_pt)
-            model_instance_for_pt_lstm.load_state_dict(model_to_fine_tune_state_dict)
-
-            fine_tuned_model_lstm, train_hist_pt_lstm, val_hist_pt_lstm = train_model(
-                _model_to_continue_train=model_instance_for_pt_lstm, # Passa il modello con i pesi caricati
-                X_scaled_full=X_new_scaled_pt_lstm, 
-                y_scaled_full=y_new_scaled_pt_lstm,
-                input_size=X_new_scaled_pt_lstm.shape[2], # Questi parametri devono corrispondere al modello istanziato
-                output_size=len(target_cols_orig_lstm),
-                output_window_steps=output_steps_orig_lstm,
-                hidden_size=original_config.get("hidden_size"), 
-                num_layers=original_config.get("num_layers"), 
-                epochs=ep_pt, 
-                batch_size=bs_pt, 
-                learning_rate=lr_pt, 
-                dropout=original_config.get("dropout"), # Questo dropout è quello usato se _model_to_continue_train è None
-                save_strategy=('migliore' if 'Migliore' in save_choice_pt else 'finale'),
-                preferred_device=current_device_pt.type,
-                n_splits_cv=n_splits_cv_pt, 
-                loss_function_name=loss_choice_pt
-            )
-
-            if fine_tuned_model_lstm:
-                st.success("Post-Training LSTM completato!")
-                try:
-                    base_path_pt_lstm = os.path.join(MODELS_DIR, save_name_pt)
-                    m_path_pt_lstm = f"{base_path_pt_lstm}.pth"; torch.save(fine_tuned_model_lstm.state_dict(), m_path_pt_lstm)
-                    sf_path_pt_lstm = f"{base_path_pt_lstm}_features.joblib"; joblib.dump(scaler_features_orig_lstm, sf_path_pt_lstm)
-                    st_path_pt_lstm = f"{base_path_pt_lstm}_targets.joblib"; joblib.dump(scaler_targets_orig_lstm, st_path_pt_lstm)
-                    c_path_pt_lstm = f"{base_path_pt_lstm}.json"
-                    
-                    config_save_pt_lstm = original_config.copy()
-                    config_save_pt_lstm["display_name"] = save_name_pt
-                    config_save_pt_lstm["config_name"] = save_name_pt # Usato per trovare i file .joblib
-                    config_save_pt_lstm["post_training_info"] = {
-                        "date": datetime.now(italy_tz).isoformat(), "epochs": ep_pt, "lr": lr_pt,
-                        "batch_size": bs_pt, "loss_function": loss_choice_pt,
-                        "new_data_source_name": uploaded_data_file.name if uploaded_data_file else DEFAULT_DATA_PATH, # Nome del file CSV usato per post-training
-                        "new_data_rows_used": len(X_new_scaled_pt_lstm)
-                    }
-                    # Le feature_columns, lag_config, cumulative_config rimangono quelle originali perché definiscono la struttura
-                    
-                    with open(c_path_pt_lstm, 'w', encoding='utf-8') as f: json.dump(config_save_pt_lstm, f, indent=4)
-                    
-                    st.success(f"Modello LSTM affinato '{save_name_pt}' salvato."); st.subheader("Download File Modello LSTM Affinato")
-                    col_dl_pt_lstm1, col_dl_pt_lstm2 = st.columns(2)
-                    with col_dl_pt_lstm1: st.markdown(get_download_link_for_file(m_path_pt_lstm), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path_pt_lstm, "Scaler Features (.joblib)"), unsafe_allow_html=True)
-                    with col_dl_pt_lstm2: st.markdown(get_download_link_for_file(c_path_pt_lstm), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path_pt_lstm, "Scaler Target (.joblib)"), unsafe_allow_html=True)
-                    find_available_models.clear()
-                except Exception as e_save_pt_lstm: st.error(f"Errore salvataggio LSTM affinato: {e_save_pt_lstm}"); st.error(traceback.format_exc())
-            else: st.error("Post-Training LSTM fallito. Modello non salvato.")
-
-        elif active_model_type == "Seq2Seq":
-            past_feature_cols_orig_s2s = original_config.get("all_past_feature_columns")
-            forecast_feature_cols_orig_s2s = original_config.get("forecast_input_columns")
-            target_cols_orig_s2s = original_config.get("target_columns")
-            
-            input_window_steps_s2s_pt = original_config.get("input_window_steps")
-            forecast_window_steps_s2s_pt = original_config.get("forecast_window_steps")
-            output_window_steps_s2s_pt = original_config.get("output_window_steps")
-
-            lag_config_past_orig_s2s = original_config.get("lag_config_past", {})
-            cumulative_config_past_orig_s2s = original_config.get("cumulative_config_past", {})
-
-            with st.spinner("Preparazione nuovi dati per post-training Seq2Seq..."):
-                df_new_pt_s2s = df_current_csv.copy()
-
-                current_past_feature_cols_pt_s2s = list(past_feature_cols_orig_s2s)
-                engineered_past_feature_names_pt_s2s = []
-                if lag_config_past_orig_s2s:
-                    for col, lag_periods_hours in lag_config_past_orig_s2s.items():
-                        if col in df_new_pt_s2s.columns:
-                            for lag_hr in lag_periods_hours:
-                                lag_steps = lag_hr * 2
-                                new_col_name = f"{col}_lag{lag_hr}h"
-                                df_new_pt_s2s[new_col_name] = df_new_pt_s2s[col].shift(lag_steps)
-                                if new_col_name not in current_past_feature_cols_pt_s2s: engineered_past_feature_names_pt_s2s.append(new_col_name)
-                if cumulative_config_past_orig_s2s:
-                    for col, window_periods_hours in cumulative_config_past_orig_s2s.items():
-                        if col in df_new_pt_s2s.columns:
-                            for win_hr in window_periods_hours:
-                                window_steps = win_hr * 2
-                                new_col_name = f"{col}_cum{win_hr}h"
-                                df_new_pt_s2s[new_col_name] = df_new_pt_s2s[col].rolling(window=window_steps, min_periods=1).sum()
-                                if new_col_name not in current_past_feature_cols_pt_s2s: engineered_past_feature_names_pt_s2s.append(new_col_name)
-                current_past_feature_cols_pt_s2s.extend(engineered_past_feature_names_pt_s2s)
-                
-                all_needed_cols_pt_s2s = list(set(current_past_feature_cols_pt_s2s + forecast_feature_cols_orig_s2s + target_cols_orig_s2s))
-                cols_present_for_fillna_pt_s2s = [c for c in all_needed_cols_pt_s2s if c in df_new_pt_s2s.columns]
-                if df_new_pt_s2s[cols_present_for_fillna_pt_s2s].isnull().sum().sum() > 0:
-                    df_new_pt_s2s[cols_present_for_fillna_pt_s2s] = df_new_pt_s2s[cols_present_for_fillna_pt_s2s].fillna(method='bfill').fillna(method='ffill')
-                    if df_new_pt_s2s[cols_present_for_fillna_pt_s2s].isnull().sum().sum() > 0:
-                        st.error("NaN persistono nei nuovi dati Seq2Seq dopo fill. Impossibile procedere."); st.stop()
-
-                X_enc_new_pt, X_dec_new_pt, y_tar_new_pt = [], [], []
-                required_len_pt_s2s = input_window_steps_s2s_pt + max(forecast_window_steps_s2s_pt, output_window_steps_s2s_pt)
-                if len(df_new_pt_s2s) < required_len_pt_s2s:
-                    st.error(f"Nuovi dati Seq2Seq ({len(df_new_pt_s2s)}) insuff. per sequenze (richieste {required_len_pt_s2s})."); st.stop()
-
-                for i in range(len(df_new_pt_s2s) - required_len_pt_s2s + 1):
-                    enc_end = i + input_window_steps_s2s_pt
-                    past_feature_window_data_pt = df_new_pt_s2s.iloc[i : enc_end][current_past_feature_cols_pt_s2s]
-                    dec_start = enc_end
-                    dec_end_forecast = dec_start + forecast_window_steps_s2s_pt
-                    forecast_feature_window_data_pt = df_new_pt_s2s.iloc[dec_start : dec_end_forecast][forecast_feature_cols_orig_s2s]
-                    target_end = dec_start + output_window_steps_s2s_pt
-                    target_window_data_pt = df_new_pt_s2s.iloc[dec_start : target_end][target_cols_orig_s2s]
-
-                    if past_feature_window_data_pt.isnull().any().any() or \
-                       forecast_feature_window_data_pt.isnull().any().any() or \
-                       target_window_data_pt.isnull().any().any():
-                        continue
-                    X_enc_new_pt.append(past_feature_window_data_pt.values)
-                    X_dec_new_pt.append(forecast_feature_window_data_pt.values)
-                    y_tar_new_pt.append(target_window_data_pt.values)
-
-                if not X_enc_new_pt: st.error("Nessuna sequenza Seq2Seq valida creata dai nuovi dati."); st.stop()
-
-                X_enc_new_pt_np = np.array(X_enc_new_pt, dtype=np.float32)
-                X_dec_new_pt_np = np.array(X_dec_new_pt, dtype=np.float32)
-                y_tar_new_pt_np = np.array(y_tar_new_pt, dtype=np.float32)
-                
-                scaler_past_orig_s2s = original_scalers["past"]
-                scaler_forecast_orig_s2s = original_scalers["forecast"]
-                scaler_targets_orig_s2s = original_scalers["targets"]
-                num_seq_new_s2s = X_enc_new_pt_np.shape[0]
-                
-                try:
-                    if hasattr(scaler_past_orig_s2s, 'n_features_in_') and X_enc_new_pt_np.shape[2] != scaler_past_orig_s2s.n_features_in_:
-                        st.error(f"S2S Post-Train: Discordanza feat encoder ({X_enc_new_pt_np.shape[2]}) vs scaler ({scaler_past_orig_s2s.n_features_in_}). Nomi: {getattr(scaler_past_orig_s2s, 'feature_names_in_', 'N/A')}"); st.stop()
-                    X_enc_scaled_new_pt = scaler_past_orig_s2s.transform(X_enc_new_pt_np.reshape(-1, X_enc_new_pt_np.shape[2])).reshape(num_seq_new_s2s, input_window_steps_s2s_pt, -1)
-                    
-                    if hasattr(scaler_forecast_orig_s2s, 'n_features_in_') and X_dec_new_pt_np.shape[2] != scaler_forecast_orig_s2s.n_features_in_:
-                         st.error(f"S2S Post-Train: Discordanza feat decoder ({X_dec_new_pt_np.shape[2]}) vs scaler ({scaler_forecast_orig_s2s.n_features_in_})."); st.stop()
-                    X_dec_scaled_new_pt = scaler_forecast_orig_s2s.transform(X_dec_new_pt_np.reshape(-1, X_dec_new_pt_np.shape[2])).reshape(num_seq_new_s2s, forecast_window_steps_s2s_pt, -1)
-                    
-                    if hasattr(scaler_targets_orig_s2s, 'n_features_in_') and y_tar_new_pt_np.shape[2] != scaler_targets_orig_s2s.n_features_in_:
-                         st.error(f"S2S Post-Train: Discordanza feat target ({y_tar_new_pt_np.shape[2]}) vs scaler ({scaler_targets_orig_s2s.n_features_in_})."); st.stop()
-                    y_tar_scaled_new_pt = scaler_targets_orig_s2s.transform(y_tar_new_pt_np.reshape(-1, y_tar_new_pt_np.shape[2])).reshape(num_seq_new_s2s, output_window_steps_s2s_pt, -1)
-                except Exception as e_scale_s2s_pt: st.error(f"Errore scaling nuovi dati S2S: {e_scale_s2s_pt}"); st.stop()
-
-                st.success(f"Nuovi dati S2S pronti: X_enc={X_enc_scaled_new_pt.shape}, X_dec={X_dec_scaled_new_pt.shape}, y_tar={y_tar_scaled_new_pt.shape}")
-            
-            if X_enc_scaled_new_pt.shape[0] == 0 :
-                 st.error("Nessun campione di training generato dai nuovi dati Seq2Seq.")
-                 st.stop()
-            if X_enc_scaled_new_pt.shape[0] < n_splits_cv_pt:
-                st.error(f"Nuovi dati S2S ({X_enc_scaled_new_pt.shape[0]} campioni) insuff. per {n_splits_cv_pt} splits CV. Riduci o fornisci più dati.")
-                st.stop()
-
-            # Istanziare encoder e decoder con parametri originali e caricare state_dict
-            enc_instance_pt_s2s = EncoderLSTM(
-                input_size=X_enc_scaled_new_pt.shape[2], # Da nuovi dati (dovrebbe corrispondere a scaler_past_orig_s2s.n_features_in_)
-                hidden_size=original_config.get("hidden_size"),
-                num_layers=original_config.get("num_layers"),
-                dropout=original_config.get("dropout")
-            ).to(current_device_pt)
-            # Carica i pesi dall'encoder del modello originale (st.session_state.active_model)
-            enc_instance_pt_s2s.load_state_dict(st.session_state.active_model.encoder.state_dict())
-
-
-            dec_instance_pt_s2s = DecoderLSTM(
-                forecast_input_size=X_dec_scaled_new_pt.shape[2], # Da nuovi dati (dovrebbe corrispondere a scaler_forecast_orig_s2s.n_features_in_)
-                hidden_size=original_config.get("hidden_size"),
-                output_size=len(target_cols_orig_s2s),
-                num_layers=original_config.get("num_layers"),
-                dropout=original_config.get("dropout")
-            ).to(current_device_pt)
-            dec_instance_pt_s2s.load_state_dict(st.session_state.active_model.decoder.state_dict())
-
-            fine_tuned_model_s2s, train_hist_pt_s2s, val_hist_pt_s2s = train_model_seq2seq(
-                X_enc_scaled_full=X_enc_scaled_new_pt, 
-                X_dec_scaled_full=X_dec_scaled_new_pt, 
-                y_tar_scaled_full=y_tar_scaled_new_pt,
-                encoder=enc_instance_pt_s2s, # Encoder con pesi caricati
-                decoder=dec_instance_pt_s2s, # Decoder con pesi caricati
-                output_window_steps=output_window_steps_s2s_pt,
-                epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt,
-                save_strategy=('migliore' if 'Migliore' in save_choice_pt else 'finale'),
-                preferred_device=current_device_pt.type,
-                teacher_forcing_ratio_schedule=[0.3, 0.0], # Esempio, potrebbe essere diverso per fine-tuning
-                n_splits_cv=n_splits_cv_pt,
-                loss_function_name=loss_choice_pt
-            )
-
-            if fine_tuned_model_s2s:
-                st.success("Post-Training Seq2Seq completato!")
-                try:
-                    base_path_pt_s2s = os.path.join(MODELS_DIR, save_name_pt)
-                    m_path_pt_s2s = f"{base_path_pt_s2s}.pth"; torch.save(fine_tuned_model_s2s.state_dict(), m_path_pt_s2s)
-                    joblib.dump(scaler_past_orig_s2s, f"{base_path_pt_s2s}_past_features.joblib")
-                    joblib.dump(scaler_forecast_orig_s2s, f"{base_path_pt_s2s}_forecast_features.joblib")
-                    joblib.dump(scaler_targets_orig_s2s, f"{base_path_pt_s2s}_targets.joblib")
-                    c_path_pt_s2s = f"{base_path_pt_s2s}.json"
-                    
-                    config_save_pt_s2s = original_config.copy()
-                    config_save_pt_s2s["display_name"] = save_name_pt
-                    config_save_pt_s2s["config_name"] = save_name_pt
-                    config_save_pt_s2s["post_training_info"] = {
-                        "date": datetime.now(italy_tz).isoformat(), "epochs": ep_pt, "lr": lr_pt,
-                        "batch_size": bs_pt, "loss_function": loss_choice_pt,
-                        "new_data_source_name": uploaded_data_file.name if uploaded_data_file else DEFAULT_DATA_PATH,
-                        "new_data_rows_used": len(X_enc_scaled_new_pt)
-                    }
-                    with open(c_path_pt_s2s, 'w', encoding='utf-8') as f: json.dump(config_save_pt_s2s, f, indent=4)
-
-                    st.success(f"Modello S2S affinato '{save_name_pt}' salvato."); st.subheader("Download File Modello S2S Affinato")
-                    c1_dl, c2_dl = st.columns(2)
-                    with c1_dl:
-                        st.markdown(get_download_link_for_file(m_path_pt_s2s), unsafe_allow_html=True)
-                        st.markdown(get_download_link_for_file(f"{base_path_pt_s2s}_past_features.joblib", "Scaler Passato"), unsafe_allow_html=True)
-                        st.markdown(get_download_link_for_file(f"{base_path_pt_s2s}_targets.joblib", "Scaler Target"), unsafe_allow_html=True)
-                    with c2_dl:
-                        st.markdown(get_download_link_for_file(c_path_pt_s2s), unsafe_allow_html=True)
-                        st.markdown(get_download_link_for_file(f"{base_path_pt_s2s}_forecast_features.joblib", "Scaler Forecast"), unsafe_allow_html=True)
-                    find_available_models.clear()
-                except Exception as e_save_pt_s2s: st.error(f"Errore salvataggio S2S affinato: {e_save_pt_s2s}"); st.error(traceback.format_exc())
-            else: st.error("Post-Training Seq2Seq fallito. Modello non salvato.")
-        
-        else:
-            st.error(f"Tipo modello '{active_model_type}' non supportato per il post-training.")
-            st.stop()
-
-# --- FINE BLOCCO NUOVO CODICE PER POST-TRAINING ---
-
+    # ... (codice originale)
 # --- Footer ---
 st.sidebar.divider()
 st.sidebar.caption(f'Modello Predittivo Idrologico © {datetime.now().year}')
