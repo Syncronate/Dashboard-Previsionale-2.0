@@ -1,5 +1,3 @@
-# estrai_allerte.py (CORRETTO)
-
 import requests
 import json
 from datetime import datetime
@@ -15,20 +13,43 @@ import pytz
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 NOME_FOGLIO_PRINCIPALE = os.environ.get("GSHEET_NAME", "Dati Meteo Stazioni")
-NOME_WORKSHEET_ALLERTE = os.environ.get("WORKSHEET_NAME", "Allerte")
+# Nomi dei due worksheet di destinazione
+NOME_WORKSHEET_OGGI = "Allerte Oggi"
+NOME_WORKSHEET_DOMANI = "Allerte Domani"
+
 NOME_FILE_CREDENZIALI = "credentials.json"
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 API_URL_OGGI = "https://allertameteo.regione.marche.it/o/api/allerta/get-stato-allerta"
 API_URL_DOMANI = "https://allertameteo.regione.marche.it/o/api/allerta/get-stato-allerta-domani"
-AREE_INTERESSATE = ["2", "4"]
 
+# Le zone da incrociare
+AREE_INTERESSATE = ["2", "4"]
+AREA_COMBINATA_NOME = "2-4" # Nome da visualizzare nel foglio
+
+# Dizionario per la traduzione dei livelli di allerta
+TRADUZIONE_ALLERTE = {
+    "Red": "Rossa",
+    "Orange": "Arancione",
+    "Yellow": "Gialla",
+    "Green": "Verde",
+    "N/D": "Nessuna" # Valore di default per dati non disponibili
+}
+
+# Dizionario per definire la gravità di un'allerta (numero più alto = più grave)
+LIVELLI_SEVERITA = {
+    "Green": 1,
+    "Yellow": 2,
+    "Orange": 3,
+    "Red": 4,
+    "N/D": 0
+}
 # --- FINE CONFIGURAZIONE ---
 
+
 def autentica_google_sheets():
-    """Gestisce l'autenticazione a Google Sheets usando il metodo moderno."""
-    credenziali_path = os.path.join(os.path.dirname(__file__), NOME_FILE_CREDENZIALI)
+    """Gestisce l'autenticazione a Google Sheets."""
+    credenziali_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), NOME_FILE_CREDENZIALI)
     print("Autenticazione Google Sheets...")
-    
     try:
         creds = Credentials.from_service_account_file(credenziali_path, scopes=SCOPE)
         client = gspread.authorize(creds)
@@ -41,54 +62,81 @@ def autentica_google_sheets():
         print(f"ERRORE CRITICO nell'autenticazione: {e}")
         sys.exit(1)
 
-def apri_o_crea_worksheet(client, nome_foglio, nome_worksheet):
-    """Apre un foglio Google e un worksheet. Se il worksheet non esiste, lo crea."""
+
+def apri_o_crea_worksheet(spreadsheet, nome_worksheet):
+    """Apre un worksheet. Se non esiste, lo crea."""
     try:
-        spreadsheet = client.open(nome_foglio)
-        print(f"Foglio Google '{nome_foglio}' aperto.")
-        try:
-            worksheet = spreadsheet.worksheet(nome_worksheet)
-            print(f"Worksheet '{nome_worksheet}' trovato.")
-        except gspread.WorksheetNotFound:
-            print(f"Worksheet '{nome_worksheet}' non trovato. Verrà creato.")
-            worksheet = spreadsheet.add_worksheet(title=nome_worksheet, rows="100", cols="20")
-        return worksheet
-    except gspread.SpreadsheetNotFound:
-        print(f"ERRORE: Foglio Google '{nome_foglio}' non trovato.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Errore durante l'apertura/creazione: {e}")
-        sys.exit(1)
+        worksheet = spreadsheet.worksheet(nome_worksheet)
+        print(f"Worksheet '{nome_worksheet}' trovato.")
+    except gspread.WorksheetNotFound:
+        print(f"Worksheet '{nome_worksheet}' non trovato. Verrà creato.")
+        worksheet = spreadsheet.add_worksheet(title=nome_worksheet, rows="100", cols="20")
+    return worksheet
 
-# --- MODIFICA QUI ---
-def processa_risposta_api(dati_api, giorno_riferimento):
-    """Estrae e formatta i dati di allerta da una risposta API."""
-    dati_processati, tipi_evento = [], set()
+
+def processa_e_combina_allerte(dati_api):
+    """
+    Estrae i dati, li filtra per le aree di interesse e restituisce un singolo
+    dizionario con l'allerta più grave per ogni tipo di evento.
+    """
+    allerte_combinate = {}
+    tipi_evento_riscontrati = set()
+
     if not dati_api:
-        return dati_processati, tipi_evento
+        return allerte_combinate, tipi_evento_riscontrati
 
-    for area_data in dati_api:
-        if area_data.get("area") in AREE_INTERESSATE:
-            try:
-                # Logica riscritta con un ciclo for standard per maggiore robustezza
-                eventi_dict = {}
-                eventi_str = area_data.get("eventi", "")
-                if eventi_str:  # Processa solo se la stringa non è vuota
-                    for pair in eventi_str.split(','):
-                        # Assicura che la coppia sia valida e contenga un ':' prima di dividerla
-                        if ':' in pair:
-                            key, value = pair.split(':', 1)  # Dividi solo al primo ':'
-                            eventi_dict[key.strip()] = value.strip()
-                
-                tipi_evento.update(eventi_dict.keys())
-                dati_processati.append({"giorno": giorno_riferimento, "area": area_data["area"], "eventi": eventi_dict})
-            
-            except Exception as e:
-                # Manteniamo il blocco try/except per ogni evenienza
-                print(f"WARN: Impossibile processare eventi per area {area_data.get('area')}: {e}")
+    # Filtra solo i dati per le aree che ci interessano
+    dati_filtrati = [d for d in dati_api if d.get("area") in AREE_INTERESSATE]
+
+    for area_data in dati_filtrati:
+        eventi_str = area_data.get("eventi", "")
+        if not eventi_str:
+            continue
+
+        # Processa la stringa degli eventi in un dizionario
+        eventi_dict = {}
+        try:
+            for pair in eventi_str.split(','):
+                if ':' in pair:
+                    key, value = pair.split(':', 1)
+                    eventi_dict[key.strip()] = value.strip()
+        except Exception as e:
+            print(f"WARN: Impossibile processare eventi per area {area_data.get('area')}: {e}")
+            continue
+        
+        # Aggiorna il dizionario delle allerte combinate con il valore più grave
+        for tipo_evento, livello_attuale in eventi_dict.items():
+            tipi_evento_riscontrati.add(tipo_evento)
+            livello_precedente = allerte_combinate.get(tipo_evento, "N/D")
+
+            # Confronta la severità e aggiorna se quella attuale è più grave
+            if LIVELLI_SEVERITA.get(livello_attuale, 0) > LIVELLI_SEVERITA.get(livello_precedente, 0):
+                allerte_combinate[tipo_evento] = livello_attuale
     
-    return dati_processati, tipi_evento
-# --- FINE MODIFICA ---
+    return allerte_combinate, tipi_evento_riscontrati
+
+
+def scrivi_su_foglio(worksheet, header, dati_allerte, timestamp):
+    """Svuota il foglio e scrive l'intestazione e una singola riga di dati."""
+    try:
+        print(f"\nReset del foglio '{worksheet.title}'...")
+        worksheet.clear()
+        
+        # Prepara la riga di dati da scrivere
+        riga_dati = [timestamp, AREA_COMBINATA_NOME]
+        for tipo_evento in header[2:]: # Salta 'Data_Esecuzione' e 'Area_Combinata'
+            livello_inglese = dati_allerte.get(tipo_evento, "N/D")
+            livello_italiano = TRADUZIONE_ALLERTE.get(livello_inglese, livello_inglese) # Traduce o usa il valore originale se non in mappa
+            riga_dati.append(livello_italiano)
+
+        print(f"Scrittura dati su '{worksheet.title}'...")
+        worksheet.update('A1', [header, riga_dati], value_input_option='USER_ENTERED')
+        print("Scrittura completata con successo.")
+
+    except Exception as e:
+        print(f"ERRORE CRITICO durante la scrittura su '{worksheet.title}': {e}")
+        traceback.print_exc()
+
 
 def estrai_dati_allerta():
     """Funzione principale che orchestra il processo."""
@@ -96,53 +144,49 @@ def estrai_dati_allerta():
     print(f"--- Inizio Script Allerte Meteo ({start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}) ---")
 
     client = autentica_google_sheets()
-    sheet = apri_o_crea_worksheet(client, NOME_FOGLIO_PRINCIPALE, NOME_WORKSHEET_ALLERTE)
+    try:
+        spreadsheet = client.open(NOME_FOGLIO_PRINCIPALE)
+        print(f"Foglio Google '{NOME_FOGLIO_PRINCIPALE}' aperto.")
+    except gspread.SpreadsheetNotFound:
+        print(f"ERRORE: Foglio Google '{NOME_FOGLIO_PRINCIPALE}' non trovato.")
+        sys.exit(1)
 
-    all_processed_data, all_event_types = [], set()
-    for giorno, url in [("Oggi", API_URL_OGGI), ("Domani", API_URL_DOMANI)]:
+    # Apre o crea i due worksheet
+    sheet_oggi = apri_o_crea_worksheet(spreadsheet, NOME_WORKSHEET_OGGI)
+    sheet_domani = apri_o_crea_worksheet(spreadsheet, NOME_WORKSHEET_DOMANI)
+
+    dati_per_giorno = {}
+    tutti_i_tipi_evento = set()
+
+    # Ciclo per interrogare le API di oggi e domani
+    for giorno, url, worksheet in [("Oggi", API_URL_OGGI, sheet_oggi), ("Domani", API_URL_DOMANI, sheet_domani)]:
         print(f"\nRecupero dati per: {giorno}")
         try:
             response = requests.get(url, verify=False, timeout=20)
             response.raise_for_status()
-            dati_giorno, tipi_evento_giorno = processa_risposta_api(response.json(), giorno)
-            all_processed_data.extend(dati_giorno)
-            all_event_types.update(tipi_evento_giorno)
-            print(f"Dati per '{giorno}' processati. Trovati {len(dati_giorno)} record pertinenti.")
+            dati_combinati, tipi_evento = processa_e_combina_allerte(response.json())
+            dati_per_giorno[giorno] = dati_combinati
+            tutti_i_tipi_evento.update(tipi_evento)
+            print(f"Dati combinati per '{giorno}' processati.")
         except Exception as e:
             print(f"ERRORE API per '{giorno}': {e}")
+            dati_per_giorno[giorno] = {} # Assicura che esista una chiave vuota in caso di errore
 
-    if not all_processed_data:
-        print("\nNessun dato di allerta valido trovato. Uscita.")
+    if not tutti_i_tipi_evento:
+        print("\nNessun tipo di evento trovato nelle allerte. Uscita.")
         sys.exit(0)
     
-    header_finale = ['Data_Esecuzione', 'Giorno_Riferimento', 'Area'] + sorted(list(all_event_types))
-    try:
-        existing_header = sheet.row_values(1)
-        if not existing_header:
-            print("\nWorksheet vuoto. Scrittura nuova intestazione...")
-            sheet.update('A1', [header_finale], value_input_option='USER_ENTERED')
-        elif set(existing_header) != set(header_finale):
-            print("\nATTENZIONE: Intestazione nel foglio diversa da quella generata. Uso l'intestazione esistente.")
-            header_finale = existing_header
-    except Exception as e:
-        print(f"Errore gestione intestazione: {e}")
-        
-    righe_da_scrivere = []
+    # Crea un'intestazione unica e ordinata per entrambi i fogli
+    header_finale = ['Data_Esecuzione', 'Area_Combinata'] + sorted(list(tutti_i_tipi_evento))
     formatted_time = start_time.strftime('%d/%m/%Y %H:%M')
-    for data_point in all_processed_data:
-        riga = [formatted_time, data_point['giorno'], data_point['area']]
-        riga.extend(data_point['eventi'].get(col_name, 'N/D') for col_name in header_finale[3:])
-        righe_da_scrivere.append(riga)
 
-    if righe_da_scrivere:
-        print(f"\nPronte {len(righe_da_scrivere)} righe da aggiungere al foglio.")
-        try:
-            sheet.append_rows(righe_da_scrivere, value_input_option='USER_ENTERED')
-            print(f"\nDati aggiunti con successo al worksheet '{NOME_WORKSHEET_ALLERTE}'.")
-        except Exception as e:
-            print(f"ERRORE CRITICO durante la scrittura su Google Sheets: {e}")
-            traceback.print_exc()
-            sys.exit(1)
+    # Scrive i dati sul foglio "Allerte Oggi"
+    if NOME_WORKSHEET_OGGI in sheet_oggi.title:
+        scrivi_su_foglio(sheet_oggi, header_finale, dati_per_giorno.get("Oggi", {}), formatted_time)
+
+    # Scrive i dati sul foglio "Allerte Domani"
+    if NOME_WORKSHEET_DOMANI in sheet_domani.title:
+        scrivi_su_foglio(sheet_domani, header_finale, dati_per_giorno.get("Domani", {}), formatted_time)
 
     end_time = datetime.now(pytz.timezone('Europe/Rome'))
     print(f"\n--- Fine Script Allerte Meteo ({end_time.strftime('%Y-%m-%d %H:%M:%S %Z')}) ---")
