@@ -24,23 +24,23 @@ API_URL_DOMANI = "https://allertameteo.regione.marche.it/o/api/allerta/get-stato
 AREE_INTERESSATE = ["2", "4"]
 AREA_COMBINATA_NOME = "2-4"
 
-# --- MODIFICATO: Dizionario per la traduzione dei livelli di allerta ---
+# --- CORRETTO: Dizionario per la traduzione con chiavi MINUSCOLE ---
 TRADUZIONE_ALLERTE = {
-    "Red": "Rossa",
-    "Orange": "Arancione",
-    "Yellow": "Gialla",
-    "Green": "Verde",
-    "white": "Nessuna",  # Aggiunto: 'white' significa assenza di fenomeno
-    "N/D": "Nessuna"     # Valore di default interno
+    "red": "Rossa",
+    "orange": "Arancione",
+    "yellow": "Gialla",
+    "green": "Verde",
+    "white": "Nessuna",
+    "N/D": "Nessuna"     # Valore di default interno per dati non trovati
 }
 
-# --- MODIFICATO: Dizionario per definire la gravità di un'allerta ---
+# --- CORRETTO: Dizionario di severità con chiavi MINUSCOLE ---
 LIVELLI_SEVERITA = {
-    "white": 1,      # Aggiunto: Severità minima, ma riconosciuta
-    "Green": 1,      # Severità minima (vigilanza)
-    "Yellow": 2,
-    "Orange": 3,
-    "Red": 4,
+    "white": 1,
+    "green": 1,
+    "yellow": 2,
+    "orange": 3,
+    "red": 4,
     "N/D": 0         # Severità zero solo per i dati non trovati
 }
 # --- FINE CONFIGURAZIONE ---
@@ -97,7 +97,8 @@ def processa_e_combina_allerte(dati_api):
             for pair in eventi_str.split(','):
                 if ':' in pair:
                     key, value = pair.split(':', 1)
-                    eventi_dict[key.strip()] = value.strip()
+                    # Assicura che sia la chiave che il valore siano puliti e minuscoli
+                    eventi_dict[key.strip().lower()] = value.strip().lower()
         except Exception as e:
             print(f"WARN: Impossibile processare eventi per area {area_data.get('area')}: {e}")
             continue
@@ -119,6 +120,7 @@ def scrivi_su_foglio(worksheet, header, dati_allerte, timestamp):
         worksheet.clear()
         
         riga_dati = [timestamp, AREA_COMBINATA_NOME]
+        # I tipi di evento nell'header sono già stati normalizzati a minuscoli
         for tipo_evento in header[2:]:
             livello_inglese = dati_allerte.get(tipo_evento, "N/D")
             livello_italiano = TRADUZIONE_ALLERTE.get(livello_inglese, livello_inglese)
@@ -169,6 +171,7 @@ def estrai_dati_allerta():
         print("\nNessun tipo di evento trovato nelle allerte. Uscita.")
         sys.exit(0)
     
+    # Crea un'intestazione unica e ordinata per entrambi i fogli
     header_finale = ['Data_Esecuzione', 'Area_Combinata'] + sorted(list(tutti_i_tipi_evento))
     formatted_time = start_time.strftime('%d/%m/%Y %H:%M')
 
