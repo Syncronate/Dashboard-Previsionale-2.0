@@ -1,10 +1,10 @@
-# estrai_allerte.py
+# estrai_allerte.py (CORRETTO)
 
 import requests
 import json
 from datetime import datetime
 import sys
-import os  # Importato per leggere le variabili d'ambiente
+import os
 import traceback
 import urllib3
 import gspread
@@ -14,12 +14,8 @@ import pytz
 # --- CONFIGURAZIONE ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Leggi i nomi dal blocco 'env' del file YAML di GitHub Actions.
-# I valori di default vengono usati se lo script viene eseguito localmente.
 NOME_FOGLIO_PRINCIPALE = os.environ.get("GSHEET_NAME", "Dati Meteo Stazioni")
 NOME_WORKSHEET_ALLERTE = os.environ.get("WORKSHEET_NAME", "Allerte")
-
-# Il resto della configurazione rimane invariato
 NOME_FILE_CREDENZIALI = "credentials.json"
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 API_URL_OGGI = "https://allertameteo.regione.marche.it/o/api/allerta/get-stato-allerta"
@@ -64,6 +60,7 @@ def apri_o_crea_worksheet(client, nome_foglio, nome_worksheet):
         print(f"Errore durante l'apertura/creazione: {e}")
         sys.exit(1)
 
+# --- MODIFICA QUI ---
 def processa_risposta_api(dati_api, giorno_riferimento):
     """Estrae e formatta i dati di allerta da una risposta API."""
     dati_processati, tipi_evento = [], set()
@@ -73,14 +70,25 @@ def processa_risposta_api(dati_api, giorno_riferimento):
     for area_data in dati_api:
         if area_data.get("area") in AREE_INTERESSATE:
             try:
-                eventi_dict = {
-                    k.strip(): v.strip() for k, v in (e.split(':') for e in area_data.get("eventi", "").split(',')) if len(e.split(':')) == 2
-                }
+                # Logica riscritta con un ciclo for standard per maggiore robustezza
+                eventi_dict = {}
+                eventi_str = area_data.get("eventi", "")
+                if eventi_str:  # Processa solo se la stringa non è vuota
+                    for pair in eventi_str.split(','):
+                        # Assicura che la coppia sia valida e contenga un ':' prima di dividerla
+                        if ':' in pair:
+                            key, value = pair.split(':', 1)  # Dividi solo al primo ':'
+                            eventi_dict[key.strip()] = value.strip()
+                
                 tipi_evento.update(eventi_dict.keys())
                 dati_processati.append({"giorno": giorno_riferimento, "area": area_data["area"], "eventi": eventi_dict})
+            
             except Exception as e:
+                # Manteniamo il blocco try/except per ogni evenienza
                 print(f"WARN: Impossibile processare eventi per area {area_data.get('area')}: {e}")
+    
     return dati_processati, tipi_evento
+# --- FINE MODIFICA ---
 
 def estrai_dati_allerta():
     """Funzione principale che orchestra il processo."""
