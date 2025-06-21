@@ -3,15 +3,14 @@
 name: Controlla Allerte Meteo Marche
 
 on:
-  # Esegue ogni 30 minuti (ai minuti :00 e :30 di ogni ora)
   schedule:
+    # Esegue ogni 30 minuti
     - cron: '*/30 * * * *'
-  # Permette di avviare il workflow manualmente dalla pagina Actions di GitHub
   workflow_dispatch:
 
 jobs:
   run-script:
-    runs-on: ubuntu-latest # Usa l'ultima versione di Ubuntu disponibile
+    runs-on: ubuntu-latest
 
     steps:
       # 1. Scarica il codice del tuo repository
@@ -22,20 +21,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10' # Puoi scegliere la versione di Python che preferisci
+          python-version: '3.10'
 
-      # 3. Installa le dipendenze Python dal file requirements.txt
+      # 3. Installa le dipendenze Python direttamente
+      # --- MODIFICA QUI ---
+      # Non usiamo più requirements.txt, ma elenchiamo i pacchetti qui.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install gspread requests pytz
 
-      # 4. Crea il file credentials.json dal Secret di GitHub
-      #    ATTENZIONE: Devi creare un secret chiamato GCP_SA_KEY nel tuo repository
+      # 4. Crea il file credentials.json dal Secret di GitHub (INVARIATO)
       - name: Create Google Credentials File
         run: echo '${{ secrets.GCP_SA_KEY }}' > ${{ github.workspace }}/credentials.json
         shell: bash
 
-      # 5. Esegui lo script Python per estrarre e scrivere i dati
+      # 5. Esegui lo script Python (INVARIATO)
       - name: Run Python script
         run: python estrai_allerte.py
