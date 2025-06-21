@@ -1,4 +1,4 @@
-# estrai_allerte.py
+# estrai_allerte.py (Versione con autenticazione moderna)
 
 import requests
 import json
@@ -8,40 +8,54 @@ import os
 import traceback
 import urllib3
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+# --- MODIFICHE QUI ---
+# Rimuoviamo la vecchia libreria e usiamo quella raccomandata
+from google.oauth2.service_account import Credentials
 import pytz
 
-# --- CONFIGURAZIONE ---
-# Disabilita warning SSL (se necessario, l'API non richiede certificati specifici)
+# --- CONFIGURAZIONE (INVARIATA) ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Nomi per Google Sheets
 NOME_FOGLIO_PRINCIPALE = "Dati Meteo Stazioni"
 NOME_WORKSHEET_ALLERTE = "Allerte"
 NOME_FILE_CREDENZIALI = "credentials.json"
+# Lo scope è definito qui, e non più nella funzione di autenticazione
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-# API e filtri
 API_URL_OGGI = "https://allertameteo.regione.marche.it/o/api/allerta/get-stato-allerta"
 API_URL_DOMANI = "https://allertameteo.regione.marche.it/o/api/allerta/get-stato-allerta-domani"
-AREE_INTERESSATE = ["2", "4"] # Interessa solo alle aree 2 e 4
+AREE_INTERESSATE = ["2", "4"]
 
 # --- FINE CONFIGURAZIONE ---
 
+# --- FUNZIONE DI AUTENTICAZIONE AGGIORNATA ---
 def autentica_google_sheets():
-    """Gestisce l'autenticazione a Google Sheets e restituisce il client."""
+    """
+    Gestisce l'autenticazione a Google Sheets usando il metodo moderno
+    (google.oauth2.service_account) e restituisce il client autorizzato.
+    """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     credenziali_path = os.path.join(script_dir, NOME_FILE_CREDENZIALI)
-    print("Autenticazione Google Sheets...")
+    print("Autenticazione Google Sheets con il metodo google-auth...")
+    
     try:
-        credenziali = ServiceAccountCredentials.from_json_keyfile_name(credenziali_path, SCOPE)
-        client = gspread.authorize(credenziali)
+        # Carica le credenziali dal file JSON creato dal secret di GitHub
+        creds = Credentials.from_service_account_file(credenziali_path, scopes=SCOPE)
+        # Autorizza gspread con le credenziali caricate
+        client = gspread.authorize(creds)
+        
         print("Autenticazione riuscita.")
         return client
+    except FileNotFoundError:
+        print(f"ERRORE CRITICO: Il file delle credenziali '{NOME_FILE_CREDENZIALI}' non è stato trovato.")
+        print("Assicurati che il workflow di GitHub Actions stia creando correttamente il file dal secret 'GCP_SA_KEY'.")
+        sys.exit(1)
     except Exception as e:
         print(f"ERRORE CRITICO nell'autenticazione: {e}")
-        print(f"Verifica che il file '{NOME_FILE_CREDENZIALI}' sia presente in '{script_dir}' e valido.")
+        print("Verifica che il contenuto del secret 'GCP_SA_KEY' sia un JSON valido e che l'account di servizio abbia i permessi corretti.")
         sys.exit(1)
+
+# --- IL RESTO DELLO SCRIPT RIMANE IDENTICO ---
 
 def apri_o_crea_worksheet(client, nome_foglio, nome_worksheet):
     """Apre un foglio Google e un worksheet specifico. Se il worksheet non esiste, lo crea."""
@@ -82,7 +96,6 @@ def processa_risposta_api(dati_api, giorno_riferimento):
             eventi_str = area_data.get("eventi", "")
             eventi_dict = {}
             try:
-                # Trasforma la stringa "key1:val1,key2:val2" in un dizionario
                 eventi_dict = {
                     key_val.split(':')[0].strip(): key_val.split(':')[1].strip()
                     for key_val in eventi_str.split(',') if ':' in key_val
@@ -98,18 +111,15 @@ def processa_risposta_api(dati_api, giorno_riferimento):
 
     return dati_processati, tipi_evento
 
-
 def estrai_dati_allerta():
     """Funzione principale che orchestra il processo."""
     italian_tz = pytz.timezone('Europe/Rome')
     start_time = datetime.now(italian_tz)
     print(f"--- Inizio Script Allerte Meteo ({start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}) ---")
 
-    # 1. Autenticazione e apertura worksheet
     client = autentica_google_sheets()
     sheet = apri_o_crea_worksheet(client, NOME_FOGLIO_PRINCIPALE, NOME_WORKSHEET_ALLERTE)
 
-    # 2. Chiamate API
     all_processed_data = []
     all_event_types = set()
 
@@ -134,29 +144,21 @@ def estrai_dati_allerta():
         print("\nNessun dato di allerta valido trovato per le aree di interesse. Uscita.")
         sys.exit(0)
     
-    # 3. Gestione Intestazione
     header_finale = ['Data_Esecuzione', 'Giorno_Riferimento', 'Area'] + sorted(list(all_event_types))
     
     try:
-        # Controlla se il worksheet è vuoto per scrivere l'intestazione
         existing_header = sheet.row_values(1)
         if not existing_header:
             print("\nWorksheet vuoto. Scrittura nuova intestazione...")
             sheet.update('A1', [header_finale], value_input_option='USER_ENTERED')
             print(f"Intestazione scritta: {header_finale}")
         elif set(existing_header) != set(header_finale):
-            # Opzionale: gestire il disallineamento dell'intestazione. Per ora, logghiamo un warning.
-            print("\nATTENZIONE: L'intestazione nel foglio è diversa da quella generata dai dati correnti.")
-            print(f"  Intestazione foglio: {existing_header}")
-            print(f"  Intestazione attesa: {header_finale}")
-            print("  Lo script proverà a scrivere i dati basandosi sull'intestazione esistente.")
-            header_finale = existing_header # Usa l'intestazione esistente per coerenza
+            print("\nATTENZIONE: L'intestazione nel foglio è diversa da quella generata. Uso l'intestazione esistente.")
+            header_finale = existing_header
 
     except Exception as e:
         print(f"Errore durante la gestione dell'intestazione: {e}")
-        # Non usciamo, proviamo comunque a scrivere
         
-    # 4. Preparazione e scrittura righe
     righe_da_scrivere = []
     formatted_time = start_time.strftime('%d/%m/%Y %H:%M')
 
@@ -170,7 +172,6 @@ def estrai_dati_allerta():
             elif col_name == 'Area':
                 riga.append(data_point['area'])
             else:
-                # Aggiunge il valore dell'evento (es. 'white', 'green') o 'N/D' se non presente
                 riga.append(data_point['eventi'].get(col_name, 'N/D'))
         righe_da_scrivere.append(riga)
 
