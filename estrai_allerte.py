@@ -13,7 +13,6 @@ import pytz
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 NOME_FOGLIO_PRINCIPALE = os.environ.get("GSHEET_NAME", "Dati Meteo Stazioni")
-# Nomi dei due worksheet di destinazione
 NOME_WORKSHEET_OGGI = "Allerte Oggi"
 NOME_WORKSHEET_DOMANI = "Allerte Domani"
 
@@ -22,26 +21,27 @@ SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 API_URL_OGGI = "https://allertameteo.regione.marche.it/o/api/allerta/get-stato-allerta"
 API_URL_DOMANI = "https://allertameteo.regione.marche.it/o/api/allerta/get-stato-allerta-domani"
 
-# Le zone da incrociare
 AREE_INTERESSATE = ["2", "4"]
-AREA_COMBINATA_NOME = "2-4" # Nome da visualizzare nel foglio
+AREA_COMBINATA_NOME = "2-4"
 
-# Dizionario per la traduzione dei livelli di allerta
+# --- MODIFICATO: Dizionario per la traduzione dei livelli di allerta ---
 TRADUZIONE_ALLERTE = {
     "Red": "Rossa",
     "Orange": "Arancione",
     "Yellow": "Gialla",
     "Green": "Verde",
-    "N/D": "Nessuna" # Valore di default per dati non disponibili
+    "white": "Nessuna",  # Aggiunto: 'white' significa assenza di fenomeno
+    "N/D": "Nessuna"     # Valore di default interno
 }
 
-# Dizionario per definire la gravità di un'allerta (numero più alto = più grave)
+# --- MODIFICATO: Dizionario per definire la gravità di un'allerta ---
 LIVELLI_SEVERITA = {
-    "Green": 1,
+    "white": 1,      # Aggiunto: Severità minima, ma riconosciuta
+    "Green": 1,      # Severità minima (vigilanza)
     "Yellow": 2,
     "Orange": 3,
     "Red": 4,
-    "N/D": 0
+    "N/D": 0         # Severità zero solo per i dati non trovati
 }
 # --- FINE CONFIGURAZIONE ---
 
@@ -85,7 +85,6 @@ def processa_e_combina_allerte(dati_api):
     if not dati_api:
         return allerte_combinate, tipi_evento_riscontrati
 
-    # Filtra solo i dati per le aree che ci interessano
     dati_filtrati = [d for d in dati_api if d.get("area") in AREE_INTERESSATE]
 
     for area_data in dati_filtrati:
@@ -93,7 +92,6 @@ def processa_e_combina_allerte(dati_api):
         if not eventi_str:
             continue
 
-        # Processa la stringa degli eventi in un dizionario
         eventi_dict = {}
         try:
             for pair in eventi_str.split(','):
@@ -104,12 +102,10 @@ def processa_e_combina_allerte(dati_api):
             print(f"WARN: Impossibile processare eventi per area {area_data.get('area')}: {e}")
             continue
         
-        # Aggiorna il dizionario delle allerte combinate con il valore più grave
         for tipo_evento, livello_attuale in eventi_dict.items():
             tipi_evento_riscontrati.add(tipo_evento)
             livello_precedente = allerte_combinate.get(tipo_evento, "N/D")
 
-            # Confronta la severità e aggiorna se quella attuale è più grave
             if LIVELLI_SEVERITA.get(livello_attuale, 0) > LIVELLI_SEVERITA.get(livello_precedente, 0):
                 allerte_combinate[tipo_evento] = livello_attuale
     
@@ -122,11 +118,10 @@ def scrivi_su_foglio(worksheet, header, dati_allerte, timestamp):
         print(f"\nReset del foglio '{worksheet.title}'...")
         worksheet.clear()
         
-        # Prepara la riga di dati da scrivere
         riga_dati = [timestamp, AREA_COMBINATA_NOME]
-        for tipo_evento in header[2:]: # Salta 'Data_Esecuzione' e 'Area_Combinata'
+        for tipo_evento in header[2:]:
             livello_inglese = dati_allerte.get(tipo_evento, "N/D")
-            livello_italiano = TRADUZIONE_ALLERTE.get(livello_inglese, livello_inglese) # Traduce o usa il valore originale se non in mappa
+            livello_italiano = TRADUZIONE_ALLERTE.get(livello_inglese, livello_inglese)
             riga_dati.append(livello_italiano)
 
         print(f"Scrittura dati su '{worksheet.title}'...")
@@ -151,14 +146,12 @@ def estrai_dati_allerta():
         print(f"ERRORE: Foglio Google '{NOME_FOGLIO_PRINCIPALE}' non trovato.")
         sys.exit(1)
 
-    # Apre o crea i due worksheet
     sheet_oggi = apri_o_crea_worksheet(spreadsheet, NOME_WORKSHEET_OGGI)
     sheet_domani = apri_o_crea_worksheet(spreadsheet, NOME_WORKSHEET_DOMANI)
 
     dati_per_giorno = {}
     tutti_i_tipi_evento = set()
 
-    # Ciclo per interrogare le API di oggi e domani
     for giorno, url, worksheet in [("Oggi", API_URL_OGGI, sheet_oggi), ("Domani", API_URL_DOMANI, sheet_domani)]:
         print(f"\nRecupero dati per: {giorno}")
         try:
@@ -170,21 +163,18 @@ def estrai_dati_allerta():
             print(f"Dati combinati per '{giorno}' processati.")
         except Exception as e:
             print(f"ERRORE API per '{giorno}': {e}")
-            dati_per_giorno[giorno] = {} # Assicura che esista una chiave vuota in caso di errore
+            dati_per_giorno[giorno] = {}
 
     if not tutti_i_tipi_evento:
         print("\nNessun tipo di evento trovato nelle allerte. Uscita.")
         sys.exit(0)
     
-    # Crea un'intestazione unica e ordinata per entrambi i fogli
     header_finale = ['Data_Esecuzione', 'Area_Combinata'] + sorted(list(tutti_i_tipi_evento))
     formatted_time = start_time.strftime('%d/%m/%Y %H:%M')
 
-    # Scrive i dati sul foglio "Allerte Oggi"
     if NOME_WORKSHEET_OGGI in sheet_oggi.title:
         scrivi_su_foglio(sheet_oggi, header_finale, dati_per_giorno.get("Oggi", {}), formatted_time)
 
-    # Scrive i dati sul foglio "Allerte Domani"
     if NOME_WORKSHEET_DOMANI in sheet_domani.title:
         scrivi_su_foglio(sheet_domani, header_finale, dati_per_giorno.get("Domani", {}), formatted_time)
 
