@@ -6,36 +6,43 @@ on:
   schedule:
     # Esegue ogni 30 minuti
     - cron: '*/30 * * * *'
+  # Permette di avviare il workflow manualmente dalla pagina Actions di GitHub
   workflow_dispatch:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
+    
+    # Definisce le variabili d'ambiente che lo script Python leggerà.
+    # Questo rende lo script più flessibile.
+    env:
+      GSHEET_NAME: "Dati Meteo Stazioni"
+      WORKSHEET_NAME: "Allerte"
+      PYTHONUNBUFFERED: 1 # Buona pratica per avere i log in tempo reale
 
     steps:
       # 1. Scarica il codice del tuo repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Imposta l'ambiente Python
+      # 2. Imposta l'ambiente Python (usando la versione v5 e Python 3.11 per coerenza)
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
-      # 3. Installa le dipendenze Python direttamente
-      # --- MODIFICA QUI ---
-      # Non usiamo più requirements.txt, ma elenchiamo i pacchetti qui.
+      # 3. Installa le dipendenze Python direttamente, senza usare requirements.txt
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install gspread requests pytz
+          pip install gspread requests pytz google-api-python-client
 
-      # 4. Crea il file credentials.json dal Secret di GitHub (INVARIATO)
+      # 4. Crea il file credentials.json dal Secret di GitHub
+      #    ATTENZIONE: Il secret deve chiamarsi GCP_CREDENTIALS_JSON per coerenza
       - name: Create Google Credentials File
-        run: echo '${{ secrets.GCP_SA_KEY }}' > ${{ github.workspace }}/credentials.json
+        run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
         shell: bash
 
-      # 5. Esegui lo script Python (INVARIATO)
+      # 5. Esegui lo script Python
       - name: Run Python script
         run: python estrai_allerte.py
