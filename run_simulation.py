@@ -210,24 +210,23 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
         worksheet_created = False # Non è stata creata ora, ma esisteva e l'abbiamo svuotata
     except gspread.exceptions.WorksheetNotFound:
         print(f"Foglio '{predictions_sheet_name}' non trovato. Creazione in corso...")
-        # Le colonne del grafico saranno fisse, quindi possiamo definire una dimensione iniziale
-        # Header + output_window righe, 3 + num_targets colonne + spazio per grafico
         worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=config["output_window"] + 10, cols=len(target_columns) + 10)
         worksheet_created = True
 
     # Intestazione
     header_parts_targets = [f"Previsto: {target_col.split('[')[0].strip()}" for target_col in target_columns]
-    # Le colonne sono: Timestamp Esecuzione, Timestamp Inizio Serie, Passo, Target1, Target2, ...
-    # Colonna A: Timestamp Esecuzione (idx 0)
-    # Colonna B: Timestamp Inizio Serie (idx 1)
-    # Colonna C: Passo (Relativo) (idx 2) --> Asse X del grafico
-    # Colonna D: Target1 (idx 3) --> Serie 1 del grafico
-    # Colonna E: Target2 (idx 4) --> Serie 2 del grafico
-    # ...
-    header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Passo (Relativo)"] + header_parts_targets
+
+    # ***** INIZIO BLOCCO MODIFICATO *****
+    # Per maggiore chiarezza nel foglio di calcolo, cambiamo il nome della colonna
+    # da "Passo (Relativo)" a "Ora Previsione", dato che mostreremo solo l'orario.
+    # Se vuoi mantenere il vecchio nome, commenta la riga "header_row" modificata
+    # e de-commenta quella originale.
+    header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Ora Previsione"] + header_parts_targets
+    # header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Passo (Relativo)"] + header_parts_targets # RIGA ORIGINALE
+    # ***** FINE BLOCCO MODIFICATO *****
+
     worksheet.append_row(header_row, value_input_option='USER_ENTERED')
     print(f"Intestazione aggiunta al foglio '{predictions_sheet_name}'.")
-
 
     output_window_steps = config["output_window"]
     timestamp_esecuzione_dt = datetime.now(italy_tz)
@@ -243,11 +242,15 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     rows_to_append = []
     for step_idx in range(output_window_steps):
         current_prediction_time_dt = prediction_start_time + timedelta(minutes=30 * (step_idx + 1))
+        # ***** INIZIO BLOCCO MODIFICATO *****
+        # Modifichiamo il formato della colonna per mostrare solo hh:mm.
         row_data_for_step = [
             timestamp_esecuzione_str,
             prediction_start_time_str,
-            f"T+{(step_idx + 1) * 0.5:.1f}h ({current_prediction_time_dt.strftime('%H:%M %d/%m')})"
+            current_prediction_time_dt.strftime('%H:%M') # MODIFICA PRINCIPALE: formato cambiato a hh:mm
         ]
+        # ***** FINE BLOCCO MODIFICATO *****
+
         for target_idx in range(predictions_np.shape[1]):
             predicted_value = predictions_np[step_idx, target_idx]
             formatted_value_str = f"{predicted_value:.3f}".replace('.', ',')
@@ -263,17 +266,13 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
             print("Tentativo di aggiungere/aggiornare il grafico...")
             service = build('sheets', 'v4', credentials=gc.auth)
             spreadsheet_id = sh.id
-            sheet_id_numeric = worksheet.id # ID numerico del foglio
+            sheet_id_numeric = worksheet.id
 
-            # 1. Rimuovi grafici esistenti (se presenti) per evitare duplicati
-            # Questo richiede prima di ottenere gli ID dei grafici
             sheet_info = service.spreadsheets().get(spreadsheetId=spreadsheet_id, fields='sheets(properties,charts)').execute()
             delete_chart_requests = []
             for s_info in sheet_info.get('sheets', []):
                 if s_info.get('properties', {}).get('sheetId') == sheet_id_numeric:
                     for chart in s_info.get('charts', []):
-                        # Potresti voler filtrare per titolo se hai altri grafici che non vuoi eliminare
-                        # if chart.get('spec', {}).get('title', '').startswith("Previsioni"):
                         delete_chart_requests.append({
                             "deleteEmbeddedObject": {
                                 "objectId": chart['chartId']
@@ -287,22 +286,13 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
                 ).execute()
                 print(f"Eliminati {len(delete_chart_requests)} grafici esistenti dal foglio '{predictions_sheet_name}'.")
 
-
-            # 2. Definisci il nuovo grafico
-            # Gli indici delle colonne sono 0-based per l'API
-            # Colonna C (Passo) è l'indice 2
-            # Colonna D (Prima previsione) è l'indice 3
-            domain_column_index = 2 # "Passo (Relativo)"
-            first_series_column_index = 3 # La prima colonna "Previsto: ..."
-
-            # Le righe dei dati iniziano dalla riga 2 (indice 1 per l'API, dopo l'header)
-            # L'header è la riga 1 (indice 0 per API)
-            start_row_index_api = 1 # Dati iniziano alla riga 2 del foglio (0-indexed API)
-            # end_row_index_api è esclusivo, quindi num_data_rows + start_row_index_api
+            domain_column_index = 2 # Colonna C: "Ora Previsione"
+            first_series_column_index = 3
+            start_row_index_api = 1
             end_row_index_api = start_row_index_api + len(rows_to_append)
-
             chart_series_requests = []
-            for i, target_name in enumerate(header_parts_targets): # Usa header_parts_targets per i nomi delle serie
+
+            for i, target_name in enumerate(header_parts_targets):
                 series_column_idx_api = first_series_column_index + i
                 chart_series_requests.append({
                     "series": {
@@ -317,8 +307,6 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
                         }
                     },
                     "targetAxis": "LEFT_AXIS",
-                    # Puoi aggiungere qui colori specifici per serie se vuoi
-                    # "colorStyle": {"rgbColor": {"red": R, "green": G, "blue": B}} # R, G, B da 0 a 1
                 })
 
             chart_request = {
@@ -327,47 +315,38 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
                         "spec": {
                             "title": f"Previsioni Modello ({timestamp_esecuzione_str})",
                             "basicChart": {
-                                "chartType": "LINE", # o "COMBO" se hai tipi misti
+                                "chartType": "LINE",
                                 "legendPosition": "BOTTOM_LEGEND",
                                 "axis": [
-                                    { # Asse X (Orizzontale - Dominio)
-                                        "position": "BOTTOM_AXIS",
-                                        "title": "Passo Temporale Futuro"
-                                    },
-                                    { # Asse Y (Verticale - Serie)
-                                        "position": "LEFT_AXIS",
-                                        "title": "Valore Previsto"
-                                    }
+                                    { "position": "BOTTOM_AXIS", "title": "Ora della Previsione" }, # Titolo asse X aggiornato
+                                    { "position": "LEFT_AXIS", "title": "Valore Previsto" }
                                 ],
-                                "domains": [{ # Definisce l'asse X
+                                "domains": [{
                                     "domain": {
                                         "sourceRange": {
                                             "sources": [{
                                                 "sheetId": sheet_id_numeric,
                                                 "startRowIndex": start_row_index_api,
                                                 "endRowIndex": end_row_index_api,
-                                                "startColumnIndex": domain_column_index, # Colonna "Passo (Relativo)"
+                                                "startColumnIndex": domain_column_index,
                                                 "endColumnIndex": domain_column_index + 1
                                             }]
                                         }
                                     }
                                 }],
                                 "series": chart_series_requests,
-                                "headerCount": 0 # I nostri sourceRange non includono header di per sé
+                                "headerCount": 0
                             }
                         },
                         "position": {
                             "overlayPosition": {
-                                "anchorCell": { # Dove ancorare l'angolo superiore sx del grafico
+                                "anchorCell": {
                                     "sheetId": sheet_id_numeric,
-                                    "rowIndex": 0, # In alto, vicino all'header
-                                     # A destra delle colonne dati
+                                    "rowIndex": 0,
                                     "columnIndex": len(header_row) + 1
                                 },
-                                "offsetXPixels": 10,
-                                "offsetYPixels": 10,
-                                "widthPixels": 650, # Larghezza del grafico
-                                "heightPixels": 400 # Altezza del grafico
+                                "offsetXPixels": 10, "offsetYPixels": 10,
+                                "widthPixels": 650, "heightPixels": 400
                             }
                         }
                     }
@@ -399,7 +378,7 @@ def main():
         if not os.path.exists(credentials_path):
             gcp_sa_key_b64 = os.environ.get("GCP_SA_KEY_BASE64_FALLBACK")
             if gcp_sa_key_b64:
-                import base64 # Importa solo se necessario per fallback
+                import base64
                 print("Uso GCP_SA_KEY_BASE64_FALLBACK per le credenziali (test locale).")
                 credentials_json_str = base64.b64decode(gcp_sa_key_b64).decode('utf-8')
                 credentials_dict = json.loads(credentials_json_str)
@@ -412,7 +391,7 @@ def main():
                 credentials_path,
                 scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             )
-        gc = gspread.authorize(credentials) # gc è il client gspread
+        gc = gspread.authorize(credentials)
         print("Autenticazione Google Sheets riuscita.")
 
         model, scaler_features, scaler_targets, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
@@ -464,7 +443,7 @@ def main():
         print(f"Errore Tipo: {e}")
     except gspread.exceptions.APIError as e:
         print(f"Errore API Google Sheets (gspread): {e}")
-    except Exception as e: # Cattura anche errori da googleapiclient
+    except Exception as e:
         print(f"Errore imprevisto durante la simulazione: {e}")
         import traceback
         traceback.print_exc()
