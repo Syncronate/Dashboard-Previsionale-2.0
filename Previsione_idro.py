@@ -56,7 +56,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     if not all(os.path.exists(p) for p in [config_path, model_path, scaler_features_path, scaler_targets_path]):
         raise FileNotFoundError(f"Uno o più file per il modello '{model_base_name}' non trovati in '{models_dir}'.")
 
-with open(config_path, 'r', encoding='utf-8-sig') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
