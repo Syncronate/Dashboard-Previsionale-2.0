@@ -1,13 +1,11 @@
 # Nome del workflow, visibile nella tab "Actions" di GitHub
 name: Esegui Script Previsione Idrometrica
 
-# Trigger: quando eseguire questo workflow
 on:
   # Permette di lanciare il workflow manualmente dalla UI di GitHub
   workflow_dispatch:
 
   # Esegue il workflow a intervalli regolari
-  # Questo esempio lo esegue ogni 30 minuti
   schedule:
     - cron: '*/30 * * * *'
 
@@ -16,6 +14,11 @@ jobs:
   run-prediction-script:
     # Il tipo di runner su cui verrà eseguito il job
     runs-on: ubuntu-latest
+    env:
+      # Passiamo solo l'ID del foglio come variabile d'ambiente
+      GSHEET_ID: ${{ secrets.GSHEET_ID }}
+      # Questo fa sì che l'output di Python appaia immediatamente
+      PYTHONUNBUFFERED: 1
 
     # I passaggi (step) che compongono il job
     steps:
@@ -23,37 +26,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Imposta l'ambiente Python
+      # 2. Imposta l'ambiente Python (usiamo 3.11 per coerenza)
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' 
+          python-version: '3.11' 
 
-      # 3. Installa le dipendenze Python necessarie
+      # 3. Installa le dipendenze Python necessarie dal file requirements.txt
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # <<< BLOCCO DI DEBUG AGGIUNTO >>>
-      - name: DEBUG - List files in models directory
-        run: |
-          echo "Verifico il contenuto della cartella 'models'..."
-          ls -l models/
-          
-      - name: DEBUG - Show content of JSON file
-        run: |
-          echo "Mostro il contenuto RAW del file JSON..."
-          echo "--- INIZIO CONTENUTO FILE ---"
-          cat models/modello_lstm_20250623_2039.json
-          echo "--- FINE CONTENUTO FILE ---"
-      # <<< FINE BLOCCO DI DEBUG >>>
+      # 4. Crea il file credentials.json dal secret (METODO CORRETTO E FUNZIONANTE)
+      - name: Create Google Credentials File
+        run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
+        shell: bash
 
-      # 4. Esegue lo script Python
+      # 5. Esegue lo script Python
       - name: Run prediction script
         run: python Previsione_idro.py
-        env:
-          # Imposta le variabili d'ambiente necessarie allo script
-          # Queste sono prese dai "Secrets" del tuo repository GitHub per sicurezza
-          GSHEET_ID: ${{ secrets.GSHEET_ID }}
-          GCP_SA_KEY_BASE64_FALLBACK: ${{ secrets.GCP_SA_KEY_BASE64 }}
