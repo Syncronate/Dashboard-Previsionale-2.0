@@ -15,9 +15,15 @@ jobs:
     # Il tipo di runner su cui verrà eseguito il job
     runs-on: ubuntu-latest
     env:
-      # Passiamo solo l'ID del foglio come variabile d'ambiente
+      # <<< BLOCCO VARIABILI D'AMBIENTE >>>
+      # L'ID dello Sheet e il nome del foglio di dati sono presi dai Secrets
       GSHEET_ID: ${{ secrets.GSHEET_ID }}
-      # Questo fa sì che l'output di Python appaia immediatamente
+      GSHEET_DATA_SHEET_NAME: ${{ secrets.GSHEET_DATA_SHEET_NAME }}
+      
+      # Il nome del foglio delle previsioni è scritto direttamente qui
+      GSHEET_PREDICTIONS_SHEET_NAME: "Previsioni Idrometri"
+      
+      # Forza l'output di Python a non essere bufferizzato, per log più chiari
       PYTHONUNBUFFERED: 1
 
     # I passaggi (step) che compongono il job
@@ -38,7 +44,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. Crea il file credentials.json dal secret (METODO CORRETTO E FUNZIONANTE)
+      # 4. Crea il file credentials.json dal secret
       - name: Create Google Credentials File
         run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
         shell: bash
