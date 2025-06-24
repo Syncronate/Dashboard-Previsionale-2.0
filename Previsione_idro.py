@@ -327,9 +327,10 @@ def main():
             'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
             'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
             'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
+            'Passo Ripe - Livello Nevola (m)': 'Livello Idrometrico Sensore 3145 [m] (Passo Ripe)',
             # Assicurati che il mapping includa le colonne GSheet per ogni feature del modello, se necessario.
             # Ad esempio, per 'Livello Idrometrico Sensore 3145 [m] (Passo Ripe)':
-            # 'NomeColonnaInGSheet': 'Livello Idrometrico Sensore 3145 [m] (Passo Ripe)',
+            # 'NomeColonnaInGSheet': 'Livello Idrometrico Sensore 3145 [m] (Passo Ripe)' 
             GSHEET_DATE_COL_INPUT: GSHEET_DATE_COL_INPUT
         }
 
