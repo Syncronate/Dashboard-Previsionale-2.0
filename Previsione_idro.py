@@ -53,50 +53,12 @@ def load_model_and_scalers(model_base_name, models_dir):
     scaler_targets_path = os.path.join(models_dir, f"{model_base_name}_targets.joblib")
 
     if not all(os.path.exists(p) for p in [config_path, model_path, scaler_features_path, scaler_targets_path]):
-        raise FileNotFoundError(f"Uno o più file per il modello '{model_base_name}' non trovati in '{models_dir}'. Verificato path: {config_path}")
+        raise FileNotFoundError(f"Uno o più file per il modello '{model_base_name}' non trovati in '{models_dir}'.")
 
-    # <<< BLOCCO DI DEBUG IN PYTHON AGGIUNTO >>>
-    try:
-        print(f"DEBUG PYTHON: Tentativo di leggere il file: {config_path}")
-        with open(config_path, 'r', encoding='utf-8-sig') as f:
-            file_content = f.read()
-        
-        print("--- DEBUG PYTHON: INIZIO CONTENUTO LETTO ---")
-        print(file_content)
-        print("--- DEBUG PYTHON: FINE CONTENUTO LETTO ---")
-        print(f"DEBUG PYTHON: Lunghezza del contenuto letto: {len(file_content)} caratteri.")
-        print(f"DEBUG PYTHON: Rappresentazione del contenuto (per caratteri nascosti): {repr(file_content)}")
-
-        # Ora tentiamo il parsing del contenuto che abbiamo appena letto e stampato
-        config = json.loads(file_content)
-        
-    except json.JSONDecodeError as e:
-        print(f"ERRORE CRITICO: json.JSONDecodeError durante il parsing.")
-        print(f"Messaggio di errore: {e}")
-        # Rilanciamo l'eccezione per fermare lo script come prima, ma con più informazioni
-        raise
-    except Exception as e:
-        print(f"ERRORE CRITICO: Errore imprevisto durante la lettura/parsing del file JSON.")
-        print(f"Tipo di errore: {type(e).__name__}")
-        print(f"Messaggio: {e}")
-        raise
-    # <<< FINE BLOCCO DI DEBUG IN PYTHON >>>
+    with open(config_path, 'r', encoding='utf-8-sig') as f:
+        config = json.load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    if "feature_columns" not in config:
-        # Questo blocco probabilmente non è più necessario se il JSON è completo, ma lo lasciamo per sicurezza
-        config["feature_columns"] = [
-            'Cumulata Sensore 1295 (Arcevia)', 'Cumulata Sensore 2637 (Bettolelle)',
-            'Cumulata Sensore 2858 (Barbara)', 'Cumulata Sensore 2964 (Corinaldo)',
-            HUMIDITY_COL_NAME_INPUT,
-            'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
-            'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
-            'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
-            'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
-            'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
-        ]
-        print(f"Warning: 'feature_columns' non trovate nella config. Usate quelle definite nello script.")
 
     input_size = len(config["feature_columns"])
     output_size = len(config["target_columns"])
@@ -242,9 +204,8 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     timestamp_esecuzione_str = timestamp_esecuzione_dt.strftime('%Y-%m-%d %H:%M:%S %Z')
 
     if prediction_start_time is None:
-        print("Attenzione: prediction_start_time è None. Userò il timestamp di esecuzione meno la durata dell'input window come stima.")
-        input_duration_minutes = config["input_window"] * 30
-        prediction_start_time = timestamp_esecuzione_dt - timedelta(minutes=input_duration_minutes)
+        print("Attenzione: prediction_start_time è None. Userò il timestamp di esecuzione come stima.")
+        prediction_start_time = timestamp_esecuzione_dt
 
     prediction_start_time_str = prediction_start_time.strftime('%Y-%m-%d %H:%M:%S %Z')
 
@@ -333,6 +294,7 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
 
 
 def main():
+    """Funzione principale che orchestra l'esecuzione dello script."""
     print(f"Avvio simulazione script alle {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     if not GSHEET_ID:
@@ -340,25 +302,17 @@ def main():
         return
 
     try:
+        # Il workflow ora crea un file 'credentials.json'. Lo script lo userà.
         credentials_path = "credentials.json"
         if not os.path.exists(credentials_path):
-            gcp_sa_key_b64 = os.environ.get("GCP_SA_KEY_BASE64_FALLBACK")
-            if gcp_sa_key_b64:
-                import base64
-                print("Uso GCP_SA_KEY_BASE64_FALLBACK per le credenziali.")
-                credentials_json_str = base64.b64decode(gcp_sa_key_b64).decode('utf-8')
-                credentials_dict = json.loads(credentials_json_str)
-                credentials = Credentials.from_service_account_info(credentials_dict,
-                    scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
-            else:
-                 raise FileNotFoundError(f"File '{credentials_path}' non trovato e GCP_SA_KEY_BASE64_FALLBACK non impostato.")
-        else:
-            credentials = Credentials.from_service_account_file(
-                credentials_path,
-                scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-            )
+             raise FileNotFoundError(f"File '{credentials_path}' non trovato. Il workflow avrebbe dovuto crearlo.")
+        
+        credentials = Credentials.from_service_account_file(
+            credentials_path,
+            scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        )
         gc = gspread.authorize(credentials)
-        print("Autenticazione Google Sheets riuscita.")
+        print("Autenticazione Google Sheets tramite file credentials.json riuscita.")
 
         model, scaler_features, scaler_targets, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
 
@@ -373,15 +327,16 @@ def main():
             'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
             'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
             'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-            # Assicurati che il mapping includa anche il nuovo idrometro se presente nei dati di input GSheet
-            # 'NomeColonnaGSheetNuovoIdrometro': 'Livello Idrometrico Sensore 3145 [m] (Passo Ripe)'
+            # Assicurati che il mapping includa le colonne GSheet per ogni feature del modello, se necessario.
+            # Ad esempio, per 'Livello Idrometrico Sensore 3145 [m] (Passo Ripe)':
+            # 'NomeColonnaInGSheet': 'Livello Idrometrico Sensore 3145 [m] (Passo Ripe)',
             GSHEET_DATE_COL_INPUT: GSHEET_DATE_COL_INPUT
         }
 
-        # Controllo di completezza del mapping (opzionale ma utile)
         missing_features_in_mapping = [fc for fc in config["feature_columns"] if fc not in column_mapping_gsheet_to_model.values()]
         if missing_features_in_mapping:
             print(f"ATTENZIONE CRITICA: Le seguenti feature del modello NON sono mappate: {missing_features_in_mapping}")
+            print("Queste colonne saranno riempite con 0, il che potrebbe portare a previsioni errate.")
 
         input_data_np, last_input_timestamp = fetch_input_data_from_gsheet(
             gc, GSHEET_ID, GSHEET_DATA_SHEET_NAME, config, column_mapping_gsheet_to_model
