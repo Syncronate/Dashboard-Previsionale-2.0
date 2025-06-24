@@ -27,19 +27,30 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # Puoi scegliere la versione di Python che preferisci
+          python-version: '3.10' 
 
       # 3. Installa le dipendenze Python necessarie
-      #    (Assicurati di avere un file requirements.txt nel tuo repository)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # <<< BLOCCO DI DEBUG AGGIUNTO >>>
+      - name: DEBUG - List files in models directory
+        run: |
+          echo "Verifico il contenuto della cartella 'models'..."
+          ls -l models/
+          
+      - name: DEBUG - Show content of JSON file
+        run: |
+          echo "Mostro il contenuto RAW del file JSON..."
+          echo "--- INIZIO CONTENUTO FILE ---"
+          cat models/modello_lstm_20250623_2039.json
+          echo "--- FINE CONTENUTO FILE ---"
+      # <<< FINE BLOCCO DI DEBUG >>>
+
       # 4. Esegue lo script Python
-      #    Questa è la riga che hai chiesto di modificare.
       - name: Run prediction script
-        # <<< MODIFICATO: Esegue il nuovo script "Previsione_idro.py"
         run: python Previsione_idro.py
         env:
           # Imposta le variabili d'ambiente necessarie allo script
