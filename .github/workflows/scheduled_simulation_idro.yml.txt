@@ -1,0 +1,48 @@
+# Nome del workflow, visibile nella tab "Actions" di GitHub
+name: Esegui Script Previsione Idrometrica
+
+# Trigger: quando eseguire questo workflow
+on:
+  # Permette di lanciare il workflow manualmente dalla UI di GitHub
+  workflow_dispatch:
+
+  # Esegue il workflow a intervalli regolari
+  # Questo esempio lo esegue ogni 30 minuti
+  schedule:
+    - cron: '*/30 * * * *'
+
+# Definizione dei task (job) da eseguire
+jobs:
+  run-prediction-script:
+    # Il tipo di runner su cui verrà eseguito il job
+    runs-on: ubuntu-latest
+
+    # I passaggi (step) che compongono il job
+    steps:
+      # 1. Fa il checkout del tuo codice dal repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Imposta l'ambiente Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' # Puoi scegliere la versione di Python che preferisci
+
+      # 3. Installa le dipendenze Python necessarie
+      #    (Assicurati di avere un file requirements.txt nel tuo repository)
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4. Esegue lo script Python
+      #    Questa è la riga che hai chiesto di modificare.
+      - name: Run prediction script
+        # <<< MODIFICATO: Esegue il nuovo script "Previsione_idro.py"
+        run: python Previsione_idro.py
+        env:
+          # Imposta le variabili d'ambiente necessarie allo script
+          # Queste sono prese dai "Secrets" del tuo repository GitHub per sicurezza
+          GSHEET_ID: ${{ secrets.GSHEET_ID }}
+          GCP_SA_KEY_BASE64_FALLBACK: ${{ secrets.GCP_SA_KEY_BASE64 }}
