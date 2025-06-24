@@ -3,6 +3,7 @@ import json
 # import base64 # Non più necessario per le credenziali se usi il file
 from datetime import datetime, timedelta
 import pytz
+
 import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build # NUOVA IMPORTAZIONE
@@ -15,10 +16,10 @@ from sklearn.preprocessing import MinMaxScaler
 
 # --- Costanti (adattale se necessario) ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_lstm_20250623_2039" # <<< MODIFICATO
+MODEL_BASE_NAME = "modello_lstm_20250623_2039"
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_DATA_SHEET_NAME = os.environ.get("GSHEET_DATA_SHEET_NAME", "Sheet1")
-GSHEET_PREDICTIONS_SHEET_NAME = os.environ.get("GSHEET_PREDICTIONS_SHEET_NAME", "Previsioni Idrometri") # <<< MODIFICATO
+GSHEET_PREDICTIONS_SHEET_NAME = os.environ.get("GSHEET_PREDICTIONS_SHEET_NAME", "Previsioni Idrometri")
 GSHEET_DATE_COL_INPUT = 'Data_Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
 HUMIDITY_COL_NAME_INPUT = "Umidita' Sensore 3452 (Montemurello)"
@@ -56,7 +57,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     if not all(os.path.exists(p) for p in [config_path, model_path, scaler_features_path, scaler_targets_path]):
         raise FileNotFoundError(f"Uno o più file per il modello '{model_base_name}' non trovati in '{models_dir}'.")
 
-    with open(config_path, 'r', encoding='utf-8-sig') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
