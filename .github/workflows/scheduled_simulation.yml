@@ -2,7 +2,6 @@ name: Scheduled Hydrological Simulation
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # Esegui ogni 30 minuti
   workflow_dispatch:
 
 jobs:
