@@ -5,10 +5,6 @@ on:
   # Permette di lanciare il workflow manualmente dalla UI di GitHub
   workflow_dispatch:
 
-  # Esegue il workflow a intervalli regolari
-  schedule:
-    - cron: '*/30 * * * *'
-
 # Definizione dei task (job) da eseguire
 jobs:
   run-prediction-script:
