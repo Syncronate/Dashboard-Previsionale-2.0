@@ -202,29 +202,19 @@ def predict_with_model(model, input_data_np, scaler_features, scaler_targets, de
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, target_columns, prediction_start_time, config):
     """Aggiunge le previsioni e un grafico a un foglio Google."""
     sh = gc.open_by_key(sheet_id_str)
-    worksheet_created = False
     try:
         worksheet = sh.worksheet(predictions_sheet_name)
         print(f"Foglio '{predictions_sheet_name}' trovato. Cancello il contenuto precedente.")
-        worksheet.clear() # Cancella tutto il contenuto per ricominciare
-        worksheet_created = False # Non è stata creata ora, ma esisteva e l'abbiamo svuotata
+        worksheet.clear()
     except gspread.exceptions.WorksheetNotFound:
         print(f"Foglio '{predictions_sheet_name}' non trovato. Creazione in corso...")
         worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=config["output_window"] + 10, cols=len(target_columns) + 10)
-        worksheet_created = True
 
     # Intestazione
     header_parts_targets = [f"Previsto: {target_col.split('[')[0].strip()}" for target_col in target_columns]
 
-    # ***** INIZIO BLOCCO MODIFICATO *****
-    # Per maggiore chiarezza nel foglio di calcolo, cambiamo il nome della colonna
-    # da "Passo (Relativo)" a "Ora Previsione", dato che mostreremo solo l'orario.
-    # Se vuoi mantenere il vecchio nome, commenta la riga "header_row" modificata
-    # e de-commenta quella originale.
-    header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Ora Previsione"] + header_parts_targets
-    # header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Passo (Relativo)"] + header_parts_targets # RIGA ORIGINALE
-    # ***** FINE BLOCCO MODIFICATO *****
-
+    # MODIFICA 1: Cambiato il nome della colonna per maggiore chiarezza.
+    header_row = ["Timestamp Esecuzione", "Timestamp Inizio Serie", "Data e Ora Previsione"] + header_parts_targets
     worksheet.append_row(header_row, value_input_option='USER_ENTERED')
     print(f"Intestazione aggiunta al foglio '{predictions_sheet_name}'.")
 
@@ -242,14 +232,13 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     rows_to_append = []
     for step_idx in range(output_window_steps):
         current_prediction_time_dt = prediction_start_time + timedelta(minutes=30 * (step_idx + 1))
-        # ***** INIZIO BLOCCO MODIFICATO *****
-        # Modifichiamo il formato della colonna per mostrare solo hh:mm.
+        
         row_data_for_step = [
             timestamp_esecuzione_str,
             prediction_start_time_str,
-            current_prediction_time_dt.strftime('%H:%M') # MODIFICA PRINCIPALE: formato cambiato a hh:mm
+            # MODIFICA 2: Cambiato il formato per includere data e ora.
+            current_prediction_time_dt.strftime('%d/%m/%Y %H:%M') 
         ]
-        # ***** FINE BLOCCO MODIFICATO *****
 
         for target_idx in range(predictions_np.shape[1]):
             predicted_value = predictions_np[step_idx, target_idx]
@@ -286,7 +275,7 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
                 ).execute()
                 print(f"Eliminati {len(delete_chart_requests)} grafici esistenti dal foglio '{predictions_sheet_name}'.")
 
-            domain_column_index = 2 # Colonna C: "Ora Previsione"
+            domain_column_index = 2 # Colonna C: "Data e Ora Previsione"
             first_series_column_index = 3
             start_row_index_api = 1
             end_row_index_api = start_row_index_api + len(rows_to_append)
@@ -318,7 +307,8 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
                                 "chartType": "LINE",
                                 "legendPosition": "BOTTOM_LEGEND",
                                 "axis": [
-                                    { "position": "BOTTOM_AXIS", "title": "Ora della Previsione" }, # Titolo asse X aggiornato
+                                    # MODIFICA 3: Aggiornato titolo asse X
+                                    { "position": "BOTTOM_AXIS", "title": "Data e Ora della Previsione" },
                                     { "position": "LEFT_AXIS", "title": "Valore Previsto" }
                                 ],
                                 "domains": [{
