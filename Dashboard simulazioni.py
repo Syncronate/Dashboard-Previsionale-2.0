@@ -818,7 +818,10 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-# SOSTITUZIONE 1: Funzione per LSTM
+# --- INIZIO BLOCCO DI CODICE DA SOSTITUIRE ---
+# Sostituisci le due funzioni '..._with_uncertainty' con queste versioni corrette.
+
+# CORREZIONE: Funzione di previsione LSTM con incertezza AUTONOMA
 def predict_with_uncertainty(model, input_data, scaler_features, scaler_targets, config, device, num_passes=50):
     """Esegue la previsione LSTM più volte (MC Dropout) in modo autonomo e corretto."""
     if model is None or scaler_features is None or scaler_targets is None or config is None:
@@ -844,6 +847,7 @@ def predict_with_uncertainty(model, input_data, scaler_features, scaler_targets,
 
     except Exception as e:
         st.error(f"Errore durante il ciclo di predict_with_uncertainty (LSTM): {e}")
+        st.error(traceback.format_exc())
         model.eval() # Assicurati di rimettere il modello in eval in caso di errore
         return None, None
 
@@ -860,7 +864,7 @@ def predict_with_uncertainty(model, input_data, scaler_features, scaler_targets,
     return mean_prediction, std_prediction
 
 
-# SOSTITUZIONE 2: Funzione per Seq2Seq
+# CORREZIONE: Funzione di previsione Seq2Seq con incertezza AUTONOMA
 def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, scalers, config, device, num_passes=50):
     """Esegue la previsione Seq2Seq più volte (MC Dropout) in modo autonomo e corretto."""
     if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
@@ -892,6 +896,7 @@ def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, sca
 
     except Exception as e:
         st.error(f"Errore durante il ciclo di predict_seq2seq_with_uncertainty: {e}")
+        st.error(traceback.format_exc())
         model.eval() # Assicurati di rimettere il modello in eval in caso di errore
         return None, None
 
@@ -906,6 +911,8 @@ def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, sca
     std_prediction = np.std(predictions_array, axis=0)
     
     return mean_prediction, std_prediction
+
+# --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
 
 # SOSTITUIRE LA FUNZIONE ESISTENTE 'plot_predictions' CON QUESTA
 def plot_predictions(predictions, config, start_time=None, actual_data=None, actual_data_label="Dati Reali CSV", uncertainty=None):
