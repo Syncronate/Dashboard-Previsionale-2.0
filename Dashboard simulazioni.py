@@ -821,37 +821,40 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
 # --- INIZIO BLOCCO DI CODICE DA SOSTITUIRE ---
 # Sostituisci le due funzioni '..._with_uncertainty' con queste versioni corrette.
 
-# CORREZIONE: Funzione di previsione LSTM con incertezza AUTONOMA
-def predict_with_uncertainty(model, input_data, scaler_features, scaler_targets, config, device, num_passes=50):
-    """Esegue la previsione LSTM più volte (MC Dropout) in modo autonomo e corretto."""
+# SOSTITUZIONE 1: Funzione per LSTM con indicatore di progresso
+def predict_with_uncertainty(model, input_data, scaler_features, scaler_targets, config, device, num_passes=25, progress_indicator=None):
+    """Esegue la previsione LSTM più volte (MC Dropout) aggiornando un indicatore di progresso."""
     if model is None or scaler_features is None or scaler_targets is None or config is None:
         st.error("Predict (Uncertainty) LSTM: Modello, scaler o config mancanti.")
         return None, None
 
-    model.train()  # Attiva il Dropout per l'inferenza stocastica
-
+    model.train()
     predictions_list = []
     
     try:
-        # Esegui la trasformazione dei dati UNA SOLA VOLTA fuori dal loop
         inp_norm = scaler_features.transform(input_data)
         inp_tens = torch.FloatTensor(inp_norm).unsqueeze(0).to(device)
         
         with torch.no_grad():
-            for _ in range(num_passes):
-                output = model(inp_tens) # Esegui il forward pass
+            for i in range(num_passes):
+                output = model(inp_tens)
                 out_np = output.cpu().numpy().squeeze(0)
-                # De-normalizza ogni previsione del passaggio
                 preds_single_pass = scaler_targets.inverse_transform(out_np)
                 predictions_list.append(preds_single_pass)
+                
+                # Aggiorna la barra di avanzamento se fornita
+                if progress_indicator:
+                    progress_percentage = (i + 1) / num_passes
+                    progress_text = f"Calcolo Incertezza: Passaggio {i + 1}/{num_passes}"
+                    progress_indicator.progress(progress_percentage, text=progress_text)
 
     except Exception as e:
         st.error(f"Errore durante il ciclo di predict_with_uncertainty (LSTM): {e}")
         st.error(traceback.format_exc())
-        model.eval() # Assicurati di rimettere il modello in eval in caso di errore
+        model.eval()
         return None, None
 
-    model.eval() # Riporta il modello in modalità di valutazione standard
+    model.eval()
 
     if not predictions_list:
         st.error("Nessuna previsione valida generata durante il MC Dropout (LSTM).")
@@ -864,15 +867,14 @@ def predict_with_uncertainty(model, input_data, scaler_features, scaler_targets,
     return mean_prediction, std_prediction
 
 
-# CORREZIONE: Funzione di previsione Seq2Seq con incertezza AUTONOMA
-def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, scalers, config, device, num_passes=50):
-    """Esegue la previsione Seq2Seq più volte (MC Dropout) in modo autonomo e corretto."""
+# SOSTITUZIONE 2: Funzione per Seq2Seq con indicatore di progresso
+def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, scalers, config, device, num_passes=25, progress_indicator=None):
+    """Esegue la previsione Seq2Seq più volte (MC Dropout) aggiornando un indicatore di progresso."""
     if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
         st.error("Predict (Uncertainty) Seq2Seq: Input mancanti.")
         return None, None
 
-    model.train()  # Attiva il Dropout per l'inferenza stocastica
-
+    model.train()
     predictions_list = []
     
     scaler_past = scalers.get("past")
@@ -880,27 +882,31 @@ def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, sca
     scaler_targets = scalers.get("targets")
 
     try:
-        # Esegui la trasformazione dei dati UNA SOLA VOLTA fuori dal loop
         past_norm = scaler_past.transform(past_data)
         future_norm = scaler_forecast.transform(future_forecast_data)
         past_tens = torch.FloatTensor(past_norm).unsqueeze(0).to(device)
         future_tens = torch.FloatTensor(future_norm).unsqueeze(0).to(device)
 
         with torch.no_grad():
-            for _ in range(num_passes):
-                output = model(past_tens, future_tens, teacher_forcing_ratio=0.0) # Esegui il forward pass
+            for i in range(num_passes):
+                output = model(past_tens, future_tens, teacher_forcing_ratio=0.0)
                 out_np = output.cpu().numpy().squeeze(0)
-                # De-normalizza ogni previsione del passaggio
                 preds_single_pass = scaler_targets.inverse_transform(out_np)
                 predictions_list.append(preds_single_pass)
+                
+                # Aggiorna la barra di avanzamento se fornita
+                if progress_indicator:
+                    progress_percentage = (i + 1) / num_passes
+                    progress_text = f"Calcolo Incertezza: Passaggio {i + 1}/{num_passes}"
+                    progress_indicator.progress(progress_percentage, text=progress_text)
 
     except Exception as e:
         st.error(f"Errore durante il ciclo di predict_seq2seq_with_uncertainty: {e}")
         st.error(traceback.format_exc())
-        model.eval() # Assicurati di rimettere il modello in eval in caso di errore
+        model.eval()
         return None, None
 
-    model.eval() # Riporta il modello in modalità di valutazione standard
+    model.eval()
 
     if not predictions_list:
         st.error("Nessuna previsione valida generata durante il MC Dropout (Seq2Seq).")
@@ -2196,6 +2202,15 @@ elif page == 'Simulazione':
         st.stop()
 
     st.info(f"Simulazione con Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
+
+    st.subheader("Impostazioni Simulazione e Incertezza")
+    num_passes_sim = st.number_input(
+        "Numero di passaggi per calcolo incertezza:",
+        min_value=5, max_value=100, value=25, step=5,
+        key="sim_num_passes",
+        help="Valore più alto = stima più stabile ma calcolo più lento. Consigliato: 20-30."
+    )
+
     target_columns_model = []
     if active_model_type == "Seq2Seq":
         st.caption(f"Input Storico: {active_config['input_window_steps']} steps | Input Forecast: {active_config['forecast_window_steps']} steps | Output: {active_config['output_window_steps']} steps")
@@ -2267,17 +2282,21 @@ elif page == 'Simulazione':
              if st.button("Esegui Simulazione Seq2Seq", disabled=not can_run_s2s_sim, type="primary", key="run_s2s_sim_button"):
                   if not can_run_s2s_sim: st.error("Mancano dati storici validi o previsioni future valide.")
                   else:
-                       predictions_s2s = None; start_pred_time_s2s = None
-                       with st.spinner("Simulazione Seq2Seq con Incertezza in corso..."):
+                       predictions_s2s = None; start_pred_time_s2s = None; uncertainty_s2s = None
+                       progress_placeholder_s2s = st.empty() # 1. Crea placeholder
+                       with st.spinner("Preparazione simulazione Seq2Seq..."):
+                           progress_bar_s2s = progress_placeholder_s2s.progress(0, text="Avvio calcolo incertezza Seq2Seq...") # 2. Inserisci barra
                            past_data_np = st.session_state.seq2seq_past_data_gsheet[past_feature_cols_model].astype(float).values
                            future_forecast_np = edited_forecast_df[forecast_feature_cols_model].astype(float).values
                            predictions_s2s, uncertainty_s2s = predict_seq2seq_with_uncertainty(
                                active_model, past_data_np, future_forecast_np, 
-                               active_scalers, active_config, active_device, num_passes=50
+                               active_scalers, active_config, active_device, 
+                               num_passes=num_passes_sim,  # Usa valore da widget
+                               progress_indicator=progress_bar_s2s # Passa la barra
                            )
                            start_pred_time_s2s = st.session_state.get('seq2seq_last_ts_gsheet', datetime.now(italy_tz))
+                       progress_placeholder_s2s.empty() # 3. Pulisci placeholder
                        if predictions_s2s is not None:
-                           # uncertainty_s2s sarà definito qui se la previsione ha avuto successo
                            output_steps_actual = predictions_s2s.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
                            st.subheader(f'Risultato Simulazione Seq2Seq: Prossime {total_hours_output_actual:.1f} ore'); st.caption(f"Previsione calcolata a partire da: {start_pred_time_s2s.strftime('%d/%m/%Y %H:%M:%S %Z')}")
                            results_df_s2s = pd.DataFrame(predictions_s2s, columns=target_columns_model); q_cols_to_add_s2s = {}
@@ -2355,17 +2374,22 @@ elif page == 'Simulazione':
              input_ready_manual = sim_data_input_manual is not None and input_valid_manual; st.divider()
              if st.button('Esegui Simulazione LSTM (Manuale)', type="primary", disabled=(not input_ready_manual), key="sim_run_exec_lstm_manual"):
                  if input_ready_manual:
-                      with st.spinner('Simulazione LSTM (Manuale) con Incertezza in corso...'):
+                      progress_placeholder = st.empty() # 1. Crea placeholder
+                      with st.spinner('Preparazione simulazione LSTM (Manuale)...'):
+                           progress_bar = progress_placeholder.progress(0, text="Avvio calcolo incertezza...") # 2. Inserisci barra
                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
                                predictions_sim_lstm, uncertainty_sim_lstm = predict_with_uncertainty(
                                    active_model, sim_data_input_manual, active_scalers[0], active_scalers[1], 
-                                   active_config, active_device, num_passes=50 # num_passes può essere reso configurabile
+                                   active_config, active_device, 
+                                   num_passes=num_passes_sim, # Usa valore da widget
+                                   progress_indicator=progress_bar # Passa la barra
                                )
                                start_pred_time_lstm = datetime.now(italy_tz)
                            else: 
                                st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
                                predictions_sim_lstm = None
-                               uncertainty_sim_lstm = None # Assicura che sia None
+                               uncertainty_sim_lstm = None 
+                      progress_placeholder.empty() # 3. Pulisci placeholder
                  else: st.error("Dati input manuali non pronti o invalidi.")
          elif sim_method == 'Importa da Google Sheet (Ultime Ore)':
              st.markdown(f'Importa gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) da Google Sheet per le **{len(feature_columns_model)}** feature di input.'); st.caption(f"Verranno recuperati i dati dal Foglio Google (ID: `{GSHEET_ID}`).")
@@ -2415,17 +2439,22 @@ elif page == 'Simulazione':
              input_ready_lstm_gs = sim_data_input_lstm_gs is not None; st.divider()
              if st.button('Esegui Simulazione LSTM (GSheet)', type="primary", disabled=(not input_ready_lstm_gs), key="sim_run_exec_lstm_gsheet"):
                   if input_ready_lstm_gs:
-                      with st.spinner('Simulazione LSTM (GSheet) con Incertezza in corso...'):
+                      progress_placeholder_gs = st.empty() # 1. Crea placeholder
+                      with st.spinner('Preparazione simulazione LSTM (GSheet)...'):
+                            progress_bar_gs = progress_placeholder_gs.progress(0, text="Avvio calcolo incertezza (GSheet)...") # 2. Inserisci barra
                             if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
                                 predictions_sim_lstm, uncertainty_sim_lstm = predict_with_uncertainty(
                                     active_model, sim_data_input_lstm_gs, active_scalers[0], active_scalers[1], 
-                                    active_config, active_device, num_passes=50
+                                    active_config, active_device, 
+                                    num_passes=num_passes_sim,  # Usa valore da widget
+                                    progress_indicator=progress_bar_gs # Passa la barra
                                 )
                                 start_pred_time_lstm = sim_start_time_lstm_gs
                             else: 
                                 st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
                                 predictions_sim_lstm = None
                                 uncertainty_sim_lstm = None
+                      progress_placeholder_gs.empty() # 3. Pulisci placeholder
                   else: st.error("Dati input da GSheet non pronti o non importati.")
          elif sim_method == 'Orario Dettagliato (Tabella)':
              st.markdown(f'Inserisci i dati per i **{input_steps_model}** passi temporali ({input_steps_model*0.5:.1f} ore) precedenti.'); st.caption(f"La tabella contiene le **{len(feature_columns_model)}** feature di input richieste dal modello.")
@@ -2447,17 +2476,22 @@ elif page == 'Simulazione':
              input_ready_lstm_editor = sim_data_input_lstm_editor is not None and validation_passed_editor; st.divider()
              if st.button('Esegui Simulazione LSTM (Tabella)', type="primary", disabled=(not input_ready_lstm_editor), key="sim_run_exec_lstm_editor"):
                   if input_ready_lstm_editor:
-                      with st.spinner('Simulazione LSTM (Tabella) con Incertezza in corso...'):
+                      progress_placeholder_editor = st.empty() # 1. Crea placeholder
+                      with st.spinner('Preparazione simulazione LSTM (Tabella)...'):
+                           progress_bar_editor = progress_placeholder_editor.progress(0, text="Avvio calcolo incertezza (Tabella)...") # 2. Inserisci barra
                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
                                predictions_sim_lstm, uncertainty_sim_lstm = predict_with_uncertainty(
                                    active_model, sim_data_input_lstm_editor, active_scalers[0], active_scalers[1], 
-                                   active_config, active_device, num_passes=50
+                                   active_config, active_device, 
+                                   num_passes=num_passes_sim,  # Usa valore da widget
+                                   progress_indicator=progress_bar_editor # Passa la barra
                                )
                                start_pred_time_lstm = datetime.now(italy_tz)
                            else:
                                st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
                                predictions_sim_lstm = None
                                uncertainty_sim_lstm = None
+                      progress_placeholder_editor.empty() # 3. Pulisci placeholder
                   else: st.error("Dati input da tabella non pronti o invalidi.")
          elif sim_method == 'Usa Ultime Ore da CSV Caricato':
              st.markdown(f"Utilizza gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) dai dati CSV caricati.")
@@ -2478,21 +2512,25 @@ elif page == 'Simulazione':
              input_ready_lstm_csv = sim_data_input_lstm_csv is not None; st.divider()
              if st.button('Esegui Simulazione LSTM (CSV)', type="primary", disabled=(not input_ready_lstm_csv), key="sim_run_exec_lstm_csv"):
                  if input_ready_lstm_csv:
-                      with st.spinner('Simulazione LSTM (CSV) con Incertezza in corso...'):
+                      progress_placeholder_csv = st.empty() # 1. Crea placeholder
+                      with st.spinner('Preparazione simulazione LSTM (CSV)...'):
+                           progress_bar_csv = progress_placeholder_csv.progress(0, text="Avvio calcolo incertezza (CSV)...") # 2. Inserisci barra
                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
                                predictions_sim_lstm, uncertainty_sim_lstm = predict_with_uncertainty(
                                    active_model, sim_data_input_lstm_csv, active_scalers[0], active_scalers[1], 
-                                   active_config, active_device, num_passes=50
+                                   active_config, active_device, 
+                                   num_passes=num_passes_sim,  # Usa valore da widget
+                                   progress_indicator=progress_bar_csv # Passa la barra
                                )
                                start_pred_time_lstm = sim_start_time_lstm_csv
                            else:
                                st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
                                predictions_sim_lstm = None
                                uncertainty_sim_lstm = None
+                      progress_placeholder_csv.empty() # 3. Pulisci placeholder
                  else: st.error("Dati input da CSV non pronti o invalidi.")
 
          if predictions_sim_lstm is not None:
-             # uncertainty_sim_lstm sarà definito qui se la previsione ha avuto successo
              output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
              st.subheader(f'Risultato Simulazione LSTM ({sim_method}): Prossime {total_hours_output_actual:.1f} ore')
              if start_pred_time_lstm: st.caption(f"Previsione calcolata a partire da: {start_pred_time_lstm.strftime('%d/%m/%Y %H:%M:%S %Z')}")
