@@ -818,69 +818,90 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-# NUOVA FUNZIONE PER PREDIZIONE LSTM CON INCERTEZZA (MC DROPOUT)
+# SOSTITUZIONE 1: Funzione per LSTM
 def predict_with_uncertainty(model, input_data, scaler_features, scaler_targets, config, device, num_passes=50):
-    """Esegue la previsione LSTM più volte con il dropout attivo per stimare l'incertezza."""
+    """Esegue la previsione LSTM più volte (MC Dropout) in modo autonomo e corretto."""
     if model is None or scaler_features is None or scaler_targets is None or config is None:
         st.error("Predict (Uncertainty) LSTM: Modello, scaler o config mancanti.")
         return None, None
 
-    # Attiva il Dropout durante l'inferenza (modalità train), ma senza calcolare gradienti.
-    model.train()
-    
+    model.train()  # Attiva il Dropout per l'inferenza stocastica
+
     predictions_list = []
-    # La funzione 'predict' esistente viene chiamata all'interno del loop.
-    # Assicurati che 'model.eval()' non sia chiamato all'interno di 'predict' se questo loop è attivo.
-    # La nostra implementazione di 'predict' non lo fa, quindi è sicuro.
-    with torch.no_grad():
-        for _ in range(num_passes):
-            # Eseguiamo una singola previsione (con dropout attivo)
-            preds_single_pass = predict(model, input_data, scaler_features, scaler_targets, config, device)
-            if preds_single_pass is not None:
+    
+    try:
+        # Esegui la trasformazione dei dati UNA SOLA VOLTA fuori dal loop
+        inp_norm = scaler_features.transform(input_data)
+        inp_tens = torch.FloatTensor(inp_norm).unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            for _ in range(num_passes):
+                output = model(inp_tens) # Esegui il forward pass
+                out_np = output.cpu().numpy().squeeze(0)
+                # De-normalizza ogni previsione del passaggio
+                preds_single_pass = scaler_targets.inverse_transform(out_np)
                 predictions_list.append(preds_single_pass)
 
-    # Riporta il modello in modalità eval() per le operazioni successive
-    model.eval()
-
-    if not predictions_list:
-        st.error("Nessuna previsione valida generata durante il MC Dropout.")
+    except Exception as e:
+        st.error(f"Errore durante il ciclo di predict_with_uncertainty (LSTM): {e}")
+        model.eval() # Assicurati di rimettere il modello in eval in caso di errore
         return None, None
 
-    # Impila tutte le previsioni per calcolare media e deviazione standard
-    # Shape risultante: (num_passes, output_steps, num_targets)
+    model.eval() # Riporta il modello in modalità di valutazione standard
+
+    if not predictions_list:
+        st.error("Nessuna previsione valida generata durante il MC Dropout (LSTM).")
+        return None, None
+
     predictions_array = np.array(predictions_list)
-    
     mean_prediction = np.mean(predictions_array, axis=0)
     std_prediction = np.std(predictions_array, axis=0)
 
     return mean_prediction, std_prediction
 
 
-# NUOVA FUNZIONE PER PREDIZIONE SEQ2SEQ CON INCERTEZZA (MC DROPOUT)
+# SOSTITUZIONE 2: Funzione per Seq2Seq
 def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, scalers, config, device, num_passes=50):
-    """Esegue la previsione Seq2Seq più volte con il dropout attivo per stimare l'incertezza."""
+    """Esegue la previsione Seq2Seq più volte (MC Dropout) in modo autonomo e corretto."""
     if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
         st.error("Predict (Uncertainty) Seq2Seq: Input mancanti.")
         return None, None
 
-    # Attiva il Dropout per l'inferenza
-    model.train() 
+    model.train()  # Attiva il Dropout per l'inferenza stocastica
 
     predictions_list = []
-    with torch.no_grad():
-        for _ in range(num_passes):
-            preds_single_pass = predict_seq2seq(model, past_data, future_forecast_data, scalers, config, device)
-            if preds_single_pass is not None:
+    
+    scaler_past = scalers.get("past")
+    scaler_forecast = scalers.get("forecast")
+    scaler_targets = scalers.get("targets")
+
+    try:
+        # Esegui la trasformazione dei dati UNA SOLA VOLTA fuori dal loop
+        past_norm = scaler_past.transform(past_data)
+        future_norm = scaler_forecast.transform(future_forecast_data)
+        past_tens = torch.FloatTensor(past_norm).unsqueeze(0).to(device)
+        future_tens = torch.FloatTensor(future_norm).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            for _ in range(num_passes):
+                output = model(past_tens, future_tens, teacher_forcing_ratio=0.0) # Esegui il forward pass
+                out_np = output.cpu().numpy().squeeze(0)
+                # De-normalizza ogni previsione del passaggio
+                preds_single_pass = scaler_targets.inverse_transform(out_np)
                 predictions_list.append(preds_single_pass)
 
-    model.eval()
+    except Exception as e:
+        st.error(f"Errore durante il ciclo di predict_seq2seq_with_uncertainty: {e}")
+        model.eval() # Assicurati di rimettere il modello in eval in caso di errore
+        return None, None
+
+    model.eval() # Riporta il modello in modalità di valutazione standard
 
     if not predictions_list:
         st.error("Nessuna previsione valida generata durante il MC Dropout (Seq2Seq).")
         return None, None
         
     predictions_array = np.array(predictions_list)
-    
     mean_prediction = np.mean(predictions_array, axis=0)
     std_prediction = np.std(predictions_array, axis=0)
     
