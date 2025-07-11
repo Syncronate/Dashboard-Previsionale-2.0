@@ -818,12 +818,79 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         st.error(f"Errore durante predict Seq2Seq: {e}")
         st.error(traceback.format_exc()); return None
 
-# --- Funzione Grafici Previsioni (MODIFICATA per includere dati reali opzionali) ---
-def plot_predictions(predictions, config, start_time=None, actual_data=None, actual_data_label="Dati Reali CSV"):
+# NUOVA FUNZIONE PER PREDIZIONE LSTM CON INCERTEZZA (MC DROPOUT)
+def predict_with_uncertainty(model, input_data, scaler_features, scaler_targets, config, device, num_passes=50):
+    """Esegue la previsione LSTM più volte con il dropout attivo per stimare l'incertezza."""
+    if model is None or scaler_features is None or scaler_targets is None or config is None:
+        st.error("Predict (Uncertainty) LSTM: Modello, scaler o config mancanti.")
+        return None, None
+
+    # Attiva il Dropout durante l'inferenza (modalità train), ma senza calcolare gradienti.
+    model.train()
+    
+    predictions_list = []
+    # La funzione 'predict' esistente viene chiamata all'interno del loop.
+    # Assicurati che 'model.eval()' non sia chiamato all'interno di 'predict' se questo loop è attivo.
+    # La nostra implementazione di 'predict' non lo fa, quindi è sicuro.
+    with torch.no_grad():
+        for _ in range(num_passes):
+            # Eseguiamo una singola previsione (con dropout attivo)
+            preds_single_pass = predict(model, input_data, scaler_features, scaler_targets, config, device)
+            if preds_single_pass is not None:
+                predictions_list.append(preds_single_pass)
+
+    # Riporta il modello in modalità eval() per le operazioni successive
+    model.eval()
+
+    if not predictions_list:
+        st.error("Nessuna previsione valida generata durante il MC Dropout.")
+        return None, None
+
+    # Impila tutte le previsioni per calcolare media e deviazione standard
+    # Shape risultante: (num_passes, output_steps, num_targets)
+    predictions_array = np.array(predictions_list)
+    
+    mean_prediction = np.mean(predictions_array, axis=0)
+    std_prediction = np.std(predictions_array, axis=0)
+
+    return mean_prediction, std_prediction
+
+
+# NUOVA FUNZIONE PER PREDIZIONE SEQ2SEQ CON INCERTEZZA (MC DROPOUT)
+def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, scalers, config, device, num_passes=50):
+    """Esegue la previsione Seq2Seq più volte con il dropout attivo per stimare l'incertezza."""
+    if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
+        st.error("Predict (Uncertainty) Seq2Seq: Input mancanti.")
+        return None, None
+
+    # Attiva il Dropout per l'inferenza
+    model.train() 
+
+    predictions_list = []
+    with torch.no_grad():
+        for _ in range(num_passes):
+            preds_single_pass = predict_seq2seq(model, past_data, future_forecast_data, scalers, config, device)
+            if preds_single_pass is not None:
+                predictions_list.append(preds_single_pass)
+
+    model.eval()
+
+    if not predictions_list:
+        st.error("Nessuna previsione valida generata durante il MC Dropout (Seq2Seq).")
+        return None, None
+        
+    predictions_array = np.array(predictions_list)
+    
+    mean_prediction = np.mean(predictions_array, axis=0)
+    std_prediction = np.std(predictions_array, axis=0)
+    
+    return mean_prediction, std_prediction
+
+# SOSTITUIRE LA FUNZIONE ESISTENTE 'plot_predictions' CON QUESTA
+def plot_predictions(predictions, config, start_time=None, actual_data=None, actual_data_label="Dati Reali CSV", uncertainty=None):
     """
     Genera grafici Plotly INDIVIDUALI per le previsioni.
-    Se `actual_data` è fornito, lo plotta accanto alle previsioni per confronto.
-    Aggiunge linee orizzontali per le soglie H e un secondo asse Y per la portata Q (solo prevista).
+    Se `uncertainty` (deviazione standard) è fornito, plotta un intervallo di confidenza.
     """
     if config is None or predictions is None: return []
 
@@ -836,7 +903,7 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
     for i, sensor in enumerate(target_cols):
         fig = go.Figure()
         if start_time:
-            time_steps_datetime = [start_time + timedelta(minutes=30 * (step + 1)) for step in range(output_steps)] # start_time è il primo punto di previsione
+            time_steps_datetime = [start_time + timedelta(minutes=30 * (step + 1)) for step in range(output_steps)]
             x_axis, x_title = time_steps_datetime, "Data e Ora"
             x_tick_format = "%d/%m %H:%M"
         else:
@@ -849,9 +916,8 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
         if actual_data is not None:
             plot_title_base = f'Test: Previsto vs Reale - {station_name_graph}'
         else:
-            plot_title_base = f'Previsione {model_type} - {station_name_graph}'
+            plot_title_base = f'Previsione Probabilistica {model_type} - {station_name_graph}' # Titolo aggiornato
         plot_title = f'{plot_title_base}<br><span style="font-size:10px;">{attribution_text}</span>'
-
 
         unit_match = re.search(r'\((.*?)\)|\[(.*?)\]', sensor)
         y_axis_unit = "m"; y_axis_title_h = "Livello H (m)"
@@ -861,12 +927,30 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
                 y_axis_unit = unit_content.strip()
                 y_axis_title_h = f"Livello H ({y_axis_unit})"
 
-        # Traccia Previsioni H
+        # --- BLOCCO NUOVO PER L'INCERTEZZA ---
+        if uncertainty is not None and uncertainty.shape == predictions.shape:
+            # Calcola i limiti superiore e inferiore (es. 95% intervallo di confidenza, z=1.96)
+            upper_bound = predictions[:, i] + 1.96 * uncertainty[:, i]
+            lower_bound = predictions[:, i] - 1.96 * uncertainty[:, i]
+            
+            # Traccia la banda di incertezza
+            fig.add_trace(go.Scatter(
+                x=np.concatenate([x_axis_np, x_axis_np[::-1]]),
+                y=np.concatenate([upper_bound, lower_bound[::-1]]),
+                fill='toself',
+                fillcolor='rgba(0,100,80,0.2)', # Colore per la banda di incertezza
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo="skip",
+                showlegend=True,
+                name='Incertezza (95% CI)'
+            ))
+        # --- FINE BLOCCO NUOVO ---
+
+        # Traccia Previsioni H (la previsione media)
         fig.add_trace(go.Scatter(
             x=x_axis_np, y=predictions[:, i], mode='lines+markers', name=f'Previsto H ({y_axis_unit})', yaxis='y1'
         ))
 
-        # Traccia Dati Reali H (se forniti)
         if actual_data is not None:
             if actual_data.ndim == 2 and actual_data.shape[0] == output_steps and actual_data.shape[1] == len(target_cols):
                 fig.add_trace(go.Scatter(
@@ -874,9 +958,8 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
                     line=dict(color='green', dash='dashdot'), yaxis='y1'
                 ))
             else:
-                st.warning(f"Shape 'actual_data' ({actual_data.shape}) non compatibile per {sensor}. Attesa: ({output_steps}, {len(target_cols)})")
+                st.warning(f"Shape 'actual_data' ({actual_data.shape}) non compatibile per {sensor}.")
 
-        # Soglie H
         threshold_info = SIMULATION_THRESHOLDS.get(sensor, {})
         soglia_attenzione = threshold_info.get('attenzione')
         soglia_allerta = threshold_info.get('allerta')
@@ -885,7 +968,6 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
         if soglia_allerta is not None:
             fig.add_hline(y=soglia_allerta, line_dash="dash", line_color="red", annotation_text=f"All.H({soglia_allerta:.2f})", annotation_position="top right", layer="below")
 
-        # Dati Portata (Q) PREVISTA e Asse Y2 (Condizionale)
         sensor_info = STATION_COORDS.get(sensor)
         sensor_code_plot = sensor_info.get('sensor_code') if sensor_info else None
         has_discharge_data = False
@@ -899,29 +981,25 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
                     x=x_axis_np[valid_Q_mask], y=predicted_Q_values[valid_Q_mask], mode='lines', name='Portata Prevista Q (m³/s)',
                     line=dict(color='firebrick', dash='dot'), yaxis='y2'
                 ))
-
-        # Aggiornamento Layout
+        
         try:
             fig.update_layout(title=plot_title, height=400, margin=dict(l=60, r=60, t=70, b=50), hovermode="x unified", template="plotly_white")
             fig.update_xaxes(title_text=x_title)
             if x_tick_format: fig.update_xaxes(tickformat=x_tick_format)
-
             fig.update_yaxes(title=dict(text=y_axis_title_h, font=dict(color="#1f77b4")), tickfont=dict(color="#1f77b4"), side="left", rangemode='tozero')
 
-            if has_discharge_data: # Se c'è asse Y2 per Q prevista
+            if has_discharge_data:
                 fig.update_layout(
                      yaxis2=dict(title=dict(text="Portata Q (m³/s)", font=dict(color="firebrick")),
                                  tickfont=dict(color="firebrick"), overlaying="y", side="right", rangemode='tozero', showgrid=False),
-                     legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5) # Legenda sotto
+                     legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
                 )
-            elif actual_data is not None and actual_data.ndim == 2 : # Se ci sono dati reali (ma non Q prevista sull'asse Y2)
-                 fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)) # Legenda sotto ma più alta
-            else: # Solo H previsto
-                 fig.update_layout(legend=dict(orientation="v", yanchor="top", y=1, xanchor="right", x=1)) # Legenda default a destra
+            else:
+                 fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5))
 
         except Exception as e_layout:
-            st.error(f"Errore layout Plotly: {e_layout}"); print(traceback.format_exc())
-            # Non rilanciare l'errore per permettere agli altri grafici di essere generati
+            st.error(f"Errore layout Plotly: {e_layout}")
+            print(traceback.format_exc())
         figs.append(fig)
     return figs
 
@@ -2162,12 +2240,16 @@ elif page == 'Simulazione':
                   if not can_run_s2s_sim: st.error("Mancano dati storici validi o previsioni future valide.")
                   else:
                        predictions_s2s = None; start_pred_time_s2s = None
-                       with st.spinner("Simulazione Seq2Seq in corso..."):
+                       with st.spinner("Simulazione Seq2Seq con Incertezza in corso..."):
                            past_data_np = st.session_state.seq2seq_past_data_gsheet[past_feature_cols_model].astype(float).values
                            future_forecast_np = edited_forecast_df[forecast_feature_cols_model].astype(float).values
-                           predictions_s2s = predict_seq2seq(active_model, past_data_np, future_forecast_np, active_scalers, active_config, active_device)
+                           predictions_s2s, uncertainty_s2s = predict_seq2seq_with_uncertainty(
+                               active_model, past_data_np, future_forecast_np, 
+                               active_scalers, active_config, active_device, num_passes=50
+                           )
                            start_pred_time_s2s = st.session_state.get('seq2seq_last_ts_gsheet', datetime.now(italy_tz))
                        if predictions_s2s is not None:
+                           # uncertainty_s2s sarà definito qui se la previsione ha avuto successo
                            output_steps_actual = predictions_s2s.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
                            st.subheader(f'Risultato Simulazione Seq2Seq: Prossime {total_hours_output_actual:.1f} ore'); st.caption(f"Previsione calcolata a partire da: {start_pred_time_s2s.strftime('%d/%m/%Y %H:%M:%S %Z')}")
                            results_df_s2s = pd.DataFrame(predictions_s2s, columns=target_columns_model); q_cols_to_add_s2s = {}
@@ -2181,9 +2263,37 @@ elif page == 'Simulazione':
                            results_df_s2s_display = results_df_s2s.copy(); rename_dict_s2s = {'Ora Prevista': 'Ora Prevista'}; final_display_columns = ['Ora Prevista']
                            for col in target_columns_model: label_h = get_station_label(col, short=True); unit_match_h = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str_h = f"({unit_match_h.group(1) or unit_match_h.group(2)})" if unit_match_h and (unit_match_h.group(1) or unit_match_h.group(2)) else "(m)"; new_name_h = f"{label_h} H {unit_str_h}"; rename_dict_s2s[col] = new_name_h; final_display_columns.append(new_name_h); q_col_match = f"Portata Prevista Q {label_h} (m³/s)";
                            if q_col_match in results_df_s2s.columns: rename_dict_s2s[q_col_match] = q_col_match; final_display_columns.append(q_col_match)
+                           results_df_s2s_display = results_df_s2s.copy() # Inizia con i dati numerici grezzi
+                           # Aggiungi colonna incertezza se disponibile
+                           if uncertainty_s2s is not None and uncertainty_s2s.shape == predictions_s2s.shape:
+                               for i_unc, target_col_unc_s2s in enumerate(target_columns_model):
+                                   label_unc = get_station_label(target_col_unc_s2s, short=True)
+                                   unit_match_unc = re.search(r'\[(.*?)\]|\((.*?)\)', target_col_unc_s2s)
+                                   unit_str_unc = f"({unit_match_unc.group(1) or unit_match_unc.group(2)})" if unit_match_unc and (unit_match_unc.group(1) or unit_match_unc.group(2)) else "(m)"
+                                   results_df_s2s_display[f'Incertezza H {label_unc} {unit_str_unc} (StdDev)'] = uncertainty_s2s[:, i_unc]
+                           
+                           rename_dict_s2s = {'Ora Prevista': 'Ora Prevista'}
+                           final_display_columns = ['Ora Prevista']
+                           for col in target_columns_model: # Colonne H
+                               label_h = get_station_label(col, short=True)
+                               unit_match_h = re.search(r'\[(.*?)\]|\((.*?)\)', col)
+                               unit_str_h = f"({unit_match_h.group(1) or unit_match_h.group(2)})" if unit_match_h and (unit_match_h.group(1) or unit_match_h.group(2)) else "(m)"
+                               new_name_h = f"{label_h} H {unit_str_h}"
+                               rename_dict_s2s[col] = new_name_h # Rinomina la colonna H originale
+                               final_display_columns.append(new_name_h)
+                               # Aggiungi la colonna di incertezza corrispondente se esiste
+                               unc_col_name_check = f'Incertezza H {label_h} {unit_str_h} (StdDev)'
+                               if unc_col_name_check in results_df_s2s_display.columns:
+                                   final_display_columns.append(unc_col_name_check) # Già ha il nome corretto
+                               # Colonne Q
+                               q_col_match = f"Portata Prevista Q {label_h} (m³/s)"
+                               if q_col_match in results_df_s2s.columns: # results_df_s2s contiene le Q calcolate
+                                   results_df_s2s_display[q_col_match] = results_df_s2s[q_col_match] # Assicura che Q sia in display
+                                   final_display_columns.append(q_col_match)
+
                            results_df_s2s_display = results_df_s2s_display.rename(columns=rename_dict_s2s)
-                           st.dataframe(results_df_s2s_display[final_display_columns].round(3), hide_index=True); st.markdown(get_table_download_link(results_df_s2s, f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
-                           st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali H e Q)'); figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s); num_graph_cols = min(len(figs_sim_s2s), 3); sim_cols = st.columns(num_graph_cols)
+                           st.dataframe(results_df_s2s_display[final_display_columns].round(3), hide_index=True); st.markdown(get_table_download_link(results_df_s2s_display[final_display_columns], f"simulazione_seq2seq_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
+                           st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali H e Q)'); figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s, uncertainty=uncertainty_s2s); num_graph_cols = min(len(figs_sim_s2s), 3); sim_cols = st.columns(num_graph_cols)
                            for i, fig_sim in enumerate(figs_sim_s2s):
                               with sim_cols[i % num_graph_cols]: s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_columns_model[i], short=False)); filename_base_s2s_ind = f"grafico_sim_s2s_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.plotly_chart(fig_sim, use_container_width=True); st.markdown(get_plotly_download_link(fig_sim, filename_base_s2s_ind), unsafe_allow_html=True)
                            st.subheader('Grafico Combinato Livelli H Output (Seq2Seq)'); fig_combined_s2s = go.Figure()
@@ -2217,9 +2327,17 @@ elif page == 'Simulazione':
              input_ready_manual = sim_data_input_manual is not None and input_valid_manual; st.divider()
              if st.button('Esegui Simulazione LSTM (Manuale)', type="primary", disabled=(not input_ready_manual), key="sim_run_exec_lstm_manual"):
                  if input_ready_manual:
-                      with st.spinner('Simulazione LSTM (Manuale) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_manual, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = datetime.now(italy_tz)
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
+                      with st.spinner('Simulazione LSTM (Manuale) con Incertezza in corso...'):
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
+                               predictions_sim_lstm, uncertainty_sim_lstm = predict_with_uncertainty(
+                                   active_model, sim_data_input_manual, active_scalers[0], active_scalers[1], 
+                                   active_config, active_device, num_passes=50 # num_passes può essere reso configurabile
+                               )
+                               start_pred_time_lstm = datetime.now(italy_tz)
+                           else: 
+                               st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                               predictions_sim_lstm = None
+                               uncertainty_sim_lstm = None # Assicura che sia None
                  else: st.error("Dati input manuali non pronti o invalidi.")
          elif sim_method == 'Importa da Google Sheet (Ultime Ore)':
              st.markdown(f'Importa gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) da Google Sheet per le **{len(feature_columns_model)}** feature di input.'); st.caption(f"Verranno recuperati i dati dal Foglio Google (ID: `{GSHEET_ID}`).")
@@ -2269,9 +2387,17 @@ elif page == 'Simulazione':
              input_ready_lstm_gs = sim_data_input_lstm_gs is not None; st.divider()
              if st.button('Esegui Simulazione LSTM (GSheet)', type="primary", disabled=(not input_ready_lstm_gs), key="sim_run_exec_lstm_gsheet"):
                   if input_ready_lstm_gs:
-                      with st.spinner('Simulazione LSTM (GSheet) in corso...'):
-                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_gs, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = sim_start_time_lstm_gs
-                            else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
+                      with st.spinner('Simulazione LSTM (GSheet) con Incertezza in corso...'):
+                            if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
+                                predictions_sim_lstm, uncertainty_sim_lstm = predict_with_uncertainty(
+                                    active_model, sim_data_input_lstm_gs, active_scalers[0], active_scalers[1], 
+                                    active_config, active_device, num_passes=50
+                                )
+                                start_pred_time_lstm = sim_start_time_lstm_gs
+                            else: 
+                                st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                                predictions_sim_lstm = None
+                                uncertainty_sim_lstm = None
                   else: st.error("Dati input da GSheet non pronti o non importati.")
          elif sim_method == 'Orario Dettagliato (Tabella)':
              st.markdown(f'Inserisci i dati per i **{input_steps_model}** passi temporali ({input_steps_model*0.5:.1f} ore) precedenti.'); st.caption(f"La tabella contiene le **{len(feature_columns_model)}** feature di input richieste dal modello.")
@@ -2293,9 +2419,17 @@ elif page == 'Simulazione':
              input_ready_lstm_editor = sim_data_input_lstm_editor is not None and validation_passed_editor; st.divider()
              if st.button('Esegui Simulazione LSTM (Tabella)', type="primary", disabled=(not input_ready_lstm_editor), key="sim_run_exec_lstm_editor"):
                   if input_ready_lstm_editor:
-                      with st.spinner('Simulazione LSTM (Tabella) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_editor, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = datetime.now(italy_tz)
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
+                      with st.spinner('Simulazione LSTM (Tabella) con Incertezza in corso...'):
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
+                               predictions_sim_lstm, uncertainty_sim_lstm = predict_with_uncertainty(
+                                   active_model, sim_data_input_lstm_editor, active_scalers[0], active_scalers[1], 
+                                   active_config, active_device, num_passes=50
+                               )
+                               start_pred_time_lstm = datetime.now(italy_tz)
+                           else:
+                               st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                               predictions_sim_lstm = None
+                               uncertainty_sim_lstm = None
                   else: st.error("Dati input da tabella non pronti o invalidi.")
          elif sim_method == 'Usa Ultime Ore da CSV Caricato':
              st.markdown(f"Utilizza gli ultimi **{input_steps_model}** steps ({input_steps_model*0.5:.1f} ore) dai dati CSV caricati.")
@@ -2316,12 +2450,21 @@ elif page == 'Simulazione':
              input_ready_lstm_csv = sim_data_input_lstm_csv is not None; st.divider()
              if st.button('Esegui Simulazione LSTM (CSV)', type="primary", disabled=(not input_ready_lstm_csv), key="sim_run_exec_lstm_csv"):
                  if input_ready_lstm_csv:
-                      with st.spinner('Simulazione LSTM (CSV) in corso...'):
-                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2: predictions_sim_lstm = predict(active_model, sim_data_input_lstm_csv, active_scalers[0], active_scalers[1], active_config, active_device); start_pred_time_lstm = sim_start_time_lstm_csv
-                           else: st.error("Errore: Scaler LSTM non trovati o in formato non valido."); predictions_sim_lstm = None
+                      with st.spinner('Simulazione LSTM (CSV) con Incertezza in corso...'):
+                           if isinstance(active_scalers, tuple) and len(active_scalers) == 2:
+                               predictions_sim_lstm, uncertainty_sim_lstm = predict_with_uncertainty(
+                                   active_model, sim_data_input_lstm_csv, active_scalers[0], active_scalers[1], 
+                                   active_config, active_device, num_passes=50
+                               )
+                               start_pred_time_lstm = sim_start_time_lstm_csv
+                           else:
+                               st.error("Errore: Scaler LSTM non trovati o in formato non valido.")
+                               predictions_sim_lstm = None
+                               uncertainty_sim_lstm = None
                  else: st.error("Dati input da CSV non pronti o invalidi.")
 
          if predictions_sim_lstm is not None:
+             # uncertainty_sim_lstm sarà definito qui se la previsione ha avuto successo
              output_steps_actual = predictions_sim_lstm.shape[0]; total_hours_output_actual = output_steps_actual * 0.5
              st.subheader(f'Risultato Simulazione LSTM ({sim_method}): Prossime {total_hours_output_actual:.1f} ore')
              if start_pred_time_lstm: st.caption(f"Previsione calcolata a partire da: {start_pred_time_lstm.strftime('%d/%m/%Y %H:%M:%S %Z')}")
@@ -2339,9 +2482,37 @@ elif page == 'Simulazione':
              results_df_lstm_display = results_df_lstm.copy(); rename_dict_lstm = {time_col_name: time_col_name}; final_display_columns_lstm = [time_col_name]
              for col in target_columns_model: label_h = get_station_label(col, short=True); unit_match_h = re.search(r'\[(.*?)\]|\((.*?)\)', col); unit_str_h = f"({unit_match_h.group(1) or unit_match_h.group(2)})" if unit_match_h and (unit_match_h.group(1) or unit_match_h.group(2)) else "(m)"; new_name_h = f"{label_h} H {unit_str_h}"; rename_dict_lstm[col] = new_name_h; final_display_columns_lstm.append(new_name_h); q_col_match = f"Portata Prevista Q {label_h} (m³/s)";
              if q_col_match in results_df_lstm.columns: rename_dict_lstm[q_col_match] = q_col_match; final_display_columns_lstm.append(q_col_match)
+             results_df_lstm_display = results_df_lstm.copy() # Inizia con i dati numerici grezzi
+             # Aggiungi colonna incertezza se disponibile
+             if 'uncertainty_sim_lstm' in locals() and uncertainty_sim_lstm is not None and uncertainty_sim_lstm.shape == predictions_sim_lstm.shape:
+                 for i_unc_lstm, target_col_unc_lstm in enumerate(target_columns_model):
+                     label_unc_lstm = get_station_label(target_col_unc_lstm, short=True)
+                     unit_match_unc_lstm = re.search(r'\[(.*?)\]|\((.*?)\)', target_col_unc_lstm)
+                     unit_str_unc_lstm = f"({unit_match_unc_lstm.group(1) or unit_match_unc_lstm.group(2)})" if unit_match_unc_lstm and (unit_match_unc_lstm.group(1) or unit_match_unc_lstm.group(2)) else "(m)"
+                     results_df_lstm_display[f'Incertezza H {label_unc_lstm} {unit_str_unc_lstm} (StdDev)'] = uncertainty_sim_lstm[:, i_unc_lstm]
+
+             rename_dict_lstm = {time_col_name: time_col_name}
+             final_display_columns_lstm = [time_col_name]
+             for col in target_columns_model: # Colonne H
+                 label_h_lstm = get_station_label(col, short=True)
+                 unit_match_h_lstm = re.search(r'\[(.*?)\]|\((.*?)\)', col)
+                 unit_str_h_lstm = f"({unit_match_h_lstm.group(1) or unit_match_h_lstm.group(2)})" if unit_match_h_lstm and (unit_match_h_lstm.group(1) or unit_match_h_lstm.group(2)) else "(m)"
+                 new_name_h_lstm = f"{label_h_lstm} H {unit_str_h_lstm}"
+                 rename_dict_lstm[col] = new_name_h_lstm # Rinomina colonna H originale
+                 final_display_columns_lstm.append(new_name_h_lstm)
+                 # Aggiungi colonna incertezza se esiste
+                 unc_col_name_check_lstm = f'Incertezza H {label_h_lstm} {unit_str_h_lstm} (StdDev)'
+                 if unc_col_name_check_lstm in results_df_lstm_display.columns:
+                     final_display_columns_lstm.append(unc_col_name_check_lstm)
+                 # Colonne Q
+                 q_col_match_lstm = f"Portata Prevista Q {label_h_lstm} (m³/s)"
+                 if q_col_match_lstm in results_df_lstm.columns: # results_df_lstm contiene Q calcolate
+                    results_df_lstm_display[q_col_match_lstm] = results_df_lstm[q_col_match_lstm] # Assicura che Q sia in display
+                    final_display_columns_lstm.append(q_col_match_lstm)
+             
              results_df_lstm_display = results_df_lstm_display.rename(columns=rename_dict_lstm)
-             st.dataframe(results_df_lstm_display[final_display_columns_lstm].round(3), hide_index=True); st.markdown(get_table_download_link(results_df_lstm, f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
-             st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali H e Q)'); figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
+             st.dataframe(results_df_lstm_display[final_display_columns_lstm].round(3), hide_index=True); st.markdown(get_table_download_link(results_df_lstm_display[final_display_columns_lstm], f"simulazione_lstm_{sim_method.split()[0].lower()}_{datetime.now().strftime('%Y%m%d_%H%M')}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}.csv"), unsafe_allow_html=True)
+             st.subheader(f'Grafici Previsioni Simulate (LSTM {sim_method} - Individuali H e Q)'); figs_sim_lstm = plot_predictions(predictions_sim_lstm, active_config, start_pred_time_lstm, uncertainty=uncertainty_sim_lstm if 'uncertainty_sim_lstm' in locals() else None); num_graph_cols_lstm = min(len(figs_sim_lstm), 3); sim_cols_lstm = st.columns(num_graph_cols_lstm)
              for i, fig_sim in enumerate(figs_sim_lstm):
                  with sim_cols_lstm[i % num_graph_cols_lstm]: s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_columns_model[i], short=False)); filename_base_lstm_ind = f"grafico_sim_lstm_{sim_method.split()[0].lower()}_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.plotly_chart(fig_sim, use_container_width=True); st.markdown(get_plotly_download_link(fig_sim, filename_base_lstm_ind), unsafe_allow_html=True)
              st.subheader(f'Grafico Combinato Livelli H Output (LSTM {sim_method})'); fig_combined_lstm = go.Figure()
@@ -2535,6 +2706,7 @@ elif page == 'Test Modello su Storico':
 
             with st.spinner(f"Periodo {i_period+1}: Estrazione dati e predizione..."):
                 predictions_test_period = None
+                uncertainty_test_period = None # Aggiungi questa variabile
                 actual_target_data_np_test_period = None
                 prediction_start_time_test_period = None
                 period_mses = {}
@@ -2550,17 +2722,20 @@ elif page == 'Test Modello su Storico':
                         past_input_np_test_period = input_data_df_test_period[past_feature_cols_model_test].astype(float).values
                         future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf] 
                         future_forecast_np_test_period = future_forecast_df_test_period[forecast_feature_cols_model_test].astype(float).values
-                        predictions_test_period = predict_seq2seq(active_model, past_input_np_test_period, future_forecast_np_test_period, active_scalers, active_config, active_device)
+                        # SOSTITUISCI predict_seq2seq CON predict_seq2seq_with_uncertainty
+                        predictions_test_period, uncertainty_test_period = predict_seq2seq_with_uncertainty(
+                            active_model, past_input_np_test_period, future_forecast_np_test_period, 
+                            active_scalers, active_config, active_device, num_passes=50 # num_passes può essere reso configurabile
+                        )
                     else: # LSTM
                         input_features_np_test_period = input_data_df_test_period[feature_columns_model_test].astype(float).values
-                        predictions_test_period = predict(active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], active_config, active_device)
+                        # SOSTITUISCI predict CON predict_with_uncertainty
+                        predictions_test_period, uncertainty_test_period = predict_with_uncertainty(
+                            active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], 
+                            active_config, active_device, num_passes=50 # num_passes può essere reso configurabile
+                        )
 
                     if predictions_test_period is not None and actual_target_data_np_test_period is not None:
-                        # Assicurati che le predizioni abbiano la stessa lunghezza degli attuali per il confronto MSE
-                        # predictions_test_period può essere più lungo di output_steps_model_test se il modello Seq2Seq
-                        # è addestrato per un output_window_steps più lungo di quello usato per il confronto.
-                        # Ma plot_predictions e il calcolo MSE dovrebbero usare solo output_steps_model_test.
-                        # Il codice MSE sotto già usa output_steps_model_test per fare lo slice delle predizioni se necessario.
                         len_to_compare = min(predictions_test_period.shape[0], actual_target_data_np_test_period.shape[0], output_steps_model_test)
 
                         for k_target, target_col_name in enumerate(target_columns_model_test):
@@ -2573,11 +2748,12 @@ elif page == 'Test Modello su Storico':
                         "period_num": i_period + 1,
                         "input_df_slice": input_data_df_test_period,
                         "output_df_slice": actual_data_for_comparison_df_period,
-                        "predictions": predictions_test_period, # Intere predizioni
-                        "actuals": actual_target_data_np_test_period, # Interi dati attuali per confronto
+                        "predictions": predictions_test_period,
+                        "actuals": actual_target_data_np_test_period,
+                        "uncertainty": uncertainty_test_period, # NUOVA CHIAVE
                         "start_time": prediction_start_time_test_period,
                         "mses": period_mses,
-                        "len_compared": len_to_compare # Lunghezza effettiva usata per MSE
+                        "len_compared": len_to_compare
                     })
 
                 except Exception as e_pred_test_period:
@@ -2630,11 +2806,12 @@ elif page == 'Test Modello su Storico':
 
                 st.markdown("**Grafici di Confronto per il Periodo:**")
                 figs_test_period = plot_predictions(
-                    result['predictions'][:len_display, :], # Usa len_display
+                    result['predictions'][:len_display, :], 
                     active_config, 
                     start_time=result['start_time'], 
-                    actual_data=result['actuals'][:len_display, :], # Usa len_display
-                    actual_data_label="Reale CSV" 
+                    actual_data=result['actuals'][:len_display, :], 
+                    actual_data_label="Reale CSV",
+                    uncertainty=result.get('uncertainty')[:len_display, :] if result.get('uncertainty') is not None and result.get('uncertainty').shape[0] >= len_display else None
                 )
                 num_graph_cols_test_period = min(len(figs_test_period), 2)
                 graph_cols_test_period = st.columns(num_graph_cols_test_period)
