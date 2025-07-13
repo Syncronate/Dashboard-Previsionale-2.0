@@ -16,7 +16,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 # --- Costanti (adattale se necessario) ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_lstm_20250507_0717_posttrained_20250712_1057"
+MODEL_BASE_NAME = "modello_lstm_20250507_0717_posttrained_20250712_1057_posttrained_20250713_1745"
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_DATA_SHEET_NAME = os.environ.get("GSHEET_DATA_SHEET_NAME", "Sheet1")
 GSHEET_PREDICTIONS_SHEET_NAME = os.environ.get("GSHEET_PREDICTIONS_SHEET_NAME", "Previsioni")
