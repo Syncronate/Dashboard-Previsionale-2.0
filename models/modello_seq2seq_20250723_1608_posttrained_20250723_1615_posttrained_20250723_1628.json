@@ -1,0 +1,51 @@
+{
+    "model_type": "Seq2Seq",
+    "input_window_steps": 168,
+    "forecast_window_steps": 12,
+    "output_window_steps": 12,
+    "hidden_size": 64,
+    "num_layers": 1,
+    "dropout": 0.2,
+    "all_past_feature_columns": [
+        "Cumulata Sensore 1295 (Arcevia)",
+        "Cumulata Sensore 2637 (Bettolelle)",
+        "Cumulata Sensore 2858 (Barbara)",
+        "Cumulata Sensore 2964 (Corinaldo)",
+        "Umidita' Sensore 3452 (Montemurello)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)"
+    ],
+    "forecast_input_columns": [
+        "Cumulata Sensore 1295 (Arcevia)",
+        "Cumulata Sensore 2637 (Bettolelle)",
+        "Cumulata Sensore 2858 (Barbara)",
+        "Cumulata Sensore 2964 (Corinaldo)",
+        "Umidita' Sensore 3452 (Montemurello)"
+    ],
+    "target_columns": [
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)"
+    ],
+    "lag_config_past": {},
+    "cumulative_config_past": {},
+    "training_date": "2025-07-23T16:11:55.961804+02:00",
+    "n_splits_cv": 2,
+    "loss_function": "MSELoss",
+    "learning_rate": 0.001,
+    "batch_size": 64,
+    "epochs": 25,
+    "display_name": "modello_seq2seq_20250723_1608_posttrained_20250723_1615_posttrained_20250723_1628",
+    "pth_path": "models\\modello_seq2seq_20250723_1608_posttrained_20250723_1615.pth",
+    "config_name": "modello_seq2seq_20250723_1608_posttrained_20250723_1615_posttrained_20250723_1628",
+    "post_training_info": {
+        "date": "2025-07-23T16:30:06.055309+02:00",
+        "epochs": 10,
+        "lr": 0.0001,
+        "batch_size": 64,
+        "loss_function": "MSELoss",
+        "new_data_source_name": "dati idro v2.csv",
+        "new_data_rows_used": 26090
+    }
+}
