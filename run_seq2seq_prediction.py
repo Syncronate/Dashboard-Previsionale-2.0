@@ -244,11 +244,3 @@ def main():
 
 if __name__ == "__main__":
     main()```
-
-### Prossimi Passi
-
-1.  **Sostituisci lo script Python** con questa nuova versione, che è ora perfettamente allineata alla struttura del tuo file `.json`.
-2.  **Commit e Push** delle modifiche.
-3.  **Esegui l'azione su GitHub.**
-
-Sono molto fiducioso che questa volta l'esecuzione andrà a buon fine. Abbiamo corretto la mancata corrispondenza tra le aspettative dello script e la realtà del file di configurazione, che era l'ultimo ostacolo logico.
