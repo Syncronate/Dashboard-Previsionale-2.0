@@ -1,66 +1,60 @@
+# Nome del workflow, visibile nella tab "Actions" di GitHub.
+# Aggiunto "(WITH DEBUG)" per riconoscere facilmente questa versione.
 name: Scheduled Seq2Seq Hydrological Prediction (WITH DEBUG)
 
 on:
+  # Permette di avviare il workflow manualmente dalla UI di GitHub.
   workflow_dispatch:
 
 jobs:
   run-prediction:
+    # Il tipo di runner su cui verrà eseguito il job.
     runs-on: ubuntu-latest
     
+    # Variabili d'ambiente disponibili per tutti i passaggi del job.
     env:
       GSHEET_ID: ${{ secrets.GSHEET_ID }}
       PYTHONUNBUFFERED: 1
 
+    # I passaggi (step) che compongono il job.
     steps:
-    # 1. Scarica il codice. Aggiungeremo 'lfs: true' dopo per sicurezza.
+    # 1. Fa il checkout del tuo codice dal repository.
+    #    'lfs: true' è stato aggiunto per assicurarsi che i file grandi gestiti 
+    #    da Git LFS vengano scaricati correttamente. Questa è una causa comune di errori.
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        lfs: true # Aggiunto per gestire il caso Git LFS
+        lfs: true
 
-    # 2. Imposta Python
+    # 2. Imposta l'ambiente Python.
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    # NUOVO STEP DI DEBUG: Questo stamperà tutti i file e le cartelle
+    # 3. NUOVO STEP DI DEBUG: Mostra la struttura dei file.
+    #    Questo comando elencherà ricorsivamente tutti i file e le cartelle
+    #    nello spazio di lavoro, mostrando i permessi e le dimensioni.
+    #    È il modo migliore per verificare se i file del modello esistono e dove.
     - name: "Debug: List all files in the repository"
       run: ls -lR
-      # ls -> comado "lista"
-      # -l -> formato lungo (mostra dettagli come la dimensione)
-      # -R -> ricorsivo (mostra anche il contenuto delle sottocartelle)
 
-    # 3. Installa le dipendenze
+    # 4. Installa le dipendenze Python necessarie.
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        # Elenco completo delle librerie necessarie per lo script.
         pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
         pip install pandas numpy scikit-learn joblib gspread google-auth-oauthlib pytz google-api-python-client
 
-    # 4. Crea il file per le credenziali
+    # 5. Crea il file credentials.json dal secret di GitHub.
+    #    Questo è necessario per autenticarsi con le API di Google.
     - name: Create Google Credentials File
       run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
       shell: bash
 
-    # 5. Esegue lo script
+    # 6. Esegue lo script Python di previsione.
+    #    Se questo step fallisce, il log dello step di debug precedente
+    #    ci dirà esattamente perché non trova i file.
     - name: Run Seq2Seq prediction script
-      run: python run_seq2seq_prediction.py```
-
-### Cosa Devi Fare Adesso:
-
-1.  **Usa il file YML qui sopra.** L'unica differenza per te è il nuovo step "Debug: List all files". Ho anche aggiunto `lfs: true` al checkout per risolvere preventivamente il problema più probabile.
-2.  **Esegui di nuovo l'azione** da GitHub.
-3.  **L'azione probabilmente fallirà di nuovo**, ma non importa. Clicca sui dettagli dell'esecuzione e **apri il log dello step "Debug: List all files"**.
-
-### Cosa Controllare nel Log di Debug:
-
-Questo log è la tua "scatola nera". Ti mostrerà la verità. Controlla:
-
-*   **Esiste la cartella `models`?** Il nome è tutto in minuscolo?
-*   **Guarda il contenuto di `./models`:** Ci sono i 5 file? I loro nomi sono *perfettamente identici* a quelli che si aspetta lo script?
-*   **GUARDA LA DIMENSIONE DEI FILE!** Questo è il test per Git LFS.
-    *   **Se vedi dimensioni reali** (es. `98458342` per il file `.pth`, `2345` per i `.joblib`), allora il problema era un altro (magari un typo nel nome che ora noterai).
-    *   **Se invece vedi dimensioni minuscole** (es. `133` bytes) per tutti i file, **hai trovato il colpevole: è Git LFS**. L'aggiunta di `lfs: true` al file YML dovrebbe risolvere il problema alla prossima esecuzione.
-
-Questo metodo non lascia spazio a dubbi. Vedrai con i tuoi occhi ciò che il runner vede e potrai correggere la discrepanza esatta.
+      run: python run_seq2seq_prediction.py
