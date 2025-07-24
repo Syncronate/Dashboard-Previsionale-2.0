@@ -23,6 +23,7 @@ GSHEET_DATE_COL_INPUT = 'Data_Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
 GSHEET_FORECAST_DATE_COL = 'Timestamp'
 GSHEET_FORECAST_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+HUMIDITY_COL_MODEL_NAME = "Umidita' Sensore 3452 (Montemurello)"
 
 italy_tz = pytz.timezone('Europe/Rome')
 
@@ -87,15 +88,18 @@ def load_model_and_scalers(model_base_name, models_dir):
         config = json.load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+    
     feature_columns = config["all_past_feature_columns"]
     target_columns = config["target_columns"]
-    rain_forecast_columns = config["forecast_input_columns"]
     output_window = config["output_window_steps"]
-
+    
+    all_forecast_inputs = config["forecast_input_columns"]
+    rain_forecast_columns = [col for col in all_forecast_inputs if "Umidita" not in col]
+    
     encoder = Encoder(input_size=len(feature_columns), hidden_size=config["hidden_size"], num_layers=config["num_layers"], dropout=config["dropout"])
     decoder = Decoder(output_size=len(target_columns), hidden_size=config["hidden_size"], rain_forecast_size=len(rain_forecast_columns), num_layers=config["num_layers"], dropout=config["dropout"])
     model = HydroSeq2Seq(encoder, decoder, device, output_window).to(device)
+    
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
@@ -112,7 +116,8 @@ def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     model_feature_columns = config["all_past_feature_columns"]
-    rain_forecast_columns = config["forecast_input_columns"]
+    all_forecast_inputs = config["forecast_input_columns"]
+    rain_forecast_columns = [col for col in all_forecast_inputs if "Umidita" not in col]
 
     sh = gc.open_by_key(sheet_id)
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
@@ -120,11 +125,27 @@ def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
     if not historical_values or len(historical_values) < 2:
         raise ValueError(f"Foglio storico '{GSHEET_HISTORICAL_DATA_SHEET_NAME}' vuoto o con solo intestazione.")
     
-    historical_headers = historical_values[0]
-    num_rows_to_fetch = input_window_steps + 20
-    start_index = max(1, len(historical_values) - num_rows_to_fetch)
-    historical_data_rows = historical_values[start_index:]
-    df_historical_raw = pd.DataFrame(historical_data_rows, columns=historical_headers)
+    df_historical_raw = pd.DataFrame(historical_values[1:], columns=historical_values[0])
+    df_historical = df_historical_raw.rename(columns=column_mapping)
+    date_col_model_name = column_mapping.get(GSHEET_DATE_COL_INPUT, GSHEET_DATE_COL_INPUT)
+    
+    df_historical[date_col_model_name] = pd.to_datetime(df_historical[date_col_model_name], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
+    df_historical = df_historical.dropna(subset=[date_col_model_name]).sort_values(by=date_col_model_name)
+    latest_valid_timestamp = df_historical[date_col_model_name].iloc[-1]
+
+    for col in model_feature_columns:
+        if col in df_historical.columns: df_historical[col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
+        else: df_historical[col] = np.nan
+    
+    # NUOVA MODIFICA: Estrai l'ultimo valore valido di umidità dai dati storici.
+    df_features_filled = df_historical[model_feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
+    last_humidity = df_features_filled[HUMIDITY_COL_MODEL_NAME].iloc[-1]
+    print(f"Ultimo valore di umidità trovato e da usare per il forecast: {last_humidity}")
+    # ---
+
+    if len(df_features_filled) < input_window_steps:
+        raise ValueError(f"Dati storici insufficienti ({len(df_features_filled)} righe) per l'input (richiesti {input_window_steps}).")
+    input_data_historical = df_features_filled.iloc[-input_window_steps:].values
 
     rain_forecast_ws = sh.worksheet(GSHEET_RAIN_FORECAST_SHEET_NAME)
     rain_forecast_values = rain_forecast_ws.get_all_values()
@@ -132,46 +153,50 @@ def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
         raise ValueError(f"Foglio previsioni pioggia '{GSHEET_RAIN_FORECAST_SHEET_NAME}' vuoto o con solo intestazione.")
     
     df_rain_forecast_raw = pd.DataFrame(rain_forecast_values[1:], columns=rain_forecast_values[0])
-    df_historical = df_historical_raw.rename(columns=column_mapping)
-    date_col_model_name = column_mapping.get(GSHEET_DATE_COL_INPUT, GSHEET_DATE_COL_INPUT)
-    
-    df_historical[date_col_model_name] = pd.to_datetime(df_historical[date_col_model_name], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
-    df_historical = df_historical.dropna(subset=[date_col_model_name])
-    df_historical = df_historical.sort_values(by=date_col_model_name)
-    latest_valid_timestamp = df_historical[date_col_model_name].iloc[-1]
-
-    for col in model_feature_columns:
-        if col in df_historical.columns: df_historical[col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
-        else: df_historical[col] = np.nan
-
-    df_features_filled = df_historical[model_feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
-    if len(df_features_filled) < input_window_steps:
-        raise ValueError(f"Dati storici insufficienti ({len(df_features_filled)} righe) per l'input (richiesti {input_window_steps}).")
-    input_data_historical = df_features_filled.iloc[-input_window_steps:].values
-
     df_rain_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(df_rain_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce')
     future_rain_forecasts = df_rain_forecast_raw[df_rain_forecast_raw[GSHEET_FORECAST_DATE_COL] > latest_valid_timestamp].copy()
     if len(future_rain_forecasts) < output_window_steps:
         raise ValueError(f"Previsioni di pioggia insufficienti ({len(future_rain_forecasts)} righe) per l'output (richiesti {output_window_steps}).")
     future_rain_data = future_rain_forecasts.head(output_window_steps)
+    
     for col in rain_forecast_columns:
          if col in future_rain_data.columns: future_rain_data[col] = pd.to_numeric(future_rain_data[col].astype(str).str.replace(',', '.'), errors='coerce')
          else: future_rain_data[col] = np.nan
+    
     input_data_rain_forecast = future_rain_data[rain_forecast_columns].fillna(0).values
+    
     print(f"Dati storici e di previsione pioggia processati. Ultimo timestamp usato: {latest_valid_timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-    return input_data_historical, input_data_rain_forecast, latest_valid_timestamp
+    return input_data_historical, input_data_rain_forecast, latest_valid_timestamp, last_humidity
 
-def predict_with_model(model, historical_data_np, rain_forecast_np, scaler_past_features, scaler_targets, scaler_forecast_features, device):
+
+def predict_with_model(model, historical_data_np, rain_forecast_np, scaler_past_features, scaler_targets, scaler_forecast_features, config, last_humidity, device):
     """Esegue la previsione con il modello Seq2Seq."""
     historical_normalized = scaler_past_features.transform(historical_data_np)
-    rain_forecast_normalized = scaler_forecast_features.transform(rain_forecast_np)
+    
+    all_forecast_columns = config["forecast_input_columns"]
+    rain_only_columns = [col for col in all_forecast_columns if "Umidita" not in col]
+    
+    # NUOVA MODIFICA: Costruisci un DataFrame per lo scaler usando il valore di umidità auto-fillato.
+    temp_df = pd.DataFrame(rain_forecast_np, columns=rain_only_columns)
+    if HUMIDITY_COL_MODEL_NAME in all_forecast_columns:
+        temp_df[HUMIDITY_COL_MODEL_NAME] = last_humidity # Uso dell'ultimo valore di umidità
+    temp_df = temp_df[all_forecast_columns] # Riordino le colonne per lo scaler
+    rain_forecast_scaled_full = scaler_forecast_features.transform(temp_df.values)
+    # ---
+
+    final_scaled_rain_df = pd.DataFrame(rain_forecast_scaled_full, columns=all_forecast_columns)
+    final_rain_data_for_model = final_scaled_rain_df[rain_only_columns].values
+
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
-    rain_forecast_tensor = torch.FloatTensor(rain_forecast_normalized).unsqueeze(0).to(device)
+    rain_forecast_tensor = torch.FloatTensor(final_rain_data_for_model).unsqueeze(0).to(device)
+    
     with torch.no_grad():
         output_tensor = model(historical_tensor, rain_forecast_tensor)
+        
     output_np = output_tensor.cpu().numpy().squeeze(0)
     predictions_scaled_back = scaler_targets.inverse_transform(output_np)
     return predictions_scaled_back
+
 
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
     """Aggiunge le previsioni a un foglio Google."""
@@ -196,6 +221,7 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
         print(f"Aggiunte {len(rows_to_append)} righe di previsione.")
 
+
 def main():
     """Funzione principale."""
     print(f"Avvio script di previsione Seq2Seq alle {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -213,7 +239,7 @@ def main():
             'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
             'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
             'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
-            'Umidita\' Sensore 3452 (Montemurello)': 'Umidita\' Sensore 3452 (Montemurello)',
+            'Umidita\' Sensore 3452 (Montemurello)': HUMIDITY_COL_MODEL_NAME,
             'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
             'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
             'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
@@ -222,11 +248,13 @@ def main():
             GSHEET_DATE_COL_INPUT: GSHEET_DATE_COL_INPUT
         }
 
-        historical_data, rain_forecast_data, last_input_timestamp = fetch_and_prepare_data(gc, GSHEET_ID, config, column_mapping)
+        # NUOVA MODIFICA: Ricevi anche last_humidity
+        historical_data, rain_forecast_data, last_input_timestamp, last_humidity = fetch_and_prepare_data(gc, GSHEET_ID, config, column_mapping)
         
         config["_prediction_start_time"] = last_input_timestamp
 
-        predictions = predict_with_model(model, historical_data, rain_forecast_data, scaler_past_features, scaler_targets, scaler_forecast_features, device)
+        # NUOVA MODIFICA: Passa last_humidity alla funzione di previsione
+        predictions = predict_with_model(model, historical_data, rain_forecast_data, scaler_past_features, scaler_targets, scaler_forecast_features, config, last_humidity, device)
         print(f"Previsioni generate con shape: {predictions.shape}")
         
         append_predictions_to_gsheet(gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions, config)
