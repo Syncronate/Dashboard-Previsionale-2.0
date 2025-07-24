@@ -2637,7 +2637,7 @@ elif page == 'Test Modello su Storico':
     max_start_index_test = len(df_current_csv) - required_len_for_test
     
     st.subheader("Configurazione Walk-Forward Evaluation")
-    col_wf1, col_wf2, col_wf3 = st.columns(3)
+    col_wf1, col_wf2, col_wf3, col_wf4 = st.columns(4)
     with col_wf1:
         num_evaluation_periods = st.number_input("Numero di Periodi di Test:", min_value=1, value=3, step=1, key="wf_num_periods")
     with col_wf2:
@@ -2645,6 +2645,8 @@ elif page == 'Test Modello su Storico':
     with col_wf3:
         default_stride = output_steps_model_test if 'output_steps_model_test' in locals() and output_steps_model_test > 0 else 1
         stride_between_periods = st.number_input("Passo tra Periodi di Test (numero di righe/steps):", min_value=1, value=default_stride, step=1, key="wf_stride", help="Numero di righe da saltare per iniziare il periodo di input successivo.")
+    with col_wf4:
+        num_passes_test = st.number_input("Passaggi per Incertezza:", min_value=5, max_value=100, value=25, step=5, key="wf_num_passes", help="Numero di passaggi per il calcolo dell'incertezza (MC Dropout).")
 
     # --- ANTEPRIMA DATE PRIMO PERIODO ---
     st.markdown("--- \n**Anteprima Date Primo Periodo di Test:**")
@@ -2791,14 +2793,14 @@ elif page == 'Test Modello su Storico':
                         # SOSTITUISCI predict_seq2seq CON predict_seq2seq_with_uncertainty
                         predictions_test_period, uncertainty_test_period = predict_seq2seq_with_uncertainty(
                             active_model, past_input_np_test_period, future_forecast_np_test_period, 
-                            active_scalers, active_config, active_device, num_passes=50 # num_passes può essere reso configurabile
+                            active_scalers, active_config, active_device, num_passes=num_passes_test
                         )
                     else: # LSTM
                         input_features_np_test_period = input_data_df_test_period[feature_columns_model_test].astype(float).values
                         # SOSTITUISCI predict CON predict_with_uncertainty
                         predictions_test_period, uncertainty_test_period = predict_with_uncertainty(
                             active_model, input_features_np_test_period, active_scalers[0], active_scalers[1], 
-                            active_config, active_device, num_passes=50 # num_passes può essere reso configurabile
+                            active_config, active_device, num_passes=num_passes_test
                         )
 
                     if predictions_test_period is not None and actual_target_data_np_test_period is not None:
