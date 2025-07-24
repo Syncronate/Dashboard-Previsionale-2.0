@@ -19,7 +19,13 @@ GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "Previsioni Idrometri"
 GSHEET_RAIN_FORECAST_SHEET_NAME = "Previsioni Cumulate"
 GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Modello seq2seq 6 ore"
-GSHEET_DATE_COL_INPUT = 'Data_Ora'
+
+# --- MODIFICA CHIAVE QUI ---
+# Il nome della colonna dei timestamp nel foglio "Previsioni Idrometri" è "Data e Ora Previsione".
+# Aggiorniamo la costante per usare il nome corretto.
+GSHEET_DATE_COL_INPUT = 'Data e Ora Previsione' 
+# --- FINE MODIFICA ---
+
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
 GSHEET_FORECAST_DATE_COL = 'Timestamp'
 GSHEET_FORECAST_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
@@ -71,7 +77,6 @@ class HydroSeq2Seq(nn.Module):
 
 # --- Funzioni Utilità ---
 def load_model_and_scalers(model_base_name, models_dir):
-    """Carica il modello, la configurazione e gli scaler."""
     config_path = os.path.join(models_dir, f"{model_base_name}.json")
     model_path = os.path.join(models_dir, f"{model_base_name}.pth")
     scaler_past_features_path = os.path.join(models_dir, f"{model_base_name}_past_features.joblib")
@@ -112,7 +117,6 @@ def load_model_and_scalers(model_base_name, models_dir):
 
 
 def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
-    """Recupera e prepara i dati storici e di previsione delle piogge."""
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     model_feature_columns = config["all_past_feature_columns"]
@@ -127,21 +131,18 @@ def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
     
     df_historical_raw = pd.DataFrame(historical_values[1:], columns=historical_values[0])
     df_historical = df_historical_raw.rename(columns=column_mapping)
-    date_col_model_name = column_mapping.get(GSHEET_DATE_COL_INPUT, GSHEET_DATE_COL_INPUT)
     
-    df_historical[date_col_model_name] = pd.to_datetime(df_historical[date_col_model_name], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
-    df_historical = df_historical.dropna(subset=[date_col_model_name]).sort_values(by=date_col_model_name)
-    latest_valid_timestamp = df_historical[date_col_model_name].iloc[-1]
+    df_historical[GSHEET_DATE_COL_INPUT] = pd.to_datetime(df_historical[GSHEET_DATE_COL_INPUT], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
+    df_historical = df_historical.dropna(subset=[GSHEET_DATE_COL_INPUT]).sort_values(by=GSHEET_DATE_COL_INPUT)
+    latest_valid_timestamp = df_historical[GSHEET_DATE_COL_INPUT].iloc[-1]
 
     for col in model_feature_columns:
         if col in df_historical.columns: df_historical[col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
         else: df_historical[col] = np.nan
     
-    # NUOVA MODIFICA: Estrai l'ultimo valore valido di umidità dai dati storici.
     df_features_filled = df_historical[model_feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
     last_humidity = df_features_filled[HUMIDITY_COL_MODEL_NAME].iloc[-1]
     print(f"Ultimo valore di umidità trovato e da usare per il forecast: {last_humidity}")
-    # ---
 
     if len(df_features_filled) < input_window_steps:
         raise ValueError(f"Dati storici insufficienti ({len(df_features_filled)} righe) per l'input (richiesti {input_window_steps}).")
@@ -170,20 +171,17 @@ def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
 
 
 def predict_with_model(model, historical_data_np, rain_forecast_np, scaler_past_features, scaler_targets, scaler_forecast_features, config, last_humidity, device):
-    """Esegue la previsione con il modello Seq2Seq."""
     historical_normalized = scaler_past_features.transform(historical_data_np)
     
     all_forecast_columns = config["forecast_input_columns"]
     rain_only_columns = [col for col in all_forecast_columns if "Umidita" not in col]
     
-    # NUOVA MODIFICA: Costruisci un DataFrame per lo scaler usando il valore di umidità auto-fillato.
     temp_df = pd.DataFrame(rain_forecast_np, columns=rain_only_columns)
     if HUMIDITY_COL_MODEL_NAME in all_forecast_columns:
-        temp_df[HUMIDITY_COL_MODEL_NAME] = last_humidity # Uso dell'ultimo valore di umidità
-    temp_df = temp_df[all_forecast_columns] # Riordino le colonne per lo scaler
+        temp_df[HUMIDITY_COL_MODEL_NAME] = last_humidity
+    temp_df = temp_df[all_forecast_columns]
     rain_forecast_scaled_full = scaler_forecast_features.transform(temp_df.values)
-    # ---
-
+    
     final_scaled_rain_df = pd.DataFrame(rain_forecast_scaled_full, columns=all_forecast_columns)
     final_rain_data_for_model = final_scaled_rain_df[rain_only_columns].values
 
@@ -199,7 +197,6 @@ def predict_with_model(model, historical_data_np, rain_forecast_np, scaler_past_
 
 
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
-    """Aggiunge le previsioni a un foglio Google."""
     sh = gc.open_by_key(sheet_id_str)
     try:
         worksheet = sh.worksheet(predictions_sheet_name)
@@ -223,7 +220,6 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
 
 
 def main():
-    """Funzione principale."""
     print(f"Avvio script di previsione Seq2Seq alle {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     if not GSHEET_ID:
         print("Errore: GSHEET_ID non è impostato.")
@@ -234,26 +230,25 @@ def main():
         print("Autenticazione a Google Sheets riuscita.")
         model, scaler_past_features, scaler_targets, scaler_forecast_features, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
+        # Il column_mapping qui è quasi irrilevante per la colonna data, ma lo teniamo per le altre.
+        # Lo script ora usa la costante GSHEET_DATE_COL_INPUT direttamente.
         column_mapping = {
-            'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
-            'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
-            'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
-            'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
-            'Umidita\' Sensore 3452 (Montemurello)': HUMIDITY_COL_MODEL_NAME,
-            'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
-            'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
-            'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
-            'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
-            'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
-            GSHEET_DATE_COL_INPUT: GSHEET_DATE_COL_INPUT
+            'Previsto: Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
+            'Previsto: Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
+            'Previsto: Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
+            'Previsto: Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
+            'Previsto: Umidita\' Sensore 3452 (Montemurello)': HUMIDITY_COL_MODEL_NAME,
+            'Previsto: Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
+            'Previsto: Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
+            'Previsto: Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
+            'Previsto: Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
+            'Previsto: Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
         }
 
-        # NUOVA MODIFICA: Ricevi anche last_humidity
         historical_data, rain_forecast_data, last_input_timestamp, last_humidity = fetch_and_prepare_data(gc, GSHEET_ID, config, column_mapping)
         
         config["_prediction_start_time"] = last_input_timestamp
 
-        # NUOVA MODIFICA: Passa last_humidity alla funzione di previsione
         predictions = predict_with_model(model, historical_data, rain_forecast_data, scaler_past_features, scaler_targets, scaler_forecast_features, config, last_humidity, device)
         print(f"Previsioni generate con shape: {predictions.shape}")
         
