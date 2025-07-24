@@ -1,61 +1,66 @@
-name: Scheduled Seq2Seq Hydrological Prediction
+name: Scheduled Seq2Seq Hydrological Prediction (WITH DEBUG)
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: '0 * * * *'
 
 jobs:
   run-prediction:
     runs-on: ubuntu-latest
     
-    # Aggiungi qui i permessi necessari per l'autenticazione a Google Cloud
-    permissions:
-      contents: 'read'
-      id-token: 'write'
-
     env:
       GSHEET_ID: ${{ secrets.GSHEET_ID }}
       PYTHONUNBUFFERED: 1
-      # Aggiungi una variabile d'ambiente per il nome del bucket, per una facile manutenzione
-      GCS_BUCKET_NAME: "NOME-DEL-TUO-BUCKET" # <-- SOSTITUISCI QUESTO VALORE!
 
     steps:
+    # 1. Scarica il codice. Aggiungeremo 'lfs: true' dopo per sicurezza.
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        lfs: true # Aggiunto per gestire il caso Git LFS
 
+    # 2. Imposta Python
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    # NUOVO STEP: Autenticazione a Google Cloud
-    - id: 'auth'
-      uses: 'google-github-actions/auth@v2'
-      with:
-        credentials_json: '${{ secrets.GCP_CREDENTIALS_JSON }}'
+    # NUOVO STEP DI DEBUG: Questo stamperà tutti i file e le cartelle
+    - name: "Debug: List all files in the repository"
+      run: ls -lR
+      # ls -> comado "lista"
+      # -l -> formato lungo (mostra dettagli come la dimensione)
+      # -R -> ricorsivo (mostra anche il contenuto delle sottocartelle)
 
+    # 3. Installa le dipendenze
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-        pip install pandas numpy scikit-learn joblib gspread google-auth-oauthlib pytz google-api-python-client google-cloud-storage
+        pip install pandas numpy scikit-learn joblib gspread google-auth-oauthlib pytz google-api-python-client
 
-    # NUOVO STEP: Scarica i file del modello da Google Cloud Storage
-    - name: Download Model Files from GCS
-      run: |
-        # Crea la cartella 'models' se non esiste
-        mkdir -p models
-        # Scarica tutti i file dalla cartella del modello nel bucket alla cartella locale 'models'
-        gsutil -m cp -r "gs://${{ env.GCS_BUCKET_NAME }}/seq2seq_model/*" ./models/
-        # Controlla che i file siano stati scaricati
-        echo "File scaricati nella cartella models:"
-        ls -l models
+    # 4. Crea il file per le credenziali
+    - name: Create Google Credentials File
+      run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
+      shell: bash
 
-    # Questo passaggio non è più necessario se ti autentichi con l'action 'google-github-actions/auth'
-    # - name: Create Google Credentials File
-    #   run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
-    #   shell: bash
-    
+    # 5. Esegue lo script
     - name: Run Seq2Seq prediction script
-      run: python run_seq2seq_prediction.py
+      run: python run_seq2seq_prediction.py```
+
+### Cosa Devi Fare Adesso:
+
+1.  **Usa il file YML qui sopra.** L'unica differenza per te è il nuovo step "Debug: List all files". Ho anche aggiunto `lfs: true` al checkout per risolvere preventivamente il problema più probabile.
+2.  **Esegui di nuovo l'azione** da GitHub.
+3.  **L'azione probabilmente fallirà di nuovo**, ma non importa. Clicca sui dettagli dell'esecuzione e **apri il log dello step "Debug: List all files"**.
+
+### Cosa Controllare nel Log di Debug:
+
+Questo log è la tua "scatola nera". Ti mostrerà la verità. Controlla:
+
+*   **Esiste la cartella `models`?** Il nome è tutto in minuscolo?
+*   **Guarda il contenuto di `./models`:** Ci sono i 5 file? I loro nomi sono *perfettamente identici* a quelli che si aspetta lo script?
+*   **GUARDA LA DIMENSIONE DEI FILE!** Questo è il test per Git LFS.
+    *   **Se vedi dimensioni reali** (es. `98458342` per il file `.pth`, `2345` per i `.joblib`), allora il problema era un altro (magari un typo nel nome che ora noterai).
+    *   **Se invece vedi dimensioni minuscole** (es. `133` bytes) per tutti i file, **hai trovato il colpevole: è Git LFS**. L'aggiunta di `lfs: true` al file YML dovrebbe risolvere il problema alla prossima esecuzione.
+
+Questo metodo non lascia spazio a dubbi. Vedrai con i tuoi occhi ciò che il runner vede e potrai correggere la discrepanza esatta.
