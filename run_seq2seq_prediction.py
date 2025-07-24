@@ -16,16 +16,16 @@ from sklearn.preprocessing import MinMaxScaler
 MODELS_DIR = "models"
 MODEL_BASE_NAME = "modello_seq2seq_20250723_1608_posttrained_20250723_1615_posttrained_20250723_1628"
 GSHEET_ID = os.environ.get("GSHEET_ID")
-GSHEET_HISTORICAL_DATA_SHEET_NAME = "Previsioni Idrometri"
-GSHEET_RAIN_FORECAST_SHEET_NAME = "Previsioni Cumulate"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Modello seq2seq 6 ore"
 
 # --- MODIFICA CHIAVE QUI ---
-# Il nome della colonna dei timestamp nel foglio "Previsioni Idrometri" è "Data e Ora Previsione".
-# Aggiorniamo la costante per usare il nome corretto.
-GSHEET_DATE_COL_INPUT = 'Data e Ora Previsione' 
+# Puntiamo al foglio corretto per i dati storici di input.
+GSHEET_HISTORICAL_DATA_SHEET_NAME = "Dati Meteo Stazioni" 
+# E usiamo il nome corretto della colonna timestamp per quel foglio.
+GSHEET_DATE_COL_INPUT = 'Data_Ora'
 # --- FINE MODIFICA ---
 
+GSHEET_RAIN_FORECAST_SHEET_NAME = "Previsioni Cumulate"
+GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Modello seq2seq 6 ore"
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
 GSHEET_FORECAST_DATE_COL = 'Timestamp'
 GSHEET_FORECAST_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
@@ -33,7 +33,7 @@ HUMIDITY_COL_MODEL_NAME = "Umidita' Sensore 3452 (Montemurello)"
 
 italy_tz = pytz.timezone('Europe/Rome')
 
-# --- Definizione Modello Seq2Seq ---
+# --- Definizione Modello Seq2Seq (invariata) ---
 class Encoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
         super(Encoder, self).__init__()
@@ -140,7 +140,7 @@ def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
         if col in df_historical.columns: df_historical[col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
         else: df_historical[col] = np.nan
     
-    df_features_filled = df_historical[model_feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
+    df_features_filled = df_historical[model_feature_columns].ffill().bfill().fillna(0)
     last_humidity = df_features_filled[HUMIDITY_COL_MODEL_NAME].iloc[-1]
     print(f"Ultimo valore di umidità trovato e da usare per il forecast: {last_humidity}")
 
@@ -230,19 +230,21 @@ def main():
         print("Autenticazione a Google Sheets riuscita.")
         model, scaler_past_features, scaler_targets, scaler_forecast_features, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
-        # Il column_mapping qui è quasi irrilevante per la colonna data, ma lo teniamo per le altre.
-        # Lo script ora usa la costante GSHEET_DATE_COL_INPUT direttamente.
+        # --- MODIFICA CHIAVE QUI ---
+        # Questo mapping deve tradurre i nomi delle colonne del foglio "Dati Meteo Stazioni"
+        # nei nomi che il modello si aspetta (definiti in `all_past_feature_columns` nel json).
         column_mapping = {
-            'Previsto: Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
-            'Previsto: Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
-            'Previsto: Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
-            'Previsto: Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
-            'Previsto: Umidita\' Sensore 3452 (Montemurello)': HUMIDITY_COL_MODEL_NAME,
-            'Previsto: Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
-            'Previsto: Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
-            'Previsto: Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
-            'Previsto: Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
-            'Previsto: Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
+            'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
+            'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
+            'Corinaldo - Pioggia Ora (mm)': 'Cumulata Sensore 2964 (Corinaldo)',
+            'Misa - Pioggia Ora (mm)': 'Cumulata Sensore 2637 (Bettolelle)',
+            'Umidita\' Sensore 3452 (Montemurello)': HUMIDITY_COL_MODEL_NAME,
+            'Serra dei Conti - Livello Misa (mt)': 'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
+            'Misa - Livello Misa (mt)': 'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
+            'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
+            'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
+            'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
+            # Aggiungi qui altre mappature se necessario
         }
 
         historical_data, rain_forecast_data, last_input_timestamp, last_humidity = fetch_and_prepare_data(gc, GSHEET_ID, config, column_mapping)
