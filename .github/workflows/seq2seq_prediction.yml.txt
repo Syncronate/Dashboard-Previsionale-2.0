@@ -1,0 +1,52 @@
+# Nome del workflow, visibile nell'interfaccia di GitHub Actions
+name: Scheduled Seq2Seq Hydrological Prediction
+
+on:
+  # Permette di avviare manualmente questo workflow dalla tab "Actions" di GitHub
+  workflow_dispatch:
+
+  # Decommenta le righe seguenti per eseguire lo script automaticamente ogni ora.
+  # La sintassi è basata su cron. '0 * * * *' significa al minuto 0 di ogni ora.
+  # schedule:
+  #   - cron: '0 * * * *'
+
+jobs:
+  run-prediction:
+    # Il tipo di runner su cui verrà eseguito il job
+    runs-on: ubuntu-latest
+    
+    # Variabili d'ambiente disponibili per tutti i passaggi del job
+    env:
+      # L'ID del tuo Google Sheet, recuperato dai segreti del repository
+      GSHEET_ID: ${{ secrets.GSHEET_ID }}
+      # Forza l'output di Python a non essere bufferizzato, utile per i log in tempo reale
+      PYTHONUNBUFFERED: 1
+
+    steps:
+    # Step 1: Fa il checkout del codice del tuo repository
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # Step 2: Imposta l'ambiente Python
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # Step 3: Installa tutte le dipendenze Python necessarie per lo script
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        pip install pandas numpy scikit-learn joblib gspread google-auth-oauthlib pytz google-api-python-client
+
+    # Step 4: Crea il file credentials.json dalle credenziali Google Cloud salvate nei segreti
+    # Questo è un passaggio cruciale per permettere allo script di autenticarsi
+    - name: Create Google Credentials File
+      run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
+      shell: bash
+
+    # Step 5: Esegue lo script di previsione Python
+    # Assicurati che il nome del file 'run_seq2seq_prediction.py' corrisponda al nome del tuo script nel repository
+    - name: Run Seq2Seq prediction script
+      run: python run_seq2seq_prediction.py
