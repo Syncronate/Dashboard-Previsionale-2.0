@@ -26,7 +26,7 @@ GSHEET_FORECAST_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 italy_tz = pytz.timezone('Europe/Rome')
 
-# --- Definizione Modello Seq2Seq (invariata) ---
+# --- Definizione Modello Seq2Seq ---
 class Encoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
         super(Encoder, self).__init__()
@@ -88,13 +88,10 @@ def load_model_and_scalers(model_base_name, models_dir):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # --- MODIFICA CHIAVE QUI ---
-    # Adattiamo lo script a usare i nomi delle chiavi presenti nel tuo file .json
     feature_columns = config["all_past_feature_columns"]
     target_columns = config["target_columns"]
     rain_forecast_columns = config["forecast_input_columns"]
     output_window = config["output_window_steps"]
-    # --- FINE MODIFICA ---
 
     encoder = Encoder(input_size=len(feature_columns), hidden_size=config["hidden_size"], num_layers=config["num_layers"], dropout=config["dropout"])
     decoder = Decoder(output_size=len(target_columns), hidden_size=config["hidden_size"], rain_forecast_size=len(rain_forecast_columns), num_layers=config["num_layers"], dropout=config["dropout"])
@@ -112,7 +109,6 @@ def load_model_and_scalers(model_base_name, models_dir):
 
 def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
     """Recupera e prepara i dati storici e di previsione delle piogge."""
-    # Leggiamo i parametri dai nomi corretti nel file di config
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     model_feature_columns = config["all_past_feature_columns"]
@@ -190,7 +186,6 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     header = ["Timestamp Previsione"] + [f"Previsto: {col}" for col in config["target_columns"]]
     worksheet.append_row(header, value_input_option='USER_ENTERED')
     rows_to_append = []
-    # Usiamo il prediction_start_time dal main
     prediction_start_time = config["_prediction_start_time"]
     for i, step in enumerate(range(predictions_np.shape[0])):
         timestamp = prediction_start_time + timedelta(minutes=30 * (i + 1))
@@ -229,7 +224,6 @@ def main():
 
         historical_data, rain_forecast_data, last_input_timestamp = fetch_and_prepare_data(gc, GSHEET_ID, config, column_mapping)
         
-        # Aggiungo una chiave temporanea al dizionario config per passare il timestamp
         config["_prediction_start_time"] = last_input_timestamp
 
         predictions = predict_with_model(model, historical_data, rain_forecast_data, scaler_past_features, scaler_targets, scaler_forecast_features, device)
@@ -243,4 +237,4 @@ def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    main()```
+    main()
