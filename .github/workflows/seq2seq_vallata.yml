@@ -56,5 +56,5 @@ jobs:
     # 6. Esegue lo script Python di previsione.
     #    Se questo step fallisce, il log dello step di debug precedente
     #    ci dirà esattamente perché non trova i file.
-    - name: Run run_seq2seq_vallata
-      run: python run_seq2seq_vallata
+    - name: Run run_seq2seq_vallata.py
+      run: python run_seq2seq_vallata.py
