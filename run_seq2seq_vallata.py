@@ -19,7 +19,7 @@ GSHEET_ID = os.environ.get("GSHEET_ID")
 
 # --- MODIFICA CHIAVE QUI ---
 # Puntiamo al foglio corretto per i dati storici di input.
-GSHEET_HISTORICAL_DATA_SHEET_NAME = "Dati Meteo Stazioni" 
+GSHEET_HISTORICAL_DATA_SHEET_NAME = "Dati Meteo Stazioni"
 # E usiamo il nome corretto della colonna timestamp per quel foglio.
 GSHEET_DATE_COL_INPUT = 'Data_Ora'
 # --- FINE MODIFICA ---
@@ -33,7 +33,7 @@ HUMIDITY_COL_MODEL_NAME = "Umidita' Sensore 3452 (Montemurello)"
 
 italy_tz = pytz.timezone('Europe/Rome')
 
-# --- Definizione Modello Seq2Seq (invariata) ---
+# --- Definizione Modello Seq2Seq ---
 class Encoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
         super(Encoder, self).__init__()
@@ -43,16 +43,24 @@ class Encoder(nn.Module):
         return hidden, cell
 
 class Decoder(nn.Module):
+    # ===================== INIZIO CORREZIONE =====================
     def __init__(self, output_size, hidden_size, rain_forecast_size, num_layers=2, dropout=0.2):
         super(Decoder, self).__init__()
         self.output_size = output_size
-        self.lstm = nn.LSTM(output_size + rain_forecast_size, hidden_size, num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        # CORREZIONE: L'errore indica che il modello salvato si aspetta un input di dimensione 4.
+        # Questo corrisponde alla dimensione di 'rain_forecast_size' (4) e non a 'output_size' (3) + 'rain_forecast_size' (4).
+        # Modifichiamo l'input dell'LSTM perché accetti solo la dimensione delle previsioni di pioggia.
+        self.lstm = nn.LSTM(rain_forecast_size, hidden_size, num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0)
         self.fc = nn.Linear(hidden_size, output_size)
+
     def forward(self, x, rain_forecast, hidden, cell):
-        decoder_input = torch.cat((x, rain_forecast), dim=2)
-        output, (hidden, cell) = self.lstm(decoder_input, (hidden, cell))
+        # CORREZIONE: Coerentemente con la modifica sopra, passiamo all'LSTM solo il tensore 'rain_forecast'.
+        # L'argomento 'x' (che rappresentava l'output del passo precedente) viene ignorato.
+        # L'architettura del modello salvato non è auto-regressiva nel decoder.
+        output, (hidden, cell) = self.lstm(rain_forecast, (hidden, cell))
         prediction = self.fc(output)
         return prediction, hidden, cell
+    # ====================== FINE CORREZIONE ======================
 
 class HydroSeq2Seq(nn.Module):
     def __init__(self, encoder, decoder, device, target_len=12):
@@ -67,11 +75,13 @@ class HydroSeq2Seq(nn.Module):
         decoder_output_size = self.decoder.output_size
         outputs = torch.zeros(batch_size, target_len, decoder_output_size).to(self.device)
         hidden, cell = self.encoder(src)
+        # Questo input non verrà usato dal decoder corretto, ma lo lasciamo per compatibilità di chiamata.
         decoder_input = torch.zeros(batch_size, 1, decoder_output_size).to(self.device)
         for t in range(target_len):
             rain_forecast_step = rain_forecasts[:, t:t+1, :]
             output, hidden, cell = self.decoder(decoder_input, rain_forecast_step, hidden, cell)
             outputs[:, t:t+1, :] = output
+            # Questa linea diventa ininfluente perché 'decoder_input' non viene più usato dall'LSTM
             decoder_input = output
         return outputs
 
@@ -141,7 +151,7 @@ def fetch_and_prepare_data(gc, sheet_id, config, column_mapping):
         else: df_historical[col] = np.nan
     
     df_features_filled = df_historical[model_feature_columns].ffill().bfill().fillna(0)
-    last_humidity = df_features_filled[HUMIDITY_COL_MODEL_NAME].iloc[-1]
+    last_humidity = df_features_filled[HUMIDITY_COL_MODEL_NAME].iloc[-1] if HUMIDITY_COL_MODEL_NAME in df_features_filled else 0
     print(f"Ultimo valore di umidità trovato e da usare per il forecast: {last_humidity}")
 
     if len(df_features_filled) < input_window_steps:
@@ -230,9 +240,6 @@ def main():
         print("Autenticazione a Google Sheets riuscita.")
         model, scaler_past_features, scaler_targets, scaler_forecast_features, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
-        # --- MODIFICA CHIAVE QUI ---
-        # Questo mapping deve tradurre i nomi delle colonne del foglio "Dati Meteo Stazioni"
-        # nei nomi che il modello si aspetta (definiti in `all_past_feature_columns` nel json).
         column_mapping = {
             'Arcevia - Pioggia Ora (mm)': 'Cumulata Sensore 1295 (Arcevia)',
             'Barbara - Pioggia Ora (mm)': 'Cumulata Sensore 2858 (Barbara)',
@@ -244,7 +251,6 @@ def main():
             'Nevola - Livello Nevola (mt)': 'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
             'Pianello di Ostra - Livello Misa (m)': 'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
             'Ponte Garibaldi - Livello Misa 2 (mt)': 'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
-            # Aggiungi qui altre mappature se necessario
         }
 
         historical_data, rain_forecast_data, last_input_timestamp, last_humidity = fetch_and_prepare_data(gc, GSHEET_ID, config, column_mapping)
@@ -262,4 +268,4 @@ def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    main()
+    main()```
