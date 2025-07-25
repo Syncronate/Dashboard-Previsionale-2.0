@@ -1,0 +1,60 @@
+# Nome del workflow, visibile nella tab "Actions" di GitHub.
+# Aggiunto "(WITH DEBUG)" per riconoscere facilmente questa versione.
+name: run_seq2seq_vallata
+
+on:
+  # Permette di avviare il workflow manualmente dalla UI di GitHub.
+  workflow_dispatch:
+
+jobs:
+  run-prediction:
+    # Il tipo di runner su cui verrà eseguito il job.
+    runs-on: ubuntu-latest
+    
+    # Variabili d'ambiente disponibili per tutti i passaggi del job.
+    env:
+      GSHEET_ID: ${{ secrets.GSHEET_ID }}
+      PYTHONUNBUFFERED: 1
+
+    # I passaggi (step) che compongono il job.
+    steps:
+    # 1. Fa il checkout del tuo codice dal repository.
+    #    'lfs: true' è stato aggiunto per assicurarsi che i file grandi gestiti 
+    #    da Git LFS vengano scaricati correttamente. Questa è una causa comune di errori.
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        lfs: true
+
+    # 2. Imposta l'ambiente Python.
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # 3. NUOVO STEP DI DEBUG: Mostra la struttura dei file.
+    #    Questo comando elencherà ricorsivamente tutti i file e le cartelle
+    #    nello spazio di lavoro, mostrando i permessi e le dimensioni.
+    #    È il modo migliore per verificare se i file del modello esistono e dove.
+    - name: "Debug: List all files in the repository"
+      run: ls -lR
+
+    # 4. Installa le dipendenze Python necessarie.
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # Elenco completo delle librerie necessarie per lo script.
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        pip install pandas numpy scikit-learn joblib gspread google-auth-oauthlib pytz google-api-python-client
+
+    # 5. Crea il file credentials.json dal secret di GitHub.
+    #    Questo è necessario per autenticarsi con le API di Google.
+    - name: Create Google Credentials File
+      run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
+      shell: bash
+
+    # 6. Esegue lo script Python di previsione.
+    #    Se questo step fallisce, il log dello step di debug precedente
+    #    ci dirà esattamente perché non trova i file.
+    - name: Run run_seq2seq_vallata
+      run: python run_seq2seq_vallata
