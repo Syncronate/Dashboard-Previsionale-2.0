@@ -56,5 +56,5 @@ jobs:
     # 6. Esegue lo script Python di previsione.
     #    Se questo step fallisce, il log dello step di debug precedente
     #    ci dirà esattamente perché non trova i file.
-    - name: Run Seq2Seq prediction script
+    - name: ECMWF Seq2Seq prediction script
       run: python ECMWF_seq2seq_prediction.py
