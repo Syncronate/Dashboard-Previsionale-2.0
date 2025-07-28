@@ -1,6 +1,6 @@
 # Nome del workflow, visibile nella tab "Actions" di GitHub.
 # Aggiunto "(WITH DEBUG)" per riconoscere facilmente questa versione.
-name: Scheduled Seq2Seq Hydrological Prediction (WITH DEBUG)
+name: ECMWF Seq2Seq Hydrological Prediction
 
 on:
   # Permette di avviare il workflow manualmente dalla UI di GitHub.
