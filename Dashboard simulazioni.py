@@ -1852,10 +1852,16 @@ with st.sidebar:
                 if df_temp is None: raise ValueError(f"Impossibile leggere CSV con encodings: {encodings_to_try}")
                 date_col_csv = st.session_state.date_col_name_csv
                 if date_col_csv not in df_temp.columns: raise ValueError(f"Colonna data CSV '{date_col_csv}' mancante.")
-                try: df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%Y %H:%M', errors='raise')
+                try:
+                    # Try with the most common format first for performance
+                    df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%Y %H:%M', errors='raise')
                 except ValueError:
-                     try: df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], errors='coerce'); st.caption(f"Formato data CSV non standard ('{date_col_csv}'). Tentativo di inferenza.")
-                     except Exception as e_date_csv_infer: raise ValueError(f"Errore conversione data CSV '{date_col_csv}': {e_date_csv_infer}")
+                    # If the first format fails, try to infer the format automatically
+                    st.caption(f"Formato data CSV non standard ('{date_col_csv}'). Tentativo di inferenza automatica.")
+                    try:
+                        df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], errors='coerce', infer_datetime_format=True)
+                    except Exception as e_date_csv_infer:
+                        raise ValueError(f"Errore conversione data CSV '{date_col_csv}': {e_date_csv_infer}")
                 df_temp = df_temp.dropna(subset=[date_col_csv])
                 if df_temp.empty: raise ValueError("Nessuna riga valida dopo pulizia data CSV.")
                 df_temp = df_temp.sort_values(by=date_col_csv).reset_index(drop=True)
