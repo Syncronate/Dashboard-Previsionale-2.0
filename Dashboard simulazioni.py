@@ -2997,7 +2997,7 @@ elif page == 'Allenamento Modello':
              with st.spinner("Preparazione dati LSTM..."):
                  X_train_lstm, y_train_lstm, X_val_lstm, y_val_lstm, sc_f, sc_t = prepare_training_data(
                      df_current_csv.copy(), selected_features_train_lstm, selected_targets_train_lstm,
-                     iw_t_lstm_hours, int(output_window_hours_lstm),
+                     iw_t_lstm_hours, int(output_window_hours_lstm), vs_t_lstm,
                      lag_config=lag_config_lstm, cumulative_config=cumulative_config_lstm
                  )
              if X_train_lstm is None or y_train_lstm is None or sc_f is None or sc_t is None:
@@ -3149,7 +3149,7 @@ elif page == 'Allenamento Modello':
             with st.spinner("Preparazione dati Seq2Seq..."): 
                 data_tuple_s2s = prepare_training_data_seq2seq(
                     df_current_csv.copy(), selected_past_features_s2s, selected_forecast_features_s2s, 
-                    selected_targets_s2s, iw_steps_s2s, fw_steps_s2s, ow_steps_s2s,
+                    selected_targets_s2s, iw_steps_s2s, fw_steps_s2s, ow_steps_s2s, vs_t_s2s,
                     lag_config_past=lag_config_past_s2s, cumulative_config_past=cumulative_config_past_s2s
                 )
             if data_tuple_s2s is None or len(data_tuple_s2s) != 9 or data_tuple_s2s[0] is None:
