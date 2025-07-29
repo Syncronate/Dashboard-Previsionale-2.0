@@ -1,9 +1,9 @@
-# Nome del workflow, visibile nella tab "Actions" di GitHub.
-# Aggiunto "(WITH DEBUG)" per riconoscere facilmente questa versione.
-name: Scheduled Seq2Seq Hydrological Prediction (WITH DEBUG)
+# Nome del workflow, aggiornato per riflettere la nuova funzionalità.
+name: Scheduled Seq2Seq Hydrological Prediction (WITH DATA ASSIMILATION)
 
 on:
-  # Permette di avviare il workflow manualmente dalla UI di GitHub.
+  # Lasciamo invariato questo trigger, come richiesto.
+  # Il workflow verrà avviato manualmente o da un attivatore esterno.
   workflow_dispatch:
 
 jobs:
@@ -19,8 +19,7 @@ jobs:
     # I passaggi (step) che compongono il job.
     steps:
     # 1. Fa il checkout del tuo codice dal repository.
-    #    'lfs: true' è stato aggiunto per assicurarsi che i file grandi gestiti 
-    #    da Git LFS vengano scaricati correttamente. Questa è una causa comune di errori.
+    #    'lfs: true' è essenziale per scaricare i file del modello.
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
@@ -32,29 +31,40 @@ jobs:
       with:
         python-version: '3.11'
 
-    # 3. NUOVO STEP DI DEBUG: Mostra la struttura dei file.
-    #    Questo comando elencherà ricorsivamente tutti i file e le cartelle
-    #    nello spazio di lavoro, mostrando i permessi e le dimensioni.
-    #    È il modo migliore per verificare se i file del modello esistono e dove.
-    - name: "Debug: List all files in the repository"
+    # 3. NUOVO STEP: Ripristina la "memoria" del modello dalla cache.
+    #    Questo step cerca una cache salvata da un'esecuzione precedente.
+    #    Se la trova, ricrea la cartella 'model_state' con i file .pt dello stato.
+    #    Alla fine del job, salverà automaticamente il nuovo contenuto di questa cartella.
+    - name: Restore Model State Cache
+      id: cache-model-state
+      uses: actions/cache@v4
+      with:
+        # Il percorso della cartella che vogliamo salvare/ripristinare.
+        # Il suo script Python dovrà leggere e scrivere in questa cartella.
+        path: model_state 
+        # La chiave che identifica la nostra cache. Usiamo una chiave statica
+        # perché vogliamo che ogni esecuzione sovrascriva la memoria della precedente.
+        key: ${{ runner.os }}-seq2seq-model-state
+
+    # 4. NUOVO STEP DI DEBUG (Migliorato): Mostra se la cache ha funzionato.
+    #    Questo comando ci mostra il contenuto della cartella 'model_state'
+    #    DOPO che la cache ha tentato il ripristino. Se la cartella esiste,
+    #    la cache ha funzionato.
+    - name: "Debug: List files after cache restore"
       run: ls -lR
 
-    # 4. Installa le dipendenze Python necessarie.
+    # 5. Installa le dipendenze Python necessarie.
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # Elenco completo delle librerie necessarie per lo script.
         pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
         pip install pandas numpy scikit-learn joblib gspread google-auth-oauthlib pytz google-api-python-client
 
-    # 5. Crea il file credentials.json dal secret di GitHub.
-    #    Questo è necessario per autenticarsi con le API di Google.
+    # 6. Crea il file credentials.json dal secret di GitHub.
     - name: Create Google Credentials File
       run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
       shell: bash
 
-    # 6. Esegue lo script Python di previsione.
-    #    Se questo step fallisce, il log dello step di debug precedente
-    #    ci dirà esattamente perché non trova i file.
+    # 7. Esegue lo script Python di previsione.
     - name: Run Seq2Seq prediction script
       run: python run_seq2seq_prediction.py
