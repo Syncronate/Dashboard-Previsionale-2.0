@@ -1769,16 +1769,25 @@ if 'active_device' not in st.session_state: st.session_state.active_device = Non
 if 'active_scalers' not in st.session_state: st.session_state.active_scalers = None
 if 'df' not in st.session_state: st.session_state.df = None
 if 'feature_columns' not in st.session_state:
-     st.session_state.feature_columns = [
-         'Cumulata Sensore 1295 (Arcevia)', 'Cumulata Sensore 2637 (Bettolelle)',
-         'Cumulata Sensore 2858 (Barbara)', 'Cumulata Sensore 2964 (Corinaldo)',
-         HUMIDITY_COL_NAME,
-         'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
-         'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
-         'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
-         'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
-         'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
-     ]
+    st.session_state.feature_columns = [
+        'Variabile Dummy', 'Seasonality_Sin', 'Seasonality_Cos',
+        'Cumulata Sensore 1295 (Arcevia)', 'Cumulata Sensore 2637 (Bettolelle)',
+        'Cumulata Sensore 2858 (Barbara)', 'Cumulata Sensore 2964 (Corinaldo)',
+        "Umidita' Sensore 3452 (Montemurello)",
+        'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
+        'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
+        'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
+        'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
+        'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)',
+        'Cumulata Sensore 1295 (Arcevia)_cumulata_1h', 'Cumulata Sensore 1295 (Arcevia)_cumulata_3h',
+        'Cumulata Sensore 1295 (Arcevia)_media_3h', 'Cumulata Sensore 1295 (Arcevia)_dev_std_3h',
+        'Cumulata Sensore 2637 (Bettolelle)_cumulata_1h', 'Cumulata Sensore 2637 (Bettolelle)_cumulata_3h',
+        'Cumulata Sensore 2637 (Bettolelle)_media_3h', 'Cumulata Sensore 2637 (Bettolelle)_dev_std_3h',
+        'Cumulata Sensore 2858 (Barbara)_cumulata_1h', 'Cumulata Sensore 2858 (Barbara)_cumulata_3h',
+        'Cumulata Sensore 2858 (Barbara)_media_3h', 'Cumulata Sensore 2858 (Barbara)_dev_std_3h',
+        'Cumulata Sensore 2964 (Corinaldo)_cumulata_1h', 'Cumulata Sensore 2964 (Corinaldo)_cumulata_3h',
+        'Cumulata Sensore 2964 (Corinaldo)_media_3h', 'Cumulata Sensore 2964 (Corinaldo)_dev_std_3h'
+    ]
 if 'date_col_name_csv' not in st.session_state: st.session_state.date_col_name_csv = 'Data e Ora'
 if 'dashboard_thresholds' not in st.session_state: st.session_state.dashboard_thresholds = DEFAULT_THRESHOLDS.copy()
 if 'last_dashboard_data' not in st.session_state: st.session_state.last_dashboard_data = None
