@@ -272,9 +272,10 @@ class Seq2SeqHydro(nn.Module):
         return outputs
 
 # --- Funzioni Utilità Modello/Dati ---
-def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, val_split,
+def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, # REMOVED val_split
                           lag_config=None, cumulative_config=None): 
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati LSTM Standard...")
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati LSTM Standard (full scaled data)...")
+    # val_split parameter is removed as TimeSeriesSplit will be handled in train_model
     # --- Feature Engineering Start ---
     original_feature_columns = list(feature_columns) # Keep a copy
     engineered_feature_names = []
@@ -421,9 +422,10 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
 
 
 def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, target_cols,
-                                 input_window_steps, forecast_window_steps, output_window_steps, val_split,
+                                 input_window_steps, forecast_window_steps, output_window_steps, # REMOVED val_split
                                  lag_config_past=None, cumulative_config_past=None): 
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati Seq2Seq...")
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati Seq2Seq (full scaled data)...")
+    # val_split parameter is removed as TimeSeriesSplit will be handled in train_model_seq2seq
     print(f"Input Steps: {input_window_steps}, Forecast Steps: {forecast_window_steps}, Output Steps: {output_window_steps}")
 
     # --- Feature Engineering for past_feature_cols Start ---
@@ -1171,12 +1173,13 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
     except Exception as e_sim_fetch: st.error(traceback.format_exc()); return None, f"Errore imprevisto importazione GSheet per simulazione: {type(e_sim_fetch).__name__} - {e_sim_fetch}", None
 
 # --- Funzioni Allenamento (Standard e Seq2Seq) --- MODIFICATE ---
-def train_model(X_train, y_train, X_val, y_val,
+def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, X_val, y_val
                 input_size, output_size, output_window_steps,
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
-                save_strategy='migliore', preferred_device='auto', loss_function_name="MSELoss",
+                save_strategy='migliore', preferred_device='auto', 
+                n_splits_cv=3, loss_function_name="MSELoss",
                 _model_to_continue_train=None): # NEW: _model_to_continue_train
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM Standard con split di validazione, loss={loss_function_name})...")
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM Standard con TimeSeriesSplit (n_splits={n_splits_cv}, loss={loss_function_name})...")
     
     if input_size <= 0 or output_size <= 0 or output_window_steps <= 0:
         st.error(f"Errore: Parametri modello LSTM non validi: input_size={input_size}, output_size={output_size}, output_window_steps={output_window_steps}")
@@ -1214,21 +1217,39 @@ def train_model(X_train, y_train, X_val, y_val,
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    train_dataset = TimeSeriesDataset(X_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
+    # TimeSeriesSplit for final model training pass and per-epoch validation
+    tscv_final_pass = TimeSeriesSplit(n_splits=n_splits_cv)
+    all_splits_indices = list(tscv_final_pass.split(X_scaled_full))
     
-    val_loader = None
-    if X_val is not None and y_val is not None and X_val.size > 0 and y_val.size > 0:
-        val_dataset = TimeSeriesDataset(X_val, y_val)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
-        print(f"Training su {len(X_train)} campioni, validazione su {len(X_val)} campioni.")
-    else:
-        st.warning("Set di validazione vuoto. La validazione per epoca e il salvataggio del modello migliore saranno disabilitati.")
-        print(f"Training su {len(X_train)} campioni. Nessun set di validazione.")
+    if not all_splits_indices:
+        st.error("TimeSeriesSplit non ha prodotto alcun split. Controllare la dimensione dei dati e n_splits_cv.")
+        return None, ([], []), ([], [])
 
-    train_losses_scalar_history, val_losses_scalar_history = [], []
-    train_losses_per_step_history, val_losses_per_step_history = [], []
-    best_val_loss_scalar = float('inf')
+    # Use the last split for training the model that will be returned and for per-epoch validation
+    train_indices_final, val_indices_final = all_splits_indices[-1]
+    
+    X_train_final, y_train_final = X_scaled_full[train_indices_final], y_scaled_full[train_indices_final]
+    X_val_final, y_val_final = X_scaled_full[val_indices_final], y_scaled_full[val_indices_final]
+
+    if X_train_final.size == 0 or y_train_final.size == 0:
+        st.error("Set di training finale (dall'ultimo split CV) è vuoto.")
+        return None, ([], []), ([], [])
+
+    train_dataset_final = TimeSeriesDataset(X_train_final, y_train_final)
+    train_loader_final = DataLoader(train_dataset_final, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
+    
+    val_loader_final = None
+    if X_val_final.size > 0 and y_val_final.size > 0:
+        val_dataset_final = TimeSeriesDataset(X_val_final, y_val_final)
+        val_loader_final = DataLoader(val_dataset_final, batch_size=batch_size, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
+        print(f"Training finale su {len(X_train_final)} campioni, validazione finale su {len(X_val_final)} campioni (dall'ultimo split CV).")
+    else:
+        st.warning("Set di validazione finale (dall'ultimo split CV) è vuoto. La validazione per epoca e il salvataggio del modello migliore saranno limitati.")
+        print(f"Training finale su {len(X_train_final)} campioni. Nessun set di validazione finale dall'ultimo split CV.")
+
+    train_losses_scalar_history, val_losses_scalar_history = [], [] # For the final validation set
+    train_losses_per_step_history, val_losses_per_step_history = [], [] # For the final validation set
+    best_val_loss_scalar = float('inf') # Based on the final validation set
     best_model_state_dict = None
     progress_bar = st.progress(0.0, text="Training LSTM: Inizio..."); status_text = st.empty(); loss_chart_placeholder = st.empty()
 
@@ -1247,7 +1268,8 @@ def train_model(X_train, y_train, X_val, y_val,
         epoch_train_loss_scalar_sum = 0.0
         epoch_train_loss_per_step_sum = torch.zeros(output_window_steps, device=device)
 
-        for i, batch_data in enumerate(train_loader): 
+        # Training loop uses X_train_final, y_train_final from the last CV split
+        for i, batch_data in enumerate(train_loader_final): 
             X_batch, y_batch = batch_data[0].to(device, non_blocking=True), batch_data[1].to(device, non_blocking=True)
             outputs = model(X_batch)
             
@@ -1261,20 +1283,20 @@ def train_model(X_train, y_train, X_val, y_val,
             epoch_train_loss_scalar_sum += scalar_loss_for_backward.item() * X_batch.size(0)
             epoch_train_loss_per_step_sum += loss_per_element.mean(dim=2).sum(dim=0).detach()
 
-        avg_epoch_train_loss_scalar = epoch_train_loss_scalar_sum / len(train_loader.dataset)
+        avg_epoch_train_loss_scalar = epoch_train_loss_scalar_sum / len(train_loader_final.dataset)
         train_losses_scalar_history.append(avg_epoch_train_loss_scalar)
-        avg_epoch_train_loss_per_step = (epoch_train_loss_per_step_sum / len(train_loader.dataset)).cpu().numpy()
+        avg_epoch_train_loss_per_step = (epoch_train_loss_per_step_sum / len(train_loader_final.dataset)).cpu().numpy()
         train_losses_per_step_history.append(avg_epoch_train_loss_per_step)
         
-        avg_epoch_val_loss_scalar = None
-        avg_epoch_val_loss_per_step = np.full(output_window_steps, np.nan)
+        avg_epoch_val_loss_scalar = None # For the "final" validation set
+        avg_epoch_val_loss_per_step = np.full(output_window_steps, np.nan) # For the "final" validation set
 
-        if val_loader:
+        if val_loader_final: # Use the val_loader for the final split
             model.eval()
             epoch_val_loss_scalar_sum = 0.0
             epoch_val_loss_per_step_sum = torch.zeros(output_window_steps, device=device)
             with torch.no_grad():
-                for batch_data_val in val_loader:
+                for batch_data_val in val_loader_final:
                     X_batch_val, y_batch_val = batch_data_val[0].to(device, non_blocking=True), batch_data_val[1].to(device, non_blocking=True)
                     outputs_val = model(X_batch_val)
                     loss_per_element_val = criterion(outputs_val, y_batch_val)
@@ -1283,39 +1305,40 @@ def train_model(X_train, y_train, X_val, y_val,
                     epoch_val_loss_scalar_sum += scalar_loss_val_batch.item() * X_batch_val.size(0)
                     epoch_val_loss_per_step_sum += loss_per_element_val.mean(dim=2).sum(dim=0).detach()
 
-            if len(val_loader.dataset) > 0:
-                avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader.dataset)
-                avg_epoch_val_loss_per_step = (epoch_val_loss_per_step_sum / len(val_loader.dataset)).cpu().numpy()
-            else:
+            if len(val_loader_final.dataset) > 0:
+                avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader_final.dataset)
+                avg_epoch_val_loss_per_step = (epoch_val_loss_per_step_sum / len(val_loader_final.dataset)).cpu().numpy()
+            else: # Should not happen if val_loader_final is not None
                 avg_epoch_val_loss_scalar = float('inf')
 
             val_losses_scalar_history.append(avg_epoch_val_loss_scalar)
             val_losses_per_step_history.append(avg_epoch_val_loss_per_step)
             
-            scheduler.step(avg_epoch_val_loss_scalar)
+            scheduler.step(avg_epoch_val_loss_scalar) # Scheduler uses loss from the final validation split
             if avg_epoch_val_loss_scalar < best_val_loss_scalar:
                 best_val_loss_scalar = avg_epoch_val_loss_scalar
                 best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()}
-        else:
+        else: # No final validation set to use for per-epoch history
             val_losses_scalar_history.append(None) 
             val_losses_per_step_history.append(np.full(output_window_steps, np.nan))
+            # No scheduler.step() or best_model_state_dict update if no val_loader_final
 
         progress_percentage = (epoch + 1) / epochs
         current_lr = optimizer.param_groups[0]['lr']
         epoch_time = pytime.time() - epoch_start_time
         
-        train_loss_per_step_str = " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step])
-        val_loss_scalar_str = f"{avg_epoch_val_loss_scalar:.6f}" if avg_epoch_val_loss_scalar is not None and avg_epoch_val_loss_scalar != float('inf') else "N/A"
-        val_loss_per_step_str = "N/A"
-        if val_loader and not np.all(np.isnan(avg_epoch_val_loss_per_step)):
+        train_loss_per_step_str = " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step]) # MODIFICA 4
+        val_loss_scalar_str = f"{avg_epoch_val_loss_scalar:.6f}" if avg_epoch_val_loss_scalar is not None and avg_epoch_val_loss_scalar != float('inf') else "N/A (Final Split)"
+        val_loss_per_step_str = "N/A (Final Split)"
+        if val_loader_final and not np.all(np.isnan(avg_epoch_val_loss_per_step)):
              val_loss_per_step_str = " | ".join([f"{l:.4f}" for l in avg_epoch_val_loss_per_step])
 
         status_text.markdown( 
             f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) | LR: {current_lr:.6f} | Loss Func: {loss_function_name}<br>'
             f'&nbsp;&nbsp;Train Loss (Scalar Avg): {avg_epoch_train_loss_scalar:.6f}<br>'
             f'&nbsp;&nbsp;Train Loss (Per Step Avg): [{train_loss_per_step_str}]<br>'
-            f'&nbsp;&nbsp;Val Loss (Scalar Avg): {val_loss_scalar_str}<br>'
-            f'&nbsp;&nbsp;Val Loss (Per Step Avg): [{val_loss_per_step_str}]',
+            f'&nbsp;&nbsp;Val Loss (Final Split - Scalar Avg): {val_loss_scalar_str}<br>'
+            f'&nbsp;&nbsp;Val Loss (Final Split - Per Step Avg): [{val_loss_per_step_str}]',
             unsafe_allow_html=True
         )
         progress_bar.progress(progress_percentage, text=f"Training LSTM: Epoca {epoch+1}/{epochs}")
@@ -1326,30 +1349,76 @@ def train_model(X_train, y_train, X_val, y_val,
     
     final_model_to_return = model
     if save_strategy == 'migliore':
-        if best_model_state_dict:
+        if best_model_state_dict: # This is based on the final validation split
             try:
                 model.load_state_dict({k: v.to(device) for k, v in best_model_state_dict.items()})
-                final_model_to_return = model
-                st.success(f"Strategia 'migliore': Caricato modello LSTM con Val Loss (Scalare) minima ({best_val_loss_scalar:.6f}).")
+                final_model_to_return = model # This is the model trained on the largest training set, chosen by the last val split
+                st.success(f"Strategia 'migliore': Caricato modello LSTM con Val Loss (Scalare) minima ({best_val_loss_scalar:.6f}) su split finale.")
             except Exception as e_load_best:
                 st.error(f"Errore caricamento stato LSTM migliore: {e_load_best}. Restituito modello ultima epoca.")
-                final_model_to_return = model
-        elif val_loader: st.warning("Strategia 'migliore' LSTM: Nessun miglioramento Val Loss (Scalare). Restituito modello ultima epoca.")
-        else: st.warning("Strategia 'migliore' LSTM: Nessuna validazione eseguita. Restituito modello ultima epoca.")
+                final_model_to_return = model # Fallback to the model at the end of the last epoch
+        elif val_loader_final: st.warning("Strategia 'migliore' LSTM: Nessun miglioramento Val Loss (Scalare) su split finale. Restituito modello ultima epoca.")
+        else: st.warning("Strategia 'migliore' LSTM: Nessuna validazione su split finale (set vuoto). Restituito modello ultima epoca.")
     elif save_strategy == 'finale':
         final_model_to_return = model
         st.info("Strategia 'finale' LSTM: Restituito modello ultima epoca.")
     
+    # Post-Training Cross-Validation Reporting
+    if n_splits_cv > 1 and X_scaled_full.shape[0] >= n_splits_cv : # Ensure enough samples for CV
+        st.markdown("--- \n**Valutazione Cross-Validation Post-Training del Modello Finale:**")
+        cv_fold_val_losses_scalar_all = []
+        cv_fold_val_losses_per_step_all = []
+        
+        # Use the already determined 'final_model_to_return' for evaluation on all folds
+        final_model_to_return.eval()
+
+        for i_fold, (train_idx_fold, val_idx_fold) in enumerate(all_splits_indices):
+            X_val_fold, y_val_fold = X_scaled_full[val_idx_fold], y_scaled_full[val_idx_fold]
+            if X_val_fold.size == 0 or y_val_fold.size == 0:
+                st.caption(f"Fold CV {i_fold+1}/{n_splits_cv}: Set di validazione vuoto, saltato.")
+                continue
+
+            val_dataset_fold = TimeSeriesDataset(X_val_fold, y_val_fold)
+            val_loader_fold = DataLoader(val_dataset_fold, batch_size=batch_size, num_workers=0)
+            
+            fold_loss_scalar_sum = 0.0
+            fold_loss_per_step_sum = torch.zeros(output_window_steps, device=device)
+            with torch.no_grad():
+                for X_batch_f, y_batch_f in val_loader_fold:
+                    X_batch_f, y_batch_f = X_batch_f.to(device), y_batch_f.to(device)
+                    outputs_f = final_model_to_return(X_batch_f)
+                    loss_elem_f = criterion(outputs_f, y_batch_f)
+                    fold_loss_scalar_sum += loss_elem_f.mean().item() * X_batch_f.size(0)
+                    fold_loss_per_step_sum += loss_elem_f.mean(dim=2).sum(dim=0).detach()
+            
+            avg_fold_loss_scalar = fold_loss_scalar_sum / len(val_dataset_fold)
+            avg_fold_loss_per_step = (fold_loss_per_step_sum / len(val_dataset_fold)).cpu().numpy()
+            
+            cv_fold_val_losses_scalar_all.append(avg_fold_loss_scalar)
+            cv_fold_val_losses_per_step_all.append(avg_fold_loss_per_step)
+            st.caption(f"Fold CV {i_fold+1}/{n_splits_cv} - Val Loss (Scalar Avg): {avg_fold_loss_scalar:.6f} | Val Loss (Per Step Avg): [{ ' | '.join([f'{l:.4f}' for l in avg_fold_loss_per_step])}]")
+
+        if cv_fold_val_losses_scalar_all:
+            avg_cv_scalar_loss = np.mean(cv_fold_val_losses_scalar_all)
+            avg_cv_per_step_loss = np.mean(np.array(cv_fold_val_losses_per_step_all), axis=0)
+            st.success(f"**Media Validazione CV ({n_splits_cv} folds) - Loss Scalare: {avg_cv_scalar_loss:.6f}**")
+            st.markdown(f"**Media Validazione CV ({n_splits_cv} folds) - Loss Per Step:** `{ {f'Step {s+1}': f'{l:.4f}' for s, l in enumerate(avg_cv_per_step_loss)} }`")
+        else:
+            st.warning("Nessun fold CV valutato con successo post-training.")
+    else:
+        st.info("Valutazione Cross-Validation Post-Training non eseguita (n_splits_cv <= 1 o dati insufficienti).")
+
+
     return final_model_to_return, \
            (train_losses_scalar_history, train_losses_per_step_history), \
-           (val_losses_scalar_history, val_losses_per_step_history)
+           (val_losses_scalar_history, val_losses_per_step_history) 
 
 
-def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_val, y_tar_val,
+def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full, # CHANGED
                         encoder, decoder, output_window_steps, epochs=50, batch_size=32, learning_rate=0.001,
                         save_strategy='migliore', preferred_device='auto', teacher_forcing_ratio_schedule=None,
-                        loss_function_name="MSELoss"):
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq con split di validazione, loss={loss_function_name})...")
+                        n_splits_cv=3, loss_function_name="MSELoss"): # NEW
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq con TimeSeriesSplit (n_splits={n_splits_cv}, loss={loss_function_name})...")
     
     if output_window_steps <= 0:
         st.error("output_window_steps deve essere maggiore di 0 per train_model_seq2seq.")
@@ -1374,21 +1443,44 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    train_dataset = TimeSeriesDataset(X_enc_train, X_dec_train, y_tar_train)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type=='cuda' else False)
+    # TimeSeriesSplit for final model training pass and per-epoch validation
+    # Assuming X_enc_scaled_full is the primary dataset for splitting
+    tscv_final_pass_s2s = TimeSeriesSplit(n_splits=n_splits_cv)
+    all_splits_indices_s2s = list(tscv_final_pass_s2s.split(X_enc_scaled_full))
 
-    val_loader = None
-    if X_enc_val is not None and y_tar_val is not None and X_enc_val.size > 0 and y_tar_val.size > 0:
-        val_dataset = TimeSeriesDataset(X_enc_val, X_dec_val, y_tar_val)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=0, pin_memory=True if device.type=='cuda' else False)
-        print(f"Training Seq2Seq su {len(X_enc_train)} campioni, validazione su {len(X_enc_val)} campioni.")
+    if not all_splits_indices_s2s:
+        st.error("TimeSeriesSplit (Seq2Seq) non ha prodotto alcun split.")
+        return None, ([], []), ([], [])
+
+    train_indices_final_s2s, val_indices_final_s2s = all_splits_indices_s2s[-1]
+
+    X_enc_train_final = X_enc_scaled_full[train_indices_final_s2s]
+    X_dec_train_final = X_dec_scaled_full[train_indices_final_s2s]
+    y_tar_train_final = y_tar_scaled_full[train_indices_final_s2s]
+
+    X_enc_val_final = X_enc_scaled_full[val_indices_final_s2s]
+    X_dec_val_final = X_dec_scaled_full[val_indices_final_s2s]
+    y_tar_val_final = y_tar_scaled_full[val_indices_final_s2s]
+
+    if X_enc_train_final.size == 0 or y_tar_train_final.size == 0:
+        st.error("Set di training finale Seq2Seq (dall'ultimo split CV) è vuoto.")
+        return None, ([], []), ([], [])
+
+    train_dataset_final_s2s = TimeSeriesDataset(X_enc_train_final, X_dec_train_final, y_tar_train_final)
+    train_loader_final_s2s = DataLoader(train_dataset_final_s2s, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type=='cuda' else False)
+
+    val_loader_final_s2s = None
+    if X_enc_val_final.size > 0 and y_tar_val_final.size > 0:
+        val_dataset_final_s2s = TimeSeriesDataset(X_enc_val_final, X_dec_val_final, y_tar_val_final)
+        val_loader_final_s2s = DataLoader(val_dataset_final_s2s, batch_size=batch_size, num_workers=0, pin_memory=True if device.type=='cuda' else False)
+        print(f"Training finale Seq2Seq su {len(X_enc_train_final)} campioni, validazione finale su {len(X_enc_val_final)} campioni.")
     else:
-        st.warning("Set di validazione Seq2Seq vuoto.")
-        print(f"Training Seq2Seq su {len(X_enc_train)} campioni. Nessun set di validazione.")
+        st.warning("Set di validazione finale Seq2Seq (dall'ultimo split CV) è vuoto.")
+        print(f"Training finale Seq2Seq su {len(X_enc_train_final)} campioni. Nessun set di validazione finale.")
 
-    train_losses_scalar_history, val_losses_scalar_history = [], []
-    train_losses_per_step_history, val_losses_per_step_history = [], []
-    best_val_loss_scalar = float('inf')
+    train_losses_scalar_history, val_losses_scalar_history = [], [] # For final validation set
+    train_losses_per_step_history, val_losses_per_step_history = [], [] # For final validation set
+    best_val_loss_scalar = float('inf') # Based on final validation set
     best_model_state_dict = None
     progress_bar = st.progress(0.0, text="Training Seq2Seq: Inizio..."); status_text = st.empty(); loss_chart_placeholder = st.empty()
 
@@ -1413,14 +1505,21 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_
             if epochs > 1: current_tf_ratio = max(end_tf, start_tf - (start_tf - end_tf) * epoch / (epochs - 1))
             else: current_tf_ratio = start_tf
         
-        for i, (x_enc_b, x_dec_b, y_tar_b) in enumerate(train_loader):
+        # Training loop uses data from the final CV split
+        for i, (x_enc_b, x_dec_b, y_tar_b) in enumerate(train_loader_final_s2s):
             x_enc_b, x_dec_b, y_tar_b = x_enc_b.to(device, non_blocking=True), x_dec_b.to(device, non_blocking=True), y_tar_b.to(device, non_blocking=True)
             optimizer.zero_grad()
             
+            # NB: Il forward di Seq2SeqHydro DEVE essere in grado di gestire il teacher_forcing_ratio
+            # Se il forward non lo gestisce internamente, il loop manuale è necessario qui.
+            # Assumendo che il forward lo gestisca:
+            # outputs_train_epoch = model(x_enc_b, x_dec_b, teacher_forcing_ratio=current_tf_ratio)
+            # Se il forward NON gestisce TF, bisogna fare il loop qui:
             batch_s, out_win, target_size_dec = x_enc_b.shape[0], model.output_window, model.decoder.output_size
             outputs_train_epoch = torch.zeros(batch_s, out_win, target_size_dec).to(device)
             encoder_hidden, encoder_cell = model.encoder(x_enc_b)
             decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
+            # Primo input al decoder (t=0) è sempre da x_dec_b
             decoder_input_step = x_dec_b[:, 0:1, :]
 
             for t in range(out_win):
@@ -1429,14 +1528,29 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_
                 )
                 outputs_train_epoch[:, t, :] = decoder_output_step
 
+                # Teacher forcing per il *successivo* input al decoder
                 if t < out_win - 1:
                     use_teacher_forcing = random.random() < current_tf_ratio
                     if use_teacher_forcing:
+                        # Usa il target reale come prossimo input delle feature che il decoder dovrebbe prevedere
+                        # Questo assume che y_tar_b[:, t+1:t+2, :] abbia la stessa forma e semantica di x_dec_b per le feature target
+                        # Se x_dec_b contiene feature esogene, allora solo una parte di esso può essere sostituita
+                        # L'implementazione corrente del decoder prende le feature da x_dec_b, quindi il TF "tradizionale" (reimmettere output)
+                        # non è direttamente applicabile senza cambiare la logica del decoder o di x_dec_b.
+                        # In questo contesto, si assume che x_dec_b sia il "ground truth" per gli input del decoder.
+                        # Se le feature target sono anche in x_dec_b, allora il teacher forcing potrebbe significare usare y_tar_b
+                        # per quelle specifiche feature. Per semplicità, continuiamo ad usare x_dec_b per gli input del decoder.
+                        # La loss sarà comunque calcolata rispetto a y_tar_b.
+                        # Il teacher forcing si manifesta qui nel fatto che il decoder vede sempre le feature future corrette (da x_dec_b)
+                        # piuttosto che dover propagare i propri errori di previsione se le feature future fossero esse stesse predette.
+                        decoder_input_step = x_dec_b[:, t+1:t+2, :] # Continua ad usare x_dec_b per le feature di input del decoder
+                    else: # Usa l'output del decoder per le feature che il decoder dovrebbe predire, se applicabile.
+                          # Ma x_dec_b contiene le feature per il decoder, non gli output.
+                          # Quindi, anche senza TF, usiamo x_dec_b per il prossimo step.
                         decoder_input_step = x_dec_b[:, t+1:t+2, :]
-                    else:
-                        decoder_input_step = x_dec_b[:, t+1:t+2, :]
+            # Fine loop manuale per training
             
-            loss_per_element_train = criterion(outputs_train_epoch, y_tar_b)
+            loss_per_element_train = criterion(outputs_train_epoch, y_tar_b) # MODIFICA 3 (Seq2Seq)
             scalar_loss_for_backward_train = loss_per_element_train.mean()
             
             scalar_loss_for_backward_train.backward()
@@ -1445,20 +1559,20 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_
             epoch_train_loss_scalar_sum += scalar_loss_for_backward_train.item() * x_enc_b.size(0)
             epoch_train_loss_per_step_sum += loss_per_element_train.mean(dim=2).sum(dim=0).detach()
 
-        avg_epoch_train_loss_scalar = epoch_train_loss_scalar_sum / len(train_loader.dataset)
+        avg_epoch_train_loss_scalar = epoch_train_loss_scalar_sum / len(train_loader_final_s2s.dataset)
         train_losses_scalar_history.append(avg_epoch_train_loss_scalar)
-        avg_epoch_train_loss_per_step = (epoch_train_loss_per_step_sum / len(train_loader.dataset)).cpu().numpy()
+        avg_epoch_train_loss_per_step = (epoch_train_loss_per_step_sum / len(train_loader_final_s2s.dataset)).cpu().numpy()
         train_losses_per_step_history.append(avg_epoch_train_loss_per_step)
 
-        avg_epoch_val_loss_scalar = None
-        avg_epoch_val_loss_per_step = np.full(output_window_steps, np.nan)
+        avg_epoch_val_loss_scalar = None # For the "final" validation set
+        avg_epoch_val_loss_per_step = np.full(output_window_steps, np.nan) # For the "final" validation set
 
-        if val_loader:
+        if val_loader_final_s2s: # Use the val_loader for the final split
             model.eval()
             epoch_val_loss_scalar_sum = 0.0
             epoch_val_loss_per_step_sum = torch.zeros(output_window_steps, device=device)
             with torch.no_grad():
-                for x_enc_vb, x_dec_vb, y_tar_vb in val_loader:
+                for x_enc_vb, x_dec_vb, y_tar_vb in val_loader_final_s2s:
                     x_enc_vb, x_dec_vb, y_tar_vb = x_enc_vb.to(device, non_blocking=True), x_dec_vb.to(device, non_blocking=True), y_tar_vb.to(device, non_blocking=True)
                     outputs_val_epoch = model(x_enc_vb, x_dec_vb, teacher_forcing_ratio=0.0) # TF=0 for validation
                     loss_per_element_val = criterion(outputs_val_epoch, y_tar_vb)
@@ -1467,39 +1581,40 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_
                     epoch_val_loss_scalar_sum += scalar_loss_val_batch.item() * x_enc_vb.size(0)
                     epoch_val_loss_per_step_sum += loss_per_element_val.mean(dim=2).sum(dim=0).detach()
             
-            if len(val_loader.dataset) > 0:
-                avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader.dataset)
-                avg_epoch_val_loss_per_step = (epoch_val_loss_per_step_sum / len(val_loader.dataset)).cpu().numpy()
-            else:
+            if len(val_loader_final_s2s.dataset) > 0:
+                avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader_final_s2s.dataset)
+                avg_epoch_val_loss_per_step = (epoch_val_loss_per_step_sum / len(val_loader_final_s2s.dataset)).cpu().numpy()
+            else: # Should not happen
                 avg_epoch_val_loss_scalar = float('inf')
 
             val_losses_scalar_history.append(avg_epoch_val_loss_scalar)
             val_losses_per_step_history.append(avg_epoch_val_loss_per_step)
-            scheduler.step(avg_epoch_val_loss_scalar)
+            scheduler.step(avg_epoch_val_loss_scalar) # Scheduler uses loss from the final validation split
             if avg_epoch_val_loss_scalar < best_val_loss_scalar:
                 best_val_loss_scalar = avg_epoch_val_loss_scalar
                 best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()}
-        else:
+        else: # No final validation set
             val_losses_scalar_history.append(None)
             val_losses_per_step_history.append(np.full(output_window_steps, np.nan))
+            # No scheduler.step() or best_model_state_dict update if no val_loader_final_s2s
 
         progress_percentage = (epoch + 1) / epochs
         current_lr = optimizer.param_groups[0]['lr']
         epoch_time = pytime.time() - epoch_start_time
         tf_ratio_str = f"{current_tf_ratio:.2f}" if teacher_forcing_ratio_schedule else "N/A"
 
-        train_loss_per_step_str_s2s = " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step])
-        val_loss_scalar_str_s2s = f"{avg_epoch_val_loss_scalar:.6f}" if avg_epoch_val_loss_scalar is not None and avg_epoch_val_loss_scalar != float('inf') else "N/A"
-        val_loss_per_step_str_s2s = "N/A"
-        if val_loader and not np.all(np.isnan(avg_epoch_val_loss_per_step)):
+        train_loss_per_step_str_s2s = " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step]) # MODIFICA 4 (Seq2Seq)
+        val_loss_scalar_str_s2s = f"{avg_epoch_val_loss_scalar:.6f}" if avg_epoch_val_loss_scalar is not None and avg_epoch_val_loss_scalar != float('inf') else "N/A (Final Split)"
+        val_loss_per_step_str_s2s = "N/A (Final Split)"
+        if val_loader_final_s2s and not np.all(np.isnan(avg_epoch_val_loss_per_step)):
              val_loss_per_step_str_s2s = " | ".join([f"{l:.4f}" for l in avg_epoch_val_loss_per_step])
 
         status_text.markdown( 
             f'Epoca {epoch+1}/{epochs} ({epoch_time:.1f}s) | TF Ratio: {tf_ratio_str} | LR: {current_lr:.6f} | Loss Func: {loss_function_name}<br>'
             f'&nbsp;&nbsp;Train Loss (Scalar Avg): {avg_epoch_train_loss_scalar:.6f}<br>'
             f'&nbsp;&nbsp;Train Loss (Per Step Avg): [{train_loss_per_step_str_s2s}]<br>'
-            f'&nbsp;&nbsp;Val Loss (Scalar Avg): {val_loss_scalar_str_s2s}<br>'
-            f'&nbsp;&nbsp;Val Loss (Per Step Avg): [{val_loss_per_step_str_s2s}]',
+            f'&nbsp;&nbsp;Val Loss (Final Split - Scalar Avg): {val_loss_scalar_str_s2s}<br>'
+            f'&nbsp;&nbsp;Val Loss (Final Split - Per Step Avg): [{val_loss_per_step_str_s2s}]',
             unsafe_allow_html=True
         )
         progress_bar.progress(progress_percentage, text=f"Training Seq2Seq: Epoca {epoch+1}/{epochs}")
@@ -1509,23 +1624,70 @@ def train_model_seq2seq(X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_
     st.write(f"Training Seq2Seq completato in {total_training_time:.1f} secondi.")
     final_model_to_return = model
     if save_strategy == 'migliore':
-        if best_model_state_dict:
+        if best_model_state_dict: # Based on final validation split
             try:
                 model.load_state_dict({k: v.to(device) for k, v in best_model_state_dict.items()})
                 final_model_to_return = model
-                st.success(f"Strategia 'migliore': Caricato modello Seq2Seq con Val Loss (Scalare) minima ({best_val_loss_scalar:.6f}).")
+                st.success(f"Strategia 'migliore': Caricato modello Seq2Seq con Val Loss (Scalare) minima ({best_val_loss_scalar:.6f}) su split finale.")
             except Exception as e_load_best:
                 st.error(f"Errore caricamento stato Seq2Seq migliore: {e_load_best}. Restituito modello ultima epoca.")
                 final_model_to_return = model
-        elif val_loader: st.warning("Strategia 'migliore' Seq2Seq: Nessun miglioramento Val Loss (Scalare). Restituito modello ultima epoca.")
-        else: st.warning("Strategia 'migliore' Seq2Seq: Nessuna validazione eseguita. Restituito modello ultima epoca.")
+        elif val_loader_final_s2s: st.warning("Strategia 'migliore' Seq2Seq: Nessun miglioramento Val Loss (Scalare) su split finale. Restituito modello ultima epoca.")
+        else: st.warning("Strategia 'migliore' Seq2Seq: Nessuna validazione su split finale. Restituito modello ultima epoca.")
     elif save_strategy == 'finale':
         final_model_to_return = model
         st.info("Strategia 'finale' Seq2Seq: Restituito modello ultima epoca.")
 
+    # Post-Training Cross-Validation Reporting for Seq2Seq
+    if n_splits_cv > 1 and X_enc_scaled_full.shape[0] >= n_splits_cv:
+        st.markdown("--- \n**Valutazione Cross-Validation Post-Training del Modello Finale (Seq2Seq):**")
+        cv_fold_val_losses_scalar_s2s_all = []
+        cv_fold_val_losses_per_step_s2s_all = []
+
+        final_model_to_return.eval()
+
+        for i_fold_s2s, (train_idx_f_s2s, val_idx_f_s2s) in enumerate(all_splits_indices_s2s):
+            X_enc_val_f = X_enc_scaled_full[val_idx_f_s2s]
+            X_dec_val_f = X_dec_scaled_full[val_idx_f_s2s]
+            y_tar_val_f = y_tar_scaled_full[val_idx_f_s2s]
+
+            if X_enc_val_f.size == 0 or y_tar_val_f.size == 0:
+                st.caption(f"Fold CV Seq2Seq {i_fold_s2s+1}/{n_splits_cv}: Set di validazione vuoto, saltato.")
+                continue
+            
+            val_dataset_f_s2s = TimeSeriesDataset(X_enc_val_f, X_dec_val_f, y_tar_val_f)
+            val_loader_f_s2s = DataLoader(val_dataset_f_s2s, batch_size=batch_size, num_workers=0)
+
+            fold_loss_scalar_sum_s2s = 0.0
+            fold_loss_per_step_sum_s2s = torch.zeros(output_window_steps, device=device)
+            with torch.no_grad():
+                for x_ef, x_df, y_tf in val_loader_f_s2s:
+                    x_ef, x_df, y_tf = x_ef.to(device), x_df.to(device), y_tf.to(device)
+                    outputs_f_s2s = final_model_to_return(x_ef, x_df, teacher_forcing_ratio=0.0)
+                    loss_elem_f_s2s = criterion(outputs_f_s2s, y_tf)
+                    fold_loss_scalar_sum_s2s += loss_elem_f_s2s.mean().item() * x_ef.size(0)
+                    fold_loss_per_step_sum_s2s += loss_elem_f_s2s.mean(dim=2).sum(dim=0).detach()
+            
+            avg_fold_loss_scalar_s2s = fold_loss_scalar_sum_s2s / len(val_dataset_f_s2s)
+            avg_fold_loss_per_step_s2s = (fold_loss_per_step_sum_s2s / len(val_dataset_f_s2s)).cpu().numpy()
+
+            cv_fold_val_losses_scalar_s2s_all.append(avg_fold_loss_scalar_s2s)
+            cv_fold_val_losses_per_step_s2s_all.append(avg_fold_loss_per_step_s2s)
+            st.caption(f"Fold CV Seq2Seq {i_fold_s2s+1}/{n_splits_cv} - Val Loss (Scalar Avg): {avg_fold_loss_scalar_s2s:.6f} | Val Loss (Per Step Avg): [{ ' | '.join([f'{l:.4f}' for l in avg_fold_loss_per_step_s2s])}]")
+
+        if cv_fold_val_losses_scalar_s2s_all:
+            avg_cv_scalar_loss_s2s = np.mean(cv_fold_val_losses_scalar_s2s_all)
+            avg_cv_per_step_loss_s2s = np.mean(np.array(cv_fold_val_losses_per_step_s2s_all), axis=0)
+            st.success(f"**Media Validazione CV Seq2Seq ({n_splits_cv} folds) - Loss Scalare: {avg_cv_scalar_loss_s2s:.6f}**")
+            st.markdown(f"**Media Validazione CV Seq2Seq ({n_splits_cv} folds) - Loss Per Step:** `{ {f'Step {s+1}': f'{l:.4f}' for s, l in enumerate(avg_cv_per_step_loss_s2s)} }`")
+        else:
+            st.warning("Nessun fold CV Seq2Seq valutato con successo post-training.")
+    else:
+        st.info("Valutazione Cross-Validation Post-Training Seq2Seq non eseguita (n_splits_cv <= 1 o dati insufficienti).")
+        
     return final_model_to_return, \
            (train_losses_scalar_history, train_losses_per_step_history), \
-           (val_losses_scalar_history, val_losses_per_step_history)
+           (val_losses_scalar_history, val_losses_per_step_history) 
 
 # --- Funzioni Helper Download ---
 def get_table_download_link(df, filename="data.csv", link_text="Scarica CSV"):
@@ -2961,7 +3123,8 @@ elif page == 'Allenamento Modello':
             with c1_lstm: 
                 iw_t_lstm_hours = st.number_input("Input Window (ore)", min_value=1, value=24, step=1, key="t_lstm_in_hours")
                 ow_t_lstm_steps = st.number_input("Output Window (steps da 30min)", min_value=1, value=6, step=1, key="t_lstm_out_steps")
-                vs_t_lstm = st.slider("Split Validazione (%)", 0, 50, 20, 1, key="t_lstm_vs")
+                # vs_t_lstm = st.slider("Split Validazione (%)", 0, 50, 20, 1, key="t_lstm_vs") # REMOVED
+                n_splits_cv_lstm = st.number_input("Numero di Fold per TimeSeriesSplit CV (LSTM):", min_value=2, value=3, step=1, key="t_lstm_n_splits_cv", help="Minimo 2 splits per CV. Se 1, si comporta come train/validation semplice sull'ultimo blocco.")
             with c2_lstm: 
                 hs_t_lstm = st.number_input("Hidden Size", min_value=8, value=128, step=8, key="t_lstm_hs")
                 nl_t_lstm = st.number_input("Numero Layers", min_value=1, value=2, step=1, key="t_lstm_nl")
@@ -2979,9 +3142,11 @@ elif page == 'Allenamento Modello':
             with col_save_lstm: 
                 save_choice_lstm = st.radio("Strategia Salvataggio:", ['Migliore (su Validazione)', 'Modello Finale'], index=0, key='train_save_lstm', horizontal=True)
         st.divider()
-        ready_to_train_lstm = bool(save_name and selected_features_train_lstm and selected_targets_train_lstm and ow_t_lstm_steps > 0)
+        ready_to_train_lstm = bool(save_name and selected_features_train_lstm and selected_targets_train_lstm and ow_t_lstm_steps > 0 and n_splits_cv_lstm >=1) # Ensure n_splits is at least 1
+        if n_splits_cv_lstm < 2: st.caption("Nota: Con n_splits < 2, TimeSeriesSplit si comporta come una singola divisione train/test, usando l'ultimo blocco per la validazione.")
         
         if st.button("Avvia Addestramento LSTM", type="primary", disabled=not ready_to_train_lstm, key="train_run_lstm"):
+             # --- INIZIO BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
              if not selected_features_train_lstm:
                  st.error("Seleziona almeno una colonna per le 'Feature Input LSTM'.")
                  st.stop()
@@ -2991,26 +3156,36 @@ elif page == 'Allenamento Modello':
              if ow_t_lstm_steps <= 0:
                  st.error("Output Window (steps da 30min) deve essere maggiore di 0.")
                  st.stop()
+             # --- FINE BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
                 
              st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
-             output_window_hours_lstm = ow_t_lstm_steps / 2.0
+             # iw_t_lstm_hours è in ore, ow_t_lstm_steps è già in steps (mezz'ore)
+             # prepare_training_data si aspetta input_window e output_window in ORE
+             # HydroLSTM si aspetta output_window in STEPS (mezz'ore)
+             output_window_hours_lstm = ow_t_lstm_steps / 2.0 # Converti steps in ore per prepare_training_data
              with st.spinner("Preparazione dati LSTM..."):
-                 X_train_lstm, y_train_lstm, X_val_lstm, y_val_lstm, sc_f, sc_t = prepare_training_data(
+                 # Prepare_training_data now returns full X_scaled, y_scaled
+                 X_scaled_full_lstm, y_scaled_full_lstm, sc_f, sc_t = prepare_training_data(
                      df_current_csv.copy(), selected_features_train_lstm, selected_targets_train_lstm,
-                     iw_t_lstm_hours, int(output_window_hours_lstm), vs_t_lstm,
+                     iw_t_lstm_hours, int(output_window_hours_lstm), # Removed vs_t_lstm
                      lag_config=lag_config_lstm, cumulative_config=cumulative_config_lstm
                  )
-             if X_train_lstm is None or y_train_lstm is None or sc_f is None or sc_t is None:
+             # Check if data preparation was successful
+             if X_scaled_full_lstm is None or y_scaled_full_lstm is None or sc_f is None or sc_t is None:
                  st.error("Preparazione dati LSTM fallita."); st.stop()
+
+             if X_scaled_full_lstm.shape[0] < n_splits_cv_lstm: # Basic check
+                 st.error(f"Dati insufficienti ({X_scaled_full_lstm.shape[0]} campioni) per {n_splits_cv_lstm} splits CV. Riduci il numero di splits o fornisci più dati.")
+                 st.stop()
              
              trained_model_lstm, train_histories_lstm, val_histories_lstm = train_model(
-                 X_train_lstm, y_train_lstm, X_val_lstm, y_val_lstm,
-                 X_train_lstm.shape[2], len(selected_targets_train_lstm),
+                 X_scaled_full_lstm, y_scaled_full_lstm, # Pass full scaled data
+                 X_scaled_full_lstm.shape[2], len(selected_targets_train_lstm), # input_size derived from X_scaled_full_lstm
                  ow_t_lstm_steps, 
                  hs_t_lstm, nl_t_lstm, ep_t_lstm, bs_t_lstm, lr_t_lstm, dr_t_lstm, 
                  ('migliore' if 'Migliore' in save_choice_lstm else 'finale'), 
                  ('auto' if 'Auto' in device_option_lstm else 'cpu'),
-                 loss_function_name=loss_choice_lstm
+                 n_splits_cv=n_splits_cv_lstm, loss_function_name=loss_choice_lstm # NEW PARAMS
              )
              
              if trained_model_lstm:
@@ -3111,7 +3286,8 @@ elif page == 'Allenamento Modello':
                  iw_steps_s2s = st.number_input("Input Storico (steps da 30min)", min_value=2, value=48, step=2, key="t_s2s_in")
                  fw_steps_s2s = st.number_input("Input Forecast (steps da 30min)", min_value=1, value=6, step=1, key="t_s2s_fore")
                  ow_steps_s2s = st.number_input("Output Previsione (steps da 30min)", min_value=1, value=6, step=1, key="t_s2s_out")
-                 vs_t_s2s = st.slider("Split Validazione (%)", 0, 50, 20, 1, key="t_s2s_vs")
+                 # vs_t_s2s = st.slider("Split Validazione (%)", 0, 50, 20, 1, key="t_s2s_vs") # REMOVED
+                 n_splits_cv_s2s = st.number_input("Numero di Fold per TimeSeriesSplit CV (Seq2Seq):", min_value=2, value=3, step=1, key="t_s2s_n_splits_cv", help="Minimo 2 splits per CV. Se 1, si comporta come train/validation semplice sull'ultimo blocco.")
              if ow_steps_s2s > fw_steps_s2s: st.caption("Nota: Output Steps > Forecast Steps. Il modello userà padding durante la predizione (se il forward lo gestisce) o potrebbe dare errore se non gestito.")
              with c2_s2s: 
                  hs_t_s2s = st.number_input("Hidden Size", min_value=8, value=128, step=8, key="t_s2s_hs")
@@ -3130,8 +3306,10 @@ elif page == 'Allenamento Modello':
              with col_save_s2s: 
                  save_choice_s2s = st.radio("Strategia Salvataggio:", ['Migliore (su Validazione)', 'Modello Finale'], index=0, key='train_save_s2s', horizontal=True)
          st.divider()
-         ready_to_train_s2s = bool(save_name and selected_past_features_s2s and selected_forecast_features_s2s and selected_targets_s2s and ow_steps_s2s > 0)
+         ready_to_train_s2s = bool(save_name and selected_past_features_s2s and selected_forecast_features_s2s and selected_targets_s2s and ow_steps_s2s > 0 and n_splits_cv_s2s >=1)
+         if n_splits_cv_s2s < 2: st.caption("Nota: Con n_splits < 2, TimeSeriesSplit si comporta come una singola divisione train/test, usando l'ultimo blocco per la validazione.")
          if st.button("Avvia Addestramento Seq2Seq", type="primary", disabled=not ready_to_train_s2s, key="train_run_s2s"):
+            # --- INIZIO BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
             if not selected_past_features_s2s:
                 st.error("Seleziona almeno una colonna per le 'Feature Storiche (Input Encoder)'.")
                 st.stop()
@@ -3144,34 +3322,42 @@ elif page == 'Allenamento Modello':
             if ow_steps_s2s <= 0:
                 st.error("Output Previsione (steps da 30min) deve essere maggiore di 0.")
                 st.stop()
+            # --- FINE BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
 
             st.info(f"Avvio addestramento Seq2Seq per '{save_name}'...");
             with st.spinner("Preparazione dati Seq2Seq..."): 
+                # Prepare_training_data_seq2seq now returns full scaled datasets
                 data_tuple_s2s = prepare_training_data_seq2seq(
                     df_current_csv.copy(), selected_past_features_s2s, selected_forecast_features_s2s, 
-                    selected_targets_s2s, iw_steps_s2s, fw_steps_s2s, ow_steps_s2s, vs_t_s2s,
+                    selected_targets_s2s, iw_steps_s2s, fw_steps_s2s, ow_steps_s2s, # Removed vs_t_s2s
                     lag_config_past=lag_config_past_s2s, cumulative_config_past=cumulative_config_past_s2s
                 )
-            if data_tuple_s2s is None or len(data_tuple_s2s) != 9 or data_tuple_s2s[0] is None:
+            if data_tuple_s2s is None or len(data_tuple_s2s) != 6 or data_tuple_s2s[0] is None: # Adjusted expected length
                 st.error("Preparazione dati Seq2Seq fallita."); st.stop()
             
-            (X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_val, y_tar_val, 
+            # Unpack full scaled datasets
+            (X_enc_scaled_full_s2s, X_dec_scaled_full_s2s, y_tar_scaled_full_s2s, 
              sc_past, sc_fore, sc_tar) = data_tuple_s2s
             
             if not all([sc_past, sc_fore, sc_tar]): st.error("Errore: Scaler Seq2Seq non generati."); st.stop()
 
+            if X_enc_scaled_full_s2s.shape[0] < n_splits_cv_s2s: # Basic check
+                 st.error(f"Dati insufficienti ({X_enc_scaled_full_s2s.shape[0]} campioni) per {n_splits_cv_s2s} splits CV (Seq2Seq). Riduci il numero di splits o fornisci più dati.")
+                 st.stop()
+
             try: 
-                enc = EncoderLSTM(X_enc_train.shape[2], hs_t_s2s, nl_t_s2s, dr_t_s2s)
-                dec = DecoderLSTM(X_dec_train.shape[2], hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
+                # Input size for encoder now comes from the scaled data's feature dimension
+                enc = EncoderLSTM(X_enc_scaled_full_s2s.shape[2], hs_t_s2s, nl_t_s2s, dr_t_s2s)
+                dec = DecoderLSTM(X_dec_scaled_full_s2s.shape[2], hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
             except Exception as e_init: st.error(f"Errore inizializzazione modello Seq2Seq: {e_init}"); st.stop()
             
             trained_model_s2s, train_histories_s2s, val_histories_s2s = train_model_seq2seq(
-                X_enc_train, X_dec_train, y_tar_train, X_enc_val, X_dec_val, y_tar_val,
+                X_enc_scaled_full_s2s, X_dec_scaled_full_s2s, y_tar_scaled_full_s2s, # Pass full scaled data
                 enc, dec, ow_steps_s2s, ep_t_s2s, bs_t_s2s, lr_t_s2s, 
                 ('migliore' if 'Migliore' in save_choice_s2s else 'finale'), 
                 ('auto' if 'Auto' in device_option_s2s else 'cpu'), 
-                teacher_forcing_ratio_schedule=[0.6, 0.1],
-                loss_function_name=loss_choice_s2s
+                teacher_forcing_ratio_schedule=[0.6, 0.1], # Keep existing or make configurable
+                n_splits_cv=n_splits_cv_s2s, loss_function_name=loss_choice_s2s # NEW PARAMS
             )
 
             if trained_model_s2s:
