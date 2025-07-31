@@ -243,10 +243,17 @@ class Attention(nn.Module):
 class DecoderLSTMWithAttention(nn.Module):
     def __init__(self, forecast_input_size, hidden_size, output_size, num_layers=2, dropout=0.2):
         super().__init__()
+        # --- INIZIO CORREZIONI ---
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.forecast_input_size = forecast_input_size # <-- AGGIUNTA CHIAVE
+        self.output_size = output_size # <-- AGGIUNTA PER COERENZA
+        # --- FINE CORREZIONI ---
+        
         self.attention = Attention(hidden_size)
-        self.lstm = nn.LSTM(forecast_input_size + hidden_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.lstm = nn.LSTM(forecast_input_size + hidden_size, hidden_size, num_layers,
+                          batch_first=True, dropout=dropout if num_layers > 1 else 0)
         self.fc = nn.Linear(hidden_size, output_size)
-        self.output_size = output_size
 
     def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
         attn_weights = self.attention(hidden, encoder_outputs).unsqueeze(1)
