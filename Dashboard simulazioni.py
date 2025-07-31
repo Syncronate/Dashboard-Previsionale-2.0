@@ -331,7 +331,8 @@ class Seq2SeqWithAttention(nn.Module):
                 decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
             )
             outputs[:, t, :] = decoder_output_step
-            attention_weights_history[:, t, :] = attn_weights.squeeze(1)
+            # .squeeze() senza argomenti rimuove tutte le dimensioni di grandezza 1, che è più sicuro
+            attention_weights_history[:, t, :] = attn_weights.squeeze()
 
             if t < self.output_window - 1:
                 decoder_input_step = x_future_forecast[:, t+1:t+2, :]
@@ -670,7 +671,7 @@ def find_available_models(models_dir=MODELS_DIR):
             name = config_data.get("display_name", base)
             model_type = config_data.get("model_type", "LSTM")
 
-            if model_type == "Seq2Seq":
+            if model_type == "Seq2Seq" or model_type == "Seq2SeqAttention":
                 required_keys = ["input_window_steps", "output_window_steps", "forecast_window_steps",
                                  "hidden_size", "num_layers", "dropout",
                                  "all_past_feature_columns", "forecast_input_columns", "target_columns"]
@@ -683,7 +684,7 @@ def find_available_models(models_dir=MODELS_DIR):
                         "scaler_past_features_path": s_past_p,
                         "scaler_forecast_features_path": s_fore_p,
                         "scaler_targets_path": s_targ_p,
-                        "model_type": "Seq2Seq"
+                        "model_type": model_type # Preserve original type
                     })
                     valid_model = True
             else: # LSTM Standard
@@ -784,11 +785,11 @@ def load_specific_scalers(config, model_info):
          else: raise TypeError(f"Percorso scaler non valido: {type(path)}")
 
     try:
-        if model_type == "Seq2Seq":
+        if model_type == "Seq2Seq" or model_type == "Seq2SeqAttention":
             scaler_past = _load_joblib(model_info["scaler_past_features_path"])
             scaler_forecast = _load_joblib(model_info["scaler_forecast_features_path"])
             scaler_targets = _load_joblib(model_info["scaler_targets_path"])
-            print(f"Scaler Seq2Seq caricati.")
+            print(f"Scaler {model_type} caricati.")
             return {"past": scaler_past, "forecast": scaler_forecast, "targets": scaler_targets}
         else: # LSTM Standard
             scaler_features = _load_joblib(model_info["scaler_features_path"])
@@ -3879,21 +3880,39 @@ elif page == 'Post-Training Modello':
             enc_instance_pt_s2s.load_state_dict(st.session_state.active_model.encoder.state_dict())
 
 
-            dec_instance_pt_s2s = DecoderLSTM(
-                forecast_input_size=X_dec_scaled_new_pt.shape[2], # Da nuovi dati (dovrebbe corrispondere a scaler_forecast_orig_s2s.n_features_in_)
-                hidden_size=original_config.get("hidden_size"),
-                output_size=len(target_cols_orig_s2s),
-                num_layers=original_config.get("num_layers"),
-                dropout=original_config.get("dropout")
-            ).to(current_device_pt)
+            if original_config.get("model_type") == "Seq2SeqAttention":
+                dec_instance_pt_s2s = DecoderLSTMWithAttention(
+                    forecast_input_size=X_dec_scaled_new_pt.shape[2],
+                    hidden_size=original_config.get("hidden_size"),
+                    output_size=len(target_cols_orig_s2s),
+                    num_layers=original_config.get("num_layers"),
+                    dropout=original_config.get("dropout")
+                ).to(current_device_pt)
+            else: # "Seq2Seq"
+                dec_instance_pt_s2s = DecoderLSTM(
+                    forecast_input_size=X_dec_scaled_new_pt.shape[2],
+                    hidden_size=original_config.get("hidden_size"),
+                    output_size=len(target_cols_orig_s2s),
+                    num_layers=original_config.get("num_layers"),
+                    dropout=original_config.get("dropout")
+                ).to(current_device_pt)
+            
             dec_instance_pt_s2s.load_state_dict(st.session_state.active_model.decoder.state_dict())
+
+            # Istanzia il wrapper corretto in base al tipo di modello originale
+            if original_config.get("model_type") == "Seq2SeqAttention":
+                model_instance_for_pt_s2s = Seq2SeqWithAttention(enc_instance_pt_s2s, dec_instance_pt_s2s, output_window_steps_s2s_pt, current_device_pt)
+            else: # "Seq2Seq"
+                model_instance_for_pt_s2s = Seq2SeqHydro(enc_instance_pt_s2s, dec_instance_pt_s2s, output_window_steps_s2s_pt, current_device_pt)
+
+            # Carica i pesi nel modello wrapper completo
+            model_instance_for_pt_s2s.load_state_dict(model_to_fine_tune_state_dict)
 
             fine_tuned_model_s2s, train_hist_pt_s2s, val_hist_pt_s2s = train_model_seq2seq(
                 X_enc_scaled_full=X_enc_scaled_new_pt, 
                 X_dec_scaled_full=X_dec_scaled_new_pt, 
                 y_tar_scaled_full=y_tar_scaled_new_pt,
-                encoder=enc_instance_pt_s2s, # Encoder con pesi caricati
-                decoder=dec_instance_pt_s2s, # Decoder con pesi caricati
+                model=model_instance_for_pt_s2s,  # Passa il modello wrapper completo
                 output_window_steps=output_window_steps_s2s_pt,
                 epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt,
                 save_strategy=('migliore' if 'Migliore' in save_choice_pt else 'finale'),
