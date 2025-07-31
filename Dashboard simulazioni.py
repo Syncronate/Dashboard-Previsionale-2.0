@@ -264,12 +264,11 @@ class DecoderLSTMWithAttention(nn.Module):
         return prediction, hidden, cell, attn_weights # Restituisci anche i pesi
 
 class Seq2SeqHydro(nn.Module):
-    def __init__(self, encoder, decoder, output_window_steps, device):
+    def __init__(self, encoder, decoder, output_window_steps):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.output_window = output_window_steps
-        self.device = device
 
     def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0): # Default TF a 0 per inferenza
         batch_size = x_past.shape[0]
@@ -284,7 +283,7 @@ class Seq2SeqHydro(nn.Module):
              # print(f"Warning: forecast_window ({forecast_window}) < output_window ({self.output_window}). Padding forecast input.")
              forecast_window = self.output_window # Ora x_future_forecast ha la lunghezza giusta
 
-        outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(self.device)
+        outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(x_past.device)
         _, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
         decoder_input_step = x_future_forecast[:, 0:1, :] # Primo input al decoder
@@ -309,18 +308,17 @@ class Seq2SeqHydro(nn.Module):
         return outputs, None # Aggiungi None come secondo valore di ritorno
 
 class Seq2SeqWithAttention(nn.Module):
-    def __init__(self, encoder, decoder, output_window_steps, device):
+    def __init__(self, encoder, decoder, output_window_steps):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.output_window = output_window_steps
-        self.device = device
 
     def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0):
         batch_size = x_past.shape[0]
         target_output_size = self.decoder.output_size
-        outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(self.device)
-        attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(self.device)
+        outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(x_past.device)
+        attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(x_past.device)
 
         encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
@@ -733,7 +731,7 @@ def load_specific_model(_model_path, config):
             out_win = config["output_window_steps"]
             encoder = EncoderLSTM(enc_input_size, hidden, layers, drop).to(device)
             decoder = DecoderLSTM(dec_input_size, hidden, dec_output_size, layers, drop).to(device)
-            model = Seq2SeqHydro(encoder, decoder, out_win, device).to(device)
+            model = Seq2SeqHydro(encoder, decoder, out_win).to(device)
         elif model_type == "Seq2SeqAttention":
             enc_input_size = len(config["all_past_feature_columns"])
             dec_input_size = len(config["forecast_input_columns"])
@@ -742,7 +740,7 @@ def load_specific_model(_model_path, config):
             out_win = config["output_window_steps"]
             encoder = EncoderLSTM(enc_input_size, hidden, layers, drop).to(device)
             decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop).to(device)
-            model = Seq2SeqWithAttention(encoder, decoder, out_win, device).to(device)
+            model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
         else: # LSTM Standard
             f_cols_lstm = config.get("feature_columns")
             if not f_cols_lstm:
@@ -1528,7 +1526,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     
     # Il controllo dei parametri del modello ora è implicito nella sua creazione esterna
 
-    if preferred_device == 'auto': device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if 'Auto' in preferred_device: device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     else: device = torch.device('cpu')
     print(f"Training Seq2Seq userà: {device}")
     model.to(device) # Sposta il modello ricevuto sul device corretto
@@ -3445,10 +3443,10 @@ elif page == 'Allenamento Modello':
                 
                 if train_model_type == "Seq2Seq con Attenzione":
                     dec = DecoderLSTMWithAttention(X_dec_scaled_full_s2s.shape[2], hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
-                    model_to_train = Seq2SeqWithAttention(enc, dec, ow_steps_s2s, device_for_init)
+                    model_to_train = Seq2SeqWithAttention(enc, dec, ow_steps_s2s)
                 else:
                     dec = DecoderLSTM(X_dec_scaled_full_s2s.shape[2], hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
-                    model_to_train = Seq2SeqHydro(enc, dec, ow_steps_s2s, device_for_init)
+                    model_to_train = Seq2SeqHydro(enc, dec, ow_steps_s2s)
 
             except Exception as e_init:
                 st.error(f"Errore inizializzazione modello Seq2Seq: {e_init}")
