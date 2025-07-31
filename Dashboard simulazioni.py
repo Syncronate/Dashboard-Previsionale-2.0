@@ -285,7 +285,7 @@ class Seq2SeqHydro(nn.Module):
              forecast_window = self.output_window # Ora x_future_forecast ha la lunghezza giusta
 
         outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(self.device)
-        encoder_hidden, encoder_cell = self.encoder(x_past)
+        _, (encoder_hidden, encoder_cell) = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
         decoder_input_step = x_future_forecast[:, 0:1, :] # Primo input al decoder
 
@@ -1769,7 +1769,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             with torch.no_grad():
                 for x_ef, x_df, y_tf in val_loader_f_s2s:
                     x_ef, x_df, y_tf = x_ef.to(device), x_df.to(device), y_tf.to(device)
-                    outputs_f_s2s = final_model_to_return(x_ef, x_df, teacher_forcing_ratio=0.0)
+                    outputs_f_s2s, _ = final_model_to_return(x_ef, x_df, teacher_forcing_ratio=0.0)
                     loss_elem_f_s2s = criterion(outputs_f_s2s, y_tf)
                     fold_loss_scalar_sum_s2s += loss_elem_f_s2s.mean().item() * x_ef.size(0)
                     fold_loss_per_step_sum_s2s += loss_elem_f_s2s.mean(dim=2).sum(dim=0).detach()
