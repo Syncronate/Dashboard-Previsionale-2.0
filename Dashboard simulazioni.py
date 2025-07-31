@@ -2759,7 +2759,7 @@ elif page == 'Test Modello su Storico':
         st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe. Colonna data non valida o assente per range.")
 
     target_columns_model_test = active_config['target_columns']
-    if active_model_type == "Seq2Seq":
+    if "Seq2Seq" in active_model_type:
         input_steps_model_test = active_config['input_window_steps']
         output_steps_model_test = active_config['output_window_steps']
         past_feature_cols_model_test = active_config['all_past_feature_columns']
@@ -2937,9 +2937,15 @@ elif page == 'Test Modello su Storico':
                     actual_target_data_np_test_period = actual_data_for_comparison_df_period[target_columns_model_test].astype(float).values
                     prediction_start_time_test_period = actual_data_for_comparison_df_period[date_col_name_csv].iloc[0]
 
-                    if active_model_type == "Seq2Seq" or active_model_type == "Seq2SeqAttention":
+                    if "Seq2Seq" in active_model_type: # <-- Usiamo il controllo robusto
+                        # --- INIZIO RIGHE AGGIUNTE ---
+                        # Calcoliamo l'indice finale per i dati del decoder QUI, dentro il loop
+                        num_rows_decoder_input_test_wf = max(forecast_steps_model_test, output_steps_model_test)
+                        future_forecast_data_end_idx_wf = actual_data_start_idx_test + num_rows_decoder_input_test_wf
+                        # --- FINE RIGHE AGGIUNTE ---
+                        
                         past_input_np_test_period = input_data_df_test_period[past_feature_cols_model_test].astype(float).values
-                        future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf]
+                        future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf] # <-- ORA FUNZIONA
                         future_forecast_np_test_period = future_forecast_df_test_period[forecast_feature_cols_model_test].astype(float).values
                         if num_passes_test > 1:
                             predictions_test_period, uncertainty_test_period, attention_weights_test_period = predict_seq2seq_with_uncertainty(
