@@ -285,7 +285,7 @@ class Seq2SeqHydro(nn.Module):
              forecast_window = self.output_window # Ora x_future_forecast ha la lunghezza giusta
 
         outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(self.device)
-        _, (encoder_hidden, encoder_cell) = self.encoder(x_past)
+        _, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
         decoder_input_step = x_future_forecast[:, 0:1, :] # Primo input al decoder
 
