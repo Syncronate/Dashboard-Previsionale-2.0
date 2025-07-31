@@ -2018,7 +2018,7 @@ with st.sidebar:
     if active_model_sess and active_config_sess:
         cfg = active_config_sess; model_type_sess = cfg.get('model_type', 'LSTM'); display_feedback_name = cfg.get("display_name", active_model_name_sess)
         st.success(f"Modello Attivo: **{display_feedback_name}** ({model_type_sess})")
-        if model_type_sess == "Seq2Seq": st.caption(f"Input: {cfg['input_window_steps']}s | Forecast: {cfg['forecast_window_steps']}s | Output: {cfg['output_window_steps']}s")
+        if "Seq2Seq" in model_type_sess: st.caption(f"Input: {cfg['input_window_steps']}s | Forecast: {cfg['forecast_window_steps']}s | Output: {cfg['output_window_steps']}s")
         else: st.caption(f"Input: {cfg['input_window']}s | Output: {cfg['output_window']}s")
     elif load_error_sidebar and active_model_name_sess not in [MODEL_CHOICE_NONE]: st.error(f"Caricamento modello '{active_model_name_sess}' fallito.")
     elif active_model_name_sess == MODEL_CHOICE_UPLOAD and not active_model_sess: st.info("Completa il caricamento manuale del modello LSTM.")
