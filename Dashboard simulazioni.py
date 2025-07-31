@@ -207,8 +207,8 @@ class EncoderLSTM(nn.Module):
                           batch_first=True, dropout=dropout if num_layers > 1 else 0)
 
     def forward(self, x):
-        _, (hidden, cell) = self.lstm(x) # Ignora outputs, prendi solo stati finali
-        return hidden, cell
+        outputs, (hidden, cell) = self.lstm(x)
+        return outputs, hidden, cell
 
 class DecoderLSTM(nn.Module):
     def __init__(self, forecast_input_size, hidden_size, output_size, num_layers=2, dropout=0.2):
@@ -225,6 +225,36 @@ class DecoderLSTM(nn.Module):
         output, (hidden, cell) = self.lstm(x_forecast_step, (hidden, cell))
         prediction = self.fc(output.squeeze(1)) # Shape: (batch, output_size)
         return prediction, hidden, cell
+
+class Attention(nn.Module):
+    def __init__(self, hidden_size):
+        super(Attention, self).__init__()
+        self.attn = nn.Linear(hidden_size * 2, hidden_size)
+        self.v = nn.Parameter(torch.rand(hidden_size))
+
+    def forward(self, hidden, encoder_outputs):
+        hidden = hidden[-1].unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)
+        energy = torch.tanh(self.attn(torch.cat([hidden, encoder_outputs], dim=2)))
+        energy = energy.permute(0, 2, 1)
+        v_exp = self.v.repeat(encoder_outputs.size(0), 1).unsqueeze(1)
+        scores = torch.bmm(v_exp, energy).squeeze(1)
+        return torch.softmax(scores, dim=1)
+
+class DecoderLSTMWithAttention(nn.Module):
+    def __init__(self, forecast_input_size, hidden_size, output_size, num_layers=2, dropout=0.2):
+        super().__init__()
+        self.attention = Attention(hidden_size)
+        self.lstm = nn.LSTM(forecast_input_size + hidden_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_size, output_size)
+        self.output_size = output_size
+
+    def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
+        attn_weights = self.attention(hidden, encoder_outputs).unsqueeze(1)
+        context_vector = torch.bmm(attn_weights, encoder_outputs)
+        lstm_input = torch.cat([x_forecast_step, context_vector], dim=2)
+        output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
+        prediction = self.fc(output.squeeze(1))
+        return prediction, hidden, cell, attn_weights # Restituisci anche i pesi
 
 class Seq2SeqHydro(nn.Module):
     def __init__(self, encoder, decoder, output_window_steps, device):
@@ -269,7 +299,38 @@ class Seq2SeqHydro(nn.Module):
                      pass # Si dovrebbe usare y_target[t+1] se disponibile
                 else: # Usa l'input fornito x_future_forecast per il prossimo step
                     decoder_input_step = x_future_forecast[:, t+1:t+2, :]
-        return outputs
+        return outputs, None # Aggiungi None come secondo valore di ritorno
+
+class Seq2SeqWithAttention(nn.Module):
+    def __init__(self, encoder, decoder, output_window_steps, device):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.output_window = output_window_steps
+        self.device = device
+
+    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0):
+        batch_size = x_past.shape[0]
+        target_output_size = self.decoder.output_size
+        outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(self.device)
+        attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(self.device)
+
+        encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
+        decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
+        decoder_input_step = x_future_forecast[:, 0:1, :]
+
+        for t in range(self.output_window):
+            decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
+                decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
+            )
+            outputs[:, t, :] = decoder_output_step
+            attention_weights_history[:, t, :] = attn_weights.squeeze(1)
+
+            if t < self.output_window - 1:
+                decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+        
+        # Restituisci anche i pesi di attenzione per la visualizzazione
+        return outputs, attention_weights_history
 
 # --- Funzioni Utilità Modello/Dati ---
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, # REMOVED val_split
@@ -665,6 +726,15 @@ def load_specific_model(_model_path, config):
             encoder = EncoderLSTM(enc_input_size, hidden, layers, drop).to(device)
             decoder = DecoderLSTM(dec_input_size, hidden, dec_output_size, layers, drop).to(device)
             model = Seq2SeqHydro(encoder, decoder, out_win, device).to(device)
+        elif model_type == "Seq2SeqAttention":
+            enc_input_size = len(config["all_past_feature_columns"])
+            dec_input_size = len(config["forecast_input_columns"])
+            dec_output_size = len(config["target_columns"])
+            hidden = config["hidden_size"]; layers = config["num_layers"]; drop = config["dropout"]
+            out_win = config["output_window_steps"]
+            encoder = EncoderLSTM(enc_input_size, hidden, layers, drop).to(device)
+            decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop).to(device)
+            model = Seq2SeqWithAttention(encoder, decoder, out_win, device).to(device)
         else: # LSTM Standard
             f_cols_lstm = config.get("feature_columns")
             if not f_cols_lstm:
@@ -768,10 +838,11 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
 
 def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, device):
     if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
-         st.error("Predict Seq2Seq: Input mancanti."); return None
+         st.error("Predict Seq2Seq: Input mancanti."); return None, None
 
     model_type = config.get("model_type")
-    if model_type != "Seq2Seq": st.error(f"Funzione predict_seq2seq chiamata su modello non Seq2Seq"); return None
+    if model_type not in ["Seq2Seq", "Seq2SeqAttention"]: 
+        st.error(f"Funzione predict_seq2seq chiamata su modello non supportato ({model_type})"); return None, None
 
     input_steps = config["input_window_steps"]
     forecast_steps_input_decoder = config["forecast_window_steps"] # Quanti input forniamo al decoder
@@ -782,10 +853,10 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
 
     scaler_past = scalers.get("past"); scaler_forecast = scalers.get("forecast"); scaler_targets = scalers.get("targets")
     if not all([scaler_past, scaler_forecast, scaler_targets]):
-        st.error("Predict Seq2Seq: Scaler mancanti nel dizionario fornito."); return None
+        st.error("Predict Seq2Seq: Scaler mancanti nel dizionario fornito."); return None, None
 
     if past_data.shape != (input_steps, len(past_cols)):
-        st.error(f"Predict Seq2Seq: Shape dati passati {past_data.shape} errata (attesa ({input_steps}, {len(past_cols)}))."); return None
+        st.error(f"Predict Seq2Seq: Shape dati passati {past_data.shape} errata (attesa ({input_steps}, {len(past_cols)}))."); return None, None
     
     # future_forecast_data è l'input per il decoder. La sua lunghezza deve essere almeno output_steps_model
     # Se è più corta, il modello la padderà internamente nel forward.
@@ -793,7 +864,7 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
     if future_forecast_data.shape[0] < output_steps_model:
          st.warning(f"Predict Seq2Seq: Finestra input forecast ({future_forecast_data.shape[0]}) < finestra output modello ({output_steps_model}). Il modello userà padding.")
     if future_forecast_data.shape[1] != len(forecast_cols):
-         st.error(f"Predict Seq2Seq: Numero colonne dati forecast ({future_forecast_data.shape[1]}) errato (atteso {len(forecast_cols)})."); return None
+         st.error(f"Predict Seq2Seq: Numero colonne dati forecast ({future_forecast_data.shape[1]}) errato (atteso {len(forecast_cols)})."); return None, None
 
 
     model.eval()
@@ -803,20 +874,21 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
         past_tens = torch.FloatTensor(past_norm).unsqueeze(0).to(device)
         future_tens = torch.FloatTensor(future_norm).unsqueeze(0).to(device)
 
-        with torch.no_grad(): output = model(past_tens, future_tens, teacher_forcing_ratio=0.0) # Output: (1, output_steps_model, num_targets)
+        with torch.no_grad(): 
+            output, attention_weights = model(past_tens, future_tens, teacher_forcing_ratio=0.0)
 
         if output.shape != (1, output_steps_model, len(target_cols)):
-             st.error(f"Predict Seq2Seq: Shape output modello {output.shape} inattesa (attesa (1, {output_steps_model}, {len(target_cols)}))."); return None
+             st.error(f"Predict Seq2Seq: Shape output modello {output.shape} inattesa (attesa (1, {output_steps_model}, {len(target_cols)}))."); return None, None
         out_np = output.cpu().numpy().squeeze(0) # (output_steps_model, num_targets)
         
         expected_targets_scaler = getattr(scaler_targets, 'n_features_in_', len(target_cols)) 
         if out_np.shape[1] != expected_targets_scaler:
-             st.error(f"Predict Seq2Seq: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets_scaler})."); return None
+             st.error(f"Predict Seq2Seq: Numero colonne output modello ({out_np.shape[1]}) non corrisponde a target scaler/config ({expected_targets_scaler})."); return None, None
         preds = scaler_targets.inverse_transform(out_np)
-        return preds
+        return preds, attention_weights
     except Exception as e:
         st.error(f"Errore durante predict Seq2Seq: {e}")
-        st.error(traceback.format_exc()); return None
+        st.error(traceback.format_exc()); return None, None
 
 # --- INIZIO BLOCCO DI CODICE DA SOSTITUIRE ---
 # Sostituisci le due funzioni '..._with_uncertainty' con queste versioni corrette.
@@ -872,10 +944,11 @@ def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, sca
     """Esegue la previsione Seq2Seq più volte (MC Dropout) aggiornando un indicatore di progresso."""
     if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
         st.error("Predict (Uncertainty) Seq2Seq: Input mancanti.")
-        return None, None
+        return None, None, None
 
     model.train()
     predictions_list = []
+    attention_list = []
     
     scaler_past = scalers.get("past")
     scaler_forecast = scalers.get("forecast")
@@ -889,10 +962,12 @@ def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, sca
 
         with torch.no_grad():
             for i in range(num_passes):
-                output = model(past_tens, future_tens, teacher_forcing_ratio=0.0)
+                output, attention_weights = model(past_tens, future_tens, teacher_forcing_ratio=0.0)
                 out_np = output.cpu().numpy().squeeze(0)
                 preds_single_pass = scaler_targets.inverse_transform(out_np)
                 predictions_list.append(preds_single_pass)
+                if attention_weights is not None:
+                    attention_list.append(attention_weights.cpu().numpy().squeeze(0))
                 
                 # Aggiorna la barra di avanzamento se fornita
                 if progress_indicator:
@@ -904,21 +979,39 @@ def predict_seq2seq_with_uncertainty(model, past_data, future_forecast_data, sca
         st.error(f"Errore durante il ciclo di predict_seq2seq_with_uncertainty: {e}")
         st.error(traceback.format_exc())
         model.eval()
-        return None, None
+        return None, None, None
 
     model.eval()
 
     if not predictions_list:
         st.error("Nessuna previsione valida generata durante il MC Dropout (Seq2Seq).")
-        return None, None
+        return None, None, None
         
     predictions_array = np.array(predictions_list)
     mean_prediction = np.mean(predictions_array, axis=0)
     std_prediction = np.std(predictions_array, axis=0)
+
+    mean_attention = None
+    if attention_list:
+        attention_array = np.array(attention_list)
+        mean_attention = np.mean(attention_array, axis=0)
     
-    return mean_prediction, std_prediction
+    return mean_prediction, std_prediction, mean_attention
 
 # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
+
+def plot_attention_weights(attention_weights, input_labels, output_labels):
+    fig = go.Figure(data=go.Heatmap(
+                    z=attention_weights,
+                    x=input_labels,
+                    y=output_labels,
+                    colorscale='Blues'))
+    fig.update_layout(
+        title='Mappa di Attenzione',
+        xaxis_title='Passi Temporali di Input',
+        yaxis_title='Passi Temporali di Output Previsti'
+    )
+    return fig
 
 # SOSTITUIRE LA FUNZIONE ESISTENTE 'plot_predictions' CON QUESTA
 def plot_predictions(predictions, config, start_time=None, actual_data=None, actual_data_label="Dati Reali CSV", uncertainty=None):
@@ -1517,15 +1610,21 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             # Se il forward NON gestisce TF, bisogna fare il loop qui:
             batch_s, out_win, target_size_dec = x_enc_b.shape[0], model.output_window, model.decoder.output_size
             outputs_train_epoch = torch.zeros(batch_s, out_win, target_size_dec).to(device)
-            encoder_hidden, encoder_cell = model.encoder(x_enc_b)
+            
+            encoder_outputs, encoder_hidden, encoder_cell = model.encoder(x_enc_b)
             decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
             # Primo input al decoder (t=0) è sempre da x_dec_b
             decoder_input_step = x_dec_b[:, 0:1, :]
 
             for t in range(out_win):
-                decoder_output_step, decoder_hidden, decoder_cell = model.decoder(
-                    decoder_input_step, decoder_hidden, decoder_cell
-                )
+                if hasattr(model.decoder, 'attention'):
+                    decoder_output_step, decoder_hidden, decoder_cell, _ = model.decoder(
+                        decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
+                    )
+                else:
+                    decoder_output_step, decoder_hidden, decoder_cell = model.decoder(
+                        decoder_input_step, decoder_hidden, decoder_cell
+                    )
                 outputs_train_epoch[:, t, :] = decoder_output_step
 
                 # Teacher forcing per il *successivo* input al decoder
@@ -1574,7 +1673,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             with torch.no_grad():
                 for x_enc_vb, x_dec_vb, y_tar_vb in val_loader_final_s2s:
                     x_enc_vb, x_dec_vb, y_tar_vb = x_enc_vb.to(device, non_blocking=True), x_dec_vb.to(device, non_blocking=True), y_tar_vb.to(device, non_blocking=True)
-                    outputs_val_epoch = model(x_enc_vb, x_dec_vb, teacher_forcing_ratio=0.0) # TF=0 for validation
+                    outputs_val_epoch, _ = model(x_enc_vb, x_dec_vb, teacher_forcing_ratio=0.0) # TF=0 for validation, unpack tuple
                     loss_per_element_val = criterion(outputs_val_epoch, y_tar_vb)
                     
                     scalar_loss_val_batch = loss_per_element_val.mean()
@@ -2301,7 +2400,7 @@ elif page == 'Simulazione':
              if st.button("Esegui Simulazione Seq2Seq", disabled=not can_run_s2s_sim, type="primary", key="run_s2s_sim_button"):
                   if not can_run_s2s_sim: st.error("Mancano dati storici validi o previsioni future valide.")
                   else:
-                       predictions_s2s = None; start_pred_time_s2s = None; uncertainty_s2s = None
+                       predictions_s2s = None; start_pred_time_s2s = None; uncertainty_s2s = None; attention_weights_s2s = None
                        progress_placeholder_s2s = st.empty() # 1. Crea placeholder
                        with st.spinner("Preparazione simulazione Seq2Seq..."):
                            past_data_np = st.session_state.seq2seq_past_data_gsheet[past_feature_cols_model].astype(float).values
@@ -2309,7 +2408,7 @@ elif page == 'Simulazione':
                            
                            if num_passes_sim > 1:
                                progress_bar_s2s = progress_placeholder_s2s.progress(0, text="Avvio calcolo incertezza Seq2Seq...")
-                               predictions_s2s, uncertainty_s2s = predict_seq2seq_with_uncertainty(
+                               predictions_s2s, uncertainty_s2s, attention_weights_s2s = predict_seq2seq_with_uncertainty(
                                    active_model, past_data_np, future_forecast_np, 
                                    active_scalers, active_config, active_device, 
                                    num_passes=num_passes_sim,
@@ -2317,7 +2416,7 @@ elif page == 'Simulazione':
                                )
                            else:
                                st.info("Esecuzione singola passata (nessuna incertezza calcolata).")
-                               predictions_s2s = predict_seq2seq(
+                               predictions_s2s, attention_weights_s2s = predict_seq2seq(
                                    active_model, past_data_np, future_forecast_np,
                                    active_scalers, active_config, active_device
                                )
@@ -2372,6 +2471,28 @@ elif page == 'Simulazione':
                            st.subheader('Grafici Previsioni Simulate (Seq2Seq - Individuali H e Q)'); figs_sim_s2s = plot_predictions(predictions_s2s, active_config, start_pred_time_s2s, uncertainty=uncertainty_s2s); num_graph_cols = min(len(figs_sim_s2s), 3); sim_cols = st.columns(num_graph_cols)
                            for i, fig_sim in enumerate(figs_sim_s2s):
                               with sim_cols[i % num_graph_cols]: s_name_file = re.sub(r'[^a-zA-Z0-9_-]', '_', get_station_label(target_columns_model[i], short=False)); filename_base_s2s_ind = f"grafico_sim_s2s_{s_name_file}{ATTRIBUTION_PHRASE_FILENAME_SUFFIX}_{datetime.now().strftime('%Y%m%d_%H%M')}"; st.plotly_chart(fig_sim, use_container_width=True); st.markdown(get_plotly_download_link(fig_sim, filename_base_s2s_ind), unsafe_allow_html=True)
+                           
+                           if attention_weights_s2s is not None:
+                               st.subheader("Visualizzazione Mappa di Attenzione")
+                               try:
+                                   # Squeeze to handle potential batch dimension of 1 if not already done
+                                   attention_to_plot = np.squeeze(attention_weights_s2s)
+                                   
+                                   # Ensure it's 2D
+                                   if attention_to_plot.ndim == 2:
+                                       input_len_att = attention_to_plot.shape[1]
+                                       output_len_att = attention_to_plot.shape[0]
+                                       
+                                       input_labels = [f"Input T-{i}" for i in range(input_len_att - 1, -1, -1)] # Reverse for chronological order
+                                       output_labels = [f"Output T+{i+1}" for i in range(output_len_att)]
+                                       
+                                       attention_fig = plot_attention_weights(attention_to_plot, input_labels, output_labels)
+                                       st.plotly_chart(attention_fig, use_container_width=True)
+                                   else:
+                                       st.warning(f"La mappa di attenzione ha una forma inattesa ({attention_to_plot.shape}) e non può essere visualizzata.")
+                               except Exception as e_att_plot:
+                                   st.error(f"Errore durante la visualizzazione della mappa di attenzione: {e_att_plot}")
+
                            st.subheader('Grafico Combinato Livelli H Output (Seq2Seq)'); fig_combined_s2s = go.Figure()
                            if start_pred_time_s2s and len(pred_times_s2s) == output_steps_actual: x_axis_comb, x_title_comb = pred_times_s2s, "Data e Ora Previste"; x_tick_format = "%d/%m %H:%M"
                            else: x_axis_comb = (np.arange(output_steps_actual) + 1) * 0.5; x_title_comb = "Ore Future (passi da 30 min)"; x_tick_format = None
@@ -2851,7 +2972,8 @@ elif page == 'Test Modello su Storico':
 
             with st.spinner(f"Periodo {i_period+1}: Estrazione dati e predizione..."):
                 predictions_test_period = None
-                uncertainty_test_period = None # Aggiungi questa variabile
+                uncertainty_test_period = None
+                attention_weights_test_period = None
                 actual_target_data_np_test_period = None
                 prediction_start_time_test_period = None
                 period_mses = {}
@@ -2863,17 +2985,17 @@ elif page == 'Test Modello su Storico':
                     actual_target_data_np_test_period = actual_data_for_comparison_df_period[target_columns_model_test].astype(float).values
                     prediction_start_time_test_period = actual_data_for_comparison_df_period[date_col_name_csv].iloc[0]
 
-                    if active_model_type == "Seq2Seq":
+                    if active_model_type == "Seq2Seq" or active_model_type == "Seq2SeqAttention":
                         past_input_np_test_period = input_data_df_test_period[past_feature_cols_model_test].astype(float).values
                         future_forecast_df_test_period = df_current_csv.iloc[actual_data_start_idx_test : future_forecast_data_end_idx_wf]
                         future_forecast_np_test_period = future_forecast_df_test_period[forecast_feature_cols_model_test].astype(float).values
                         if num_passes_test > 1:
-                            predictions_test_period, uncertainty_test_period = predict_seq2seq_with_uncertainty(
+                            predictions_test_period, uncertainty_test_period, attention_weights_test_period = predict_seq2seq_with_uncertainty(
                                 active_model, past_input_np_test_period, future_forecast_np_test_period,
                                 active_scalers, active_config, active_device, num_passes=num_passes_test
                             )
                         else:
-                            predictions_test_period = predict_seq2seq(
+                            predictions_test_period, attention_weights_test_period = predict_seq2seq(
                                 active_model, past_input_np_test_period, future_forecast_np_test_period,
                                 active_scalers, active_config, active_device
                             )
@@ -2907,7 +3029,8 @@ elif page == 'Test Modello su Storico':
                         "output_df_slice": actual_data_for_comparison_df_period,
                         "predictions": predictions_test_period,
                         "actuals": actual_target_data_np_test_period,
-                        "uncertainty": uncertainty_test_period, # NUOVA CHIAVE
+                        "uncertainty": uncertainty_test_period,
+                        "attention_weights": attention_weights_test_period,
                         "start_time": prediction_start_time_test_period,
                         "mses": period_mses,
                         "len_compared": len_to_compare
@@ -2979,6 +3102,23 @@ elif page == 'Test Modello su Storico':
                         filename_base_test_ind_p = f"grafico_test_periodo_{result['period_num']}_{s_name_file_test_p}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                         st.plotly_chart(fig_test_p, use_container_width=True)
                         st.markdown(get_plotly_download_link(fig_test_p, filename_base_test_ind_p, text_html=f"HTML P.{result['period_num']}", text_png=f"PNG P.{result['period_num']}"), unsafe_allow_html=True)
+                
+                if result.get('attention_weights') is not None:
+                    st.markdown("**Mappa di Attenzione per il Periodo:**")
+                    try:
+                        attention_to_plot_test = np.squeeze(result['attention_weights'])
+                        if attention_to_plot_test.ndim == 2:
+                            input_len_att_test = attention_to_plot_test.shape[1]
+                            output_len_att_test = attention_to_plot_test.shape[0]
+                            input_labels_test = [f"Input T-{i}" for i in range(input_len_att_test - 1, -1, -1)]
+                            output_labels_test = [f"Output T+{i+1}" for i in range(output_len_att_test)]
+                            attention_fig_test = plot_attention_weights(attention_to_plot_test, input_labels_test, output_labels_test)
+                            st.plotly_chart(attention_fig_test, use_container_width=True)
+                        else:
+                            st.warning(f"Mappa di attenzione (Periodo {result['period_num']}) ha forma inattesa ({attention_to_plot_test.shape}).")
+                    except Exception as e_att_plot_test:
+                        st.error(f"Errore visualizzazione mappa di attenzione (Periodo {result['period_num']}): {e_att_plot_test}")
+
                 st.divider()
 
             # --- Averaged Metrics Display ---
@@ -3057,7 +3197,7 @@ elif page == 'Allenamento Modello':
 
     if not data_ready_csv: st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar per avviare l'allenamento."); st.stop()
     st.success(f"Dati CSV disponibili per l'allenamento: {len(df_current_csv)} righe."); st.subheader('Configurazione Addestramento')
-    train_model_type = st.radio("Tipo di Modello da Allenare:", ["LSTM Standard", "Seq2Seq (Encoder-Decoder)"], key="train_select_type", horizontal=True)
+    train_model_type = st.radio("Tipo di Modello da Allenare:", ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione"], key="train_select_type", horizontal=True)
     default_save_name = f"modello_{train_model_type.split()[0].lower()}_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"; save_name_input = st.text_input("Nome base per salvare il modello e i file associati:", default_save_name, key="train_save_filename")
     save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_') or "modello_default"; os.makedirs(MODELS_DIR, exist_ok=True)
     if save_name != save_name_input: st.caption(f"Nome file valido: `{save_name}`")
@@ -3224,8 +3364,8 @@ elif page == 'Allenamento Modello':
                      find_available_models.clear()
                  except Exception as e_save: st.error(f"Errore salvataggio modello LSTM: {e_save}"); st.error(traceback.format_exc())
              else: st.error("Addestramento LSTM fallito. Modello non salvato.")
-    elif train_model_type == "Seq2Seq (Encoder-Decoder)":
-         st.markdown("**1. Seleziona Feature (Seq2Seq)**"); features_present_in_csv_s2s = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist(); default_past_features_s2s = [f for f in st.session_state.feature_columns if f in features_present_in_csv_s2s]; selected_past_features_s2s = st.multiselect("Feature Storiche (Input Encoder):", options=features_present_in_csv_s2s, default=default_past_features_s2s, key="train_s2s_past_feat")
+    elif train_model_type == "Seq2Seq (Encoder-Decoder)" or train_model_type == "Seq2Seq con Attenzione":
+         st.markdown(f"**1. Seleziona Feature ({train_model_type})**"); features_present_in_csv_s2s = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist(); default_past_features_s2s = [f for f in st.session_state.feature_columns if f in features_present_in_csv_s2s]; selected_past_features_s2s = st.multiselect("Feature Storiche (Input Encoder):", options=features_present_in_csv_s2s, default=default_past_features_s2s, key="train_s2s_past_feat")
          options_forecast = selected_past_features_s2s; default_forecast_cols = [f for f in options_forecast if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]; selected_forecast_features_s2s = st.multiselect("Feature Forecast (Input Decoder):", options=options_forecast, default=default_forecast_cols, key="train_s2s_forecast_feat")
          level_options_s2s = [f for f in selected_past_features_s2s if 'livello' in f.lower() or '[m]' in f.lower()]; default_targets_s2s = level_options_s2s[:1]; selected_targets_s2s = st.multiselect("Target Output (Livelli):", options=level_options_s2s, default=default_targets_s2s, key="train_s2s_target_feat")
 
@@ -3279,8 +3419,8 @@ elif page == 'Allenamento Modello':
                     st.caption(f"Configurazione Cumulativa Seq2Seq (Passato): `{cumulative_config_past_s2s}`")
         # --- End of Seq2Seq Feature Engineering UI ---
 
-         st.markdown("**2. Parametri Finestre e Training (Seq2Seq)**")
-         with st.expander("Impostazioni Allenamento Seq2Seq", expanded=True):
+         st.markdown(f"**2. Parametri Finestre e Training ({train_model_type})**")
+         with st.expander(f"Impostazioni Allenamento {train_model_type}", expanded=True):
              c1_s2s, c2_s2s, c3_s2s = st.columns(3)
              with c1_s2s: 
                  iw_steps_s2s = st.number_input("Input Storico (steps da 30min)", min_value=2, value=48, step=2, key="t_s2s_in")
@@ -3308,7 +3448,7 @@ elif page == 'Allenamento Modello':
          st.divider()
          ready_to_train_s2s = bool(save_name and selected_past_features_s2s and selected_forecast_features_s2s and selected_targets_s2s and ow_steps_s2s > 0 and n_splits_cv_s2s >=1)
          if n_splits_cv_s2s < 2: st.caption("Nota: Con n_splits < 2, TimeSeriesSplit si comporta come una singola divisione train/test, usando l'ultimo blocco per la validazione.")
-         if st.button("Avvia Addestramento Seq2Seq", type="primary", disabled=not ready_to_train_s2s, key="train_run_s2s"):
+         if st.button(f"Avvia Addestramento {train_model_type}", type="primary", disabled=not ready_to_train_s2s, key="train_run_s2s"):
             # --- INIZIO BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
             if not selected_past_features_s2s:
                 st.error("Seleziona almeno una colonna per le 'Feature Storiche (Input Encoder)'.")
@@ -3324,7 +3464,7 @@ elif page == 'Allenamento Modello':
                 st.stop()
             # --- FINE BLOCCO AGGIUNTO/MODIFICATO PER CONTROLLI ---
 
-            st.info(f"Avvio addestramento Seq2Seq per '{save_name}'...");
+            st.info(f"Avvio addestramento {train_model_type} per '{save_name}'...");
             with st.spinner("Preparazione dati Seq2Seq..."): 
                 # Prepare_training_data_seq2seq now returns full scaled datasets
                 data_tuple_s2s = prepare_training_data_seq2seq(
@@ -3348,7 +3488,10 @@ elif page == 'Allenamento Modello':
             try: 
                 # Input size for encoder now comes from the scaled data's feature dimension
                 enc = EncoderLSTM(X_enc_scaled_full_s2s.shape[2], hs_t_s2s, nl_t_s2s, dr_t_s2s)
-                dec = DecoderLSTM(X_dec_scaled_full_s2s.shape[2], hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
+                if train_model_type == "Seq2Seq con Attenzione":
+                    dec = DecoderLSTMWithAttention(X_dec_scaled_full_s2s.shape[2], hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
+                else:
+                    dec = DecoderLSTM(X_dec_scaled_full_s2s.shape[2], hs_t_s2s, len(selected_targets_s2s), nl_t_s2s, dr_t_s2s)
             except Exception as e_init: st.error(f"Errore inizializzazione modello Seq2Seq: {e_init}"); st.stop()
             
             trained_model_s2s, train_histories_s2s, val_histories_s2s = train_model_seq2seq(
@@ -3361,23 +3504,26 @@ elif page == 'Allenamento Modello':
             )
 
             if trained_model_s2s:
-                st.success("Addestramento Seq2Seq completato!")
+                st.success(f"Addestramento {train_model_type} completato!")
                 train_loss_scalar_hist_s2s, train_loss_per_step_hist_s2s = train_histories_s2s
                 val_loss_scalar_hist_s2s, val_loss_per_step_hist_s2s = (None, None)
                 if val_histories_s2s and val_histories_s2s[0] is not None:
                     val_loss_scalar_hist_s2s, val_loss_per_step_hist_s2s = val_histories_s2s
                 
                 if train_loss_per_step_hist_s2s and len(train_loss_per_step_hist_s2s) > 0:
-                    st.write("Loss per step finale (Train Seq2Seq):")
+                    st.write(f"Loss per step finale (Train {train_model_type}):")
                     st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(train_loss_per_step_hist_s2s[-1])})
                 if val_loss_per_step_hist_s2s is not None and len(val_loss_per_step_hist_s2s) > 0 and not np.all(np.isnan(val_loss_per_step_hist_s2s[-1])):
-                    st.write("Loss per step finale (Validation Seq2Seq):")
+                    st.write(f"Loss per step finale (Validation {train_model_type}):")
                     st.json({f"Step {i+1} (T+{ (i+1)*0.5 }h)": f"{loss:.6f}" for i, loss in enumerate(val_loss_per_step_hist_s2s[-1])})
 
                 try:
                     base_path = os.path.join(MODELS_DIR, save_name); m_path = f"{base_path}.pth"; torch.save(trained_model_s2s.state_dict(), m_path); sp_path = f"{base_path}_past_features.joblib"; joblib.dump(sc_past, sp_path); sf_path = f"{base_path}_forecast_features.joblib"; joblib.dump(sc_fore, sf_path); st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_tar, st_path); c_path = f"{base_path}.json"
+                    
+                    model_type_to_save = "Seq2SeqAttention" if train_model_type == "Seq2Seq con Attenzione" else "Seq2Seq"
+
                     config_save_s2s = {
-                        "model_type": "Seq2Seq", "input_window_steps": iw_steps_s2s, 
+                        "model_type": model_type_to_save, "input_window_steps": iw_steps_s2s, 
                         "forecast_window_steps": fw_steps_s2s, "output_window_steps": ow_steps_s2s, 
                         "hidden_size": hs_t_s2s, "num_layers": nl_t_s2s, "dropout": dr_t_s2s, 
                         "all_past_feature_columns": selected_past_features_s2s, # Original past features
@@ -3392,12 +3538,12 @@ elif page == 'Allenamento Modello':
                         "learning_rate": lr_t_s2s, "batch_size": bs_t_s2s, "epochs": ep_t_s2s, "display_name": save_name
                     }
                     with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_s2s, f, indent=4)
-                    st.success(f"Modello Seq2Seq '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader("Download File Modello Seq2Seq"); col_dl_s2s_1, col_dl_s2s_2 = st.columns(2)
+                    st.success(f"Modello {train_model_type} '{save_name}' salvato in '{MODELS_DIR}'."); st.subheader(f"Download File Modello {train_model_type}"); col_dl_s2s_1, col_dl_s2s_2 = st.columns(2)
                     with col_dl_s2s_1: st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sp_path,"Scaler Passato (.joblib)"), unsafe_allow_html=True); st.markdown(get_download_link_for_file(st_path,"Scaler Target (.joblib)"), unsafe_allow_html=True)
                     with col_dl_s2s_2: st.markdown(get_download_link_for_file(c_path), unsafe_allow_html=True); st.markdown(get_download_link_for_file(sf_path,"Scaler Forecast (.joblib)"), unsafe_allow_html=True)
                     find_available_models.clear()
-                except Exception as e_save_s2s: st.error(f"Errore salvataggio modello Seq2Seq: {e_save_s2s}"); st.error(traceback.format_exc())
-            else: st.error("Addestramento Seq2Seq fallito. Modello non salvato.")
+                except Exception as e_save_s2s: st.error(f"Errore salvataggio modello {train_model_type}: {e_save_s2s}"); st.error(traceback.format_exc())
+            else: st.error(f"Addestramento {train_model_type} fallito. Modello non salvato.")
 
 # --- INIZIO BLOCCO NUOVO CODICE PER POST-TRAINING ---
 # --- PAGINA POST-TRAINING MODELLO ---
