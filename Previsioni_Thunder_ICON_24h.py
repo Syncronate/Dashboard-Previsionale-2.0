@@ -11,47 +11,114 @@ import pandas as pd
 import numpy as np
 import traceback
 
-# --- NOTA: Definizioni delle Classi di Modello ---
-# In questa sezione dovrai inserire le definizioni Python del tuo nuovo modello.
-# Il file di configurazione menziona "Seq2SeqAttention", quindi dovresti avere
-# classi come Encoder, Attention, Decoder e la classe principale del modello.
-#
-# ESEMPIO (DA SOSTITUIRE CON IL TUO CODICE REALE):
-# class Encoder(nn.Module):
-#     # ... tuo codice ...
-#
-# class Attention(nn.Module):
-#     # ... tuo codice ...
-#
-# class Decoder(nn.Module):
-#     # ... tuo codice ...
-#
-# class Seq2SeqAttention(nn.Module):
-#     def __init__(self, encoder, decoder, device):
-#         super().__init__()
-#         self.encoder = encoder
-#         self.decoder = decoder
-#         self.device = device
-#
-#     def forward(self, src, future_inputs, teacher_forcing_ratio=0):
-#         # La firma di questo metodo è un'ipotesi.
-#         # Adattala alla tua implementazione reale.
-#         # ... logica della forward pass ...
-#         return outputs
+# --- NOTA: Definizioni delle Classi di Modello (INSERITE DAL CODICE SORGENTE) ---
+# Queste classi sono state estratte dalla tua app Streamlit e sono necessarie
+# per ricostruire l'architettura del modello prima di caricarne i pesi.
+
+class EncoderLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
+                          batch_first=True, dropout=dropout if num_layers > 1 else 0)
+
+    def forward(self, x):
+        outputs, (hidden, cell) = self.lstm(x)
+        # NOTA: il forward dell'encoder per un modello con attention restituisce anche gli 'outputs'
+        return outputs, hidden, cell
+
+class Attention(nn.Module):
+    def __init__(self, hidden_size):
+        super(Attention, self).__init__()
+        # L'attention combina lo stato nascosto del decoder e gli output dell'encoder
+        self.attn = nn.Linear(hidden_size * 2, hidden_size)
+        self.v = nn.Parameter(torch.rand(hidden_size))
+
+    def forward(self, hidden, encoder_outputs):
+        # hidden è lo stato nascosto del decoder (ultimo layer), shape: [1, batch_size, hidden_size]
+        # encoder_outputs ha shape: [batch_size, seq_len, hidden_size]
+        hidden_repeated = hidden[-1].unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)
+        
+        # Concatena e calcola l'energia
+        energy = torch.tanh(self.attn(torch.cat([hidden_repeated, encoder_outputs], dim=2)))
+        energy = energy.permute(0, 2, 1) # [batch_size, hidden_size, seq_len]
+        
+        # Calcola gli score
+        v_exp = self.v.repeat(encoder_outputs.size(0), 1).unsqueeze(1) # [batch_size, 1, hidden_size]
+        scores = torch.bmm(v_exp, energy).squeeze(1) # [batch_size, seq_len]
+        
+        return torch.softmax(scores, dim=1)
+
+class DecoderLSTMWithAttention(nn.Module):
+    def __init__(self, forecast_input_size, hidden_size, output_size, num_layers=2, dropout=0.2):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.forecast_input_size = forecast_input_size
+        self.output_size = output_size
+        
+        self.attention = Attention(hidden_size)
+        # L'input dell'LSTM del decoder è la concatenazione del forecast step e del context vector
+        self.lstm = nn.LSTM(forecast_input_size + hidden_size, hidden_size, num_layers,
+                          batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
+        # x_forecast_step shape: [batch_size, 1, forecast_input_size]
+        # hidden shape: [num_layers, batch_size, hidden_size]
+        # encoder_outputs shape: [batch_size, src_len, hidden_size]
+        
+        attn_weights = self.attention(hidden, encoder_outputs).unsqueeze(1) # -> [batch_size, 1, src_len]
+        context_vector = torch.bmm(attn_weights, encoder_outputs) # -> [batch_size, 1, hidden_size]
+        
+        lstm_input = torch.cat([x_forecast_step, context_vector], dim=2) # -> [batch_size, 1, forecast_input_size + hidden_size]
+        
+        output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
+        prediction = self.fc(output.squeeze(1))
+        
+        return prediction, hidden, cell, attn_weights
+
+class Seq2SeqWithAttention(nn.Module):
+    def __init__(self, encoder, decoder, output_window_steps):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.output_window = output_window_steps
+
+    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0):
+        # In modalità inferenza (previsione), teacher_forcing_ratio è sempre 0.
+        batch_size = x_past.shape[0]
+        target_output_size = self.decoder.output_size
+        outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(x_past.device)
+        
+        encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
+        decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
+        
+        # Il primo input al decoder è il primo step dei dati di forecast futuri
+        decoder_input_step = x_future_forecast[:, 0:1, :]
+
+        for t in range(self.output_window):
+            decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
+                decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
+            )
+            outputs[:, t, :] = decoder_output_step
+
+            # Per la previsione, si usano sempre gli input futuri forniti.
+            if t < self.output_window - 1:
+                decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+        
+        # Restituiamo solo gli output, i pesi di attention non servono per lo script di previsione.
+        # La tua app li usava per visualizzazione, qui li ignoriamo.
+        return outputs, attn_weights
 
 
 # --- Costanti Aggiornate ---
 MODELS_DIR = "models"
-# NOTA: Nome del nuovo modello aggiornato.
 MODEL_BASE_NAME = "modello_seq2seq_20250731_2004"
 GSHEET_ID = os.environ.get("GSHEET_ID")
-# NOTA: Nomi dei fogli di input aggiornati.
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
-# NOTA: Nome del foglio di output cambiato per chiarezza.
 GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ICON 24h"
 
-# Costanti per le date (presumibilmente invariate)
 GSHEET_DATE_COL_INPUT = 'Data_Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
 GSHEET_FORECAST_DATE_COL = 'Timestamp'
@@ -59,93 +126,83 @@ GSHEET_FORECAST_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 italy_tz = pytz.timezone('Europe/Rome')
 
 
-# --- Funzione di Caricamento Modello Aggiornata ---
+# --- Funzione di Caricamento Modello Aggiornata e COMPLETATA ---
 def load_model_and_scalers(model_base_name, models_dir):
-    """
-    Carica il modello, i file di configurazione e gli scaler associati.
-    """
     config_path = os.path.join(models_dir, f"{model_base_name}.json")
     model_path = os.path.join(models_dir, f"{model_base_name}.pth")
+    # I nomi degli scaler sono basati sulla tua app di training
     scaler_past_features_path = os.path.join(models_dir, f"{model_base_name}_past_features.joblib")
-    scaler_targets_path = os.path.join(models_dir, f"{model_base_name}_targets.joblib")
-    # NOTA: Assumiamo che ci sia un solo scaler per le feature future, come nello script originale.
-    # Se hai scaler separati, dovrai aggiornare questa logica.
     scaler_forecast_features_path = os.path.join(models_dir, f"{model_base_name}_forecast_features.joblib")
-
-    required_files = [config_path, model_path, scaler_past_features_path, scaler_targets_path, scaler_forecast_features_path]
+    scaler_targets_path = os.path.join(models_dir, f"{model_base_name}_targets.joblib")
+    
+    required_files = [config_path, model_path, scaler_past_features_path, scaler_forecast_features_path, scaler_targets_path]
     for p in required_files:
         if not os.path.exists(p):
-            print(f"ERRORE CRITICO: File non trovato -> {p}")
-            raise FileNotFoundError(f"Uno o più file per il modello '{model_base_name}' non trovati.")
+            raise FileNotFoundError(f"ERRORE CRITICO: File non trovato -> {p}")
 
     with open(config_path, 'r', encoding='utf-8-sig') as f:
         config = json.load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # NOTA: L'istanziazione del modello dipende dalle tue classi.
-    # Questo è un ESEMPIO e dovrai adattarlo.
-    # Assumiamo che la tua classe principale si chiami 'Seq2SeqAttention'.
-    # encoder = Encoder(input_dim=len(config['all_past_feature_columns']), ...)
-    # attention = Attention(...)
-    # decoder = Decoder(output_dim=len(config['target_columns']), ...)
-    # model = Seq2SeqAttention(encoder, decoder, device).to(device)
-
-    # Carica solo lo stato del modello. Prima devi avere istanziato l'architettura corretta.
-    # model.load_state_dict(torch.load(model_path, map_location=device))
-    # model.eval()
     
-    # PER ORA, RESTITUIAMO 'None' PER IL MODELLO. DECOMMENTA LE RIGHE SOPRA E RIMUOVI 'model = None'
-    # QUANDO AVRAI INSERITO LE CLASSI CORRETTE.
-    model = None # <-- SOSTITUISCI QUESTO!
-    if model is None:
-        print("ATTENZIONE: Il modello non è stato istanziato. Inserire le classi corrette.")
-    else:
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        model.eval()
-        print(f"Modello '{model_base_name}' caricato con successo su {device}.")
+    # --- BLOCCO DI ISTANZIAZIONE MODELLO COMPLETATO ---
+    model_type = config.get("model_type")
+    if model_type != "Seq2SeqAttention":
+        raise ValueError(f"Tipo di modello non supportato da questo script: '{model_type}'. Richiesto 'Seq2SeqAttention'.")
 
+    enc_input_size = len(config["all_past_feature_columns"])
+    dec_input_size = len(config["forecast_input_columns"])
+    dec_output_size = len(config["target_columns"])
+    hidden = config["hidden_size"]
+    layers = config["num_layers"]
+    drop = config["dropout"]
+    out_win = config["output_window_steps"]
+    
+    encoder = EncoderLSTM(enc_input_size, hidden, layers, drop)
+    decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop)
+    model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
+    
+    print(f"Architettura modello '{model_type}' istanziata correttamente.")
+    
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+    print(f"Modello '{model_base_name}' caricato con successo su {device}.")
+    # --- FINE BLOCCO COMPLETATO ---
 
     scaler_past_features = joblib.load(scaler_past_features_path)
-    scaler_targets = joblib.load(scaler_targets_path)
     scaler_forecast_features = joblib.load(scaler_forecast_features_path)
+    scaler_targets = joblib.load(scaler_targets_path)
     print("Scaler caricati con successo.")
     
-    return model, scaler_past_features, scaler_targets, scaler_forecast_features, config, device
+    return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
 
-# --- Funzione di Preparazione Dati Aggiornata ---
+# --- Funzione di Preparazione Dati (Invariata) ---
 def fetch_and_prepare_data(gc, sheet_id, config):
-    """
-    Recupera e prepara i dati storici e futuri dai nuovi fogli Google.
-    """
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     past_feature_columns = config["all_past_feature_columns"]
     forecast_feature_columns = config["forecast_input_columns"]
-
+    
     sh = gc.open_by_key(sheet_id)
     
-    # Carica dati storici
-    print(f"Caricamento dati storici dal foglio: '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'")
+    print(f"Caricamento dati storici da: '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'")
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
     df_historical_raw = pd.DataFrame(historical_ws.get_all_records())
     
-    # NOTA: La conversione della data e la gestione dei numerici è cruciale
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(df_historical_raw[GSHEET_DATE_COL_INPUT], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
     df_historical = df_historical_raw.dropna(subset=[GSHEET_DATE_COL_INPUT]).sort_values(by=GSHEET_DATE_COL_INPUT)
     latest_valid_timestamp = df_historical[GSHEET_DATE_COL_INPUT].iloc[-1]
     
     for col in past_feature_columns:
         if col not in df_historical.columns:
-            raise ValueError(f"Colonna storica '{col}' non trovata nel foglio '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'.")
+            raise ValueError(f"Colonna storica '{col}' non trovata nel foglio.")
         df_historical[col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
 
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
 
-    # Carica dati previsionali
-    print(f"Caricamento dati previsionali dal foglio: '{GSHEET_FORECAST_DATA_SHEET_NAME}'")
+    print(f"Caricamento dati previsionali da: '{GSHEET_FORECAST_DATA_SHEET_NAME}'")
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     df_forecast_raw = pd.DataFrame(forecast_ws.get_all_records())
     df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce')
@@ -157,7 +214,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     future_data = future_forecasts.head(output_window_steps)
     for col in forecast_feature_columns:
         if col not in future_data.columns:
-            raise ValueError(f"Colonna previsionale '{col}' non trovata nel foglio '{GSHEET_FORECAST_DATA_SHEET_NAME}'.")
+            raise ValueError(f"Colonna previsionale '{col}' non trovata nel foglio.")
         future_data[col] = pd.to_numeric(future_data[col].astype(str).str.replace(',', '.'), errors='coerce')
 
     input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
@@ -167,39 +224,29 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
-# --- Funzione di Previsione Riscritta ---
+# --- Funzione di Previsione (Invariata) ---
 def make_prediction(model, scalers, config, data_inputs, device):
-    """
-    Esegue la previsione utilizzando il nuovo modello.
-    """
-    scaler_past_features, scaler_targets, scaler_forecast_features = scalers
+    scaler_past_features, scaler_forecast_features, scaler_targets = scalers
     historical_data_np, forecast_data_np = data_inputs
 
-    # 1. Normalizza gli input
     historical_normalized = scaler_past_features.transform(historical_data_np)
     forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
 
-    # 2. Converti in tensori PyTorch
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
 
-    # 3. Esegui la previsione
-    # NOTA: La chiamata al modello è un'IPOTESI. La firma del metodo .forward()
-    # della tua classe di modello (es. Seq2SeqAttention) potrebbe essere diversa.
-    # Adatta questa riga al tuo codice.
     with torch.no_grad():
-        predictions_normalized = model(historical_tensor, forecast_tensor)
+        # La forward del modello Seq2SeqWithAttention restituisce (outputs, attention_weights)
+        predictions_normalized, _ = model(historical_tensor, forecast_tensor)
 
-    # 4. De-normalizza l'output per ottenere i valori reali
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
     
     return predictions_scaled_back
 
 
-# --- Funzione `append_predictions_to_gsheet` (invariata) ---
+# --- Funzione `append_predictions_to_gsheet` (Invariata) ---
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
-    # Questa funzione rimane invariata rispetto alla tua versione originale
     sh = gc.open_by_key(sheet_id_str)
     try:
         worksheet = sh.worksheet(predictions_sheet_name)
@@ -212,10 +259,10 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     worksheet.append_row(header, value_input_option='USER_ENTERED')
     rows_to_append = []
     prediction_start_time = config["_prediction_start_time"]
-    for i, step in enumerate(range(predictions_np.shape[0])):
+    for i in range(predictions_np.shape[0]):
         timestamp = prediction_start_time + timedelta(minutes=30 * (i + 1))
         row = [timestamp.strftime('%d/%m/%Y %H:%M')]
-        row.extend([f"{val:.3f}".replace('.', ',') for val in predictions_np[step, :]])
+        row.extend([f"{val:.3f}".replace('.', ',') for val in predictions_np[i, :]])
         rows_to_append.append(row)
     if rows_to_append:
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
@@ -229,17 +276,12 @@ def main():
         gc = gspread.authorize(credentials)
         print("Autenticazione a Google Sheets riuscita.")
         
-        model, scaler_past, scaler_target, scaler_forecast, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
+        model, scaler_past, scaler_forecast, scaler_target, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
-        # NOTA: Questo blocco è cruciale. Se il modello non è stato caricato, lo script si ferma.
-        if model is None:
-            raise RuntimeError("Istanziazione del modello non implementata in 'load_model_and_scalers'. Controllare il codice.")
-
-        # NOTA: il mapping delle colonne è stato rimosso.
         hist_data, fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
         config["_prediction_start_time"] = last_ts
 
-        scalers = (scaler_past, scaler_target, scaler_forecast)
+        scalers = (scaler_past, scaler_forecast, scaler_target)
         data_inputs = (hist_data, fcst_data)
         
         predictions = make_prediction(model, scalers, config, data_inputs, device)
