@@ -1,0 +1,57 @@
+# Nome del workflow, aggiornato per il nuovo modello Thunder-ICON
+name: Previsioni_Thunder_3h
+
+on:
+  # Permette di avviare il workflow manualmente dalla UI di GitHub.
+  workflow_dispatch:
+  
+  # Trigger schedulato (es. ogni 30 minuti)
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  run-prediction:
+    # Il tipo di runner su cui verrà eseguito il job.
+    runs-on: ubuntu-latest
+    
+    # Variabili d'ambiente disponibili per tutti i passaggi del job.
+    env:
+      GSHEET_ID: ${{ secrets.GSHEET_ID }}
+      PYTHONUNBUFFERED: 1
+
+    # I passaggi (step) che compongono il job.
+    steps:
+    # 1. Fa il checkout del tuo codice dal repository.
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        lfs: true
+
+    # 2. Imposta l'ambiente Python.
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # 3. Debug: Mostra la struttura dei file.
+    - name: "Debug: List all files in the repository"
+      run: ls -lR
+
+    # 4. Installa le dipendenze Python con versioni specifiche.
+    #    <<< MODIFICA APPORTATA QUI >>>
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        # Forziamo le versioni di numpy e scikit-learn per compatibilità binaria
+        # SOSTITUISCI 1.23.5 CON LA TUA VERSIONE DI NUMPY
+        pip install pandas "numpy==1.26.4" "scikit-learn==1.2.2" joblib gspread google-auth-oauthlib pytz google-api-python-client
+
+    # 5. Crea il file credentials.json dal secret di GitHub.
+    - name: Create Google Credentials File
+      run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
+      shell: bash
+
+    # 6. Esegue il nuovo script Python di previsione.
+    - name: Run Previsioni_Thunder_3h.py
+      run: python Previsioni_Thunder_3h.py
