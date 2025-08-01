@@ -119,7 +119,10 @@ GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
 GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ICON 24h"
 
-GSHEET_DATE_COL_INPUT = 'Data_Ora'
+# *** MODIFICA EFFETTUATA QUI ***
+# Aggiornato il nome della colonna per corrispondere a quello nel foglio Google.
+GSHEET_DATE_COL_INPUT = 'Data e Ora' 
+
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
 GSHEET_FORECAST_DATE_COL = 'Timestamp'
 GSHEET_FORECAST_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
