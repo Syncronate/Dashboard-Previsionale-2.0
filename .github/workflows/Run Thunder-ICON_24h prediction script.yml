@@ -22,7 +22,6 @@ jobs:
     # I passaggi (step) che compongono il job.
     steps:
     # 1. Fa il checkout del tuo codice dal repository.
-    #    'lfs: true' è essenziale per scaricare i file del modello se sono grandi.
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
@@ -34,19 +33,19 @@ jobs:
       with:
         python-version: '3.11'
 
-    # 3. Debug: Mostra la struttura dei file per verificare i modelli.
+    # 3. Debug: Mostra la struttura dei file.
     - name: "Debug: List all files in the repository"
       run: ls -lR
 
-    # 4. Installa le dipendenze Python con la versione corretta di scikit-learn.
+    # 4. Installa le dipendenze Python con versioni specifiche.
     #    <<< MODIFICA APPORTATA QUI >>>
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # Elenco completo delle librerie necessarie.
         pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-        # Forziamo la versione di scikit-learn per compatibilità con gli scaler
-        pip install pandas numpy "scikit-learn==1.2.2" joblib gspread google-auth-oauthlib pytz google-api-python-client
+        # Forziamo le versioni di numpy e scikit-learn per compatibilità binaria
+        # SOSTITUISCI 1.23.5 CON LA TUA VERSIONE DI NUMPY
+        pip install pandas "numpy==1.23.5" "scikit-learn==1.2.2" joblib gspread google-auth-oauthlib pytz google-api-python-client
 
     # 5. Crea il file credentials.json dal secret di GitHub.
     - name: Create Google Credentials File
@@ -55,5 +54,4 @@ jobs:
 
     # 6. Esegue il nuovo script Python di previsione.
     - name: Run Thunder-ICON prediction script
-      # Assicurati che il nome del file sia corretto (senza spazi)
       run: python Previsioni_Thunder_ICON_24h.py
