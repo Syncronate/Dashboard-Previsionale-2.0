@@ -113,7 +113,7 @@ class Seq2SeqWithAttention(nn.Module):
 
 # --- Costanti Aggiornate ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20250731_2004"
+MODEL_BASE_NAME = "modello_seq2seq_20250801_1433"
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
