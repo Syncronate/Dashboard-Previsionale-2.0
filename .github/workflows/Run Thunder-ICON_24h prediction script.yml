@@ -45,7 +45,7 @@ jobs:
         pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
         # Forziamo le versioni di numpy e scikit-learn per compatibilità binaria
         # SOSTITUISCI 1.23.5 CON LA TUA VERSIONE DI NUMPY
-        pip install pandas "numpy==1.23.5" "scikit-learn==1.2.2" joblib gspread google-auth-oauthlib pytz google-api-python-client
+        pip install pandas "numpy==1.26.4" "scikit-learn==1.2.2" joblib gspread google-auth-oauthlib pytz google-api-python-client
 
     # 5. Crea il file credentials.json dal secret di GitHub.
     - name: Create Google Credentials File
