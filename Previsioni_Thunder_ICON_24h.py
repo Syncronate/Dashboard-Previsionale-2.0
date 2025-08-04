@@ -90,16 +90,12 @@ GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ICON 24h"
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
-
-# *** MODIFICHE EFFETTUATE QUI ***
-# Aggiornato il nome della colonna e il formato della data anche per il foglio delle previsioni.
 GSHEET_FORECAST_DATE_COL = 'Data e Ora'
 GSHEET_FORECAST_DATE_FORMAT = '%d/%m/%Y %H:%M'
 
 italy_tz = pytz.timezone('Europe/Rome')
 
 
-# --- Funzione di Caricamento Modello Aggiornata e COMPLETATA ---
 def load_model_and_scalers(model_base_name, models_dir):
     config_path = os.path.join(models_dir, f"{model_base_name}.json")
     model_path = os.path.join(models_dir, f"{model_base_name}.pth")
@@ -137,7 +133,6 @@ def load_model_and_scalers(model_base_name, models_dir):
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
 
-# --- Funzione di Preparazione Dati (Invariata) ---
 def fetch_and_prepare_data(gc, sheet_id, config):
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
@@ -150,33 +145,49 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
     df_historical_raw = pd.DataFrame(historical_ws.get_all_records())
     
+    print(f"Caricamento dati previsionali da: '{GSHEET_FORECAST_DATA_SHEET_NAME}'")
+    forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
+    df_forecast_raw = pd.DataFrame(forecast_ws.get_all_records())
+
+    ### MODIFICA/AGGIUNTA: Mappatura dei nomi delle colonne dal Google Sheet al nome atteso dal modello ###
+    column_mapping = {
+        "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
+        "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
+        "Cumulata Sensore 2858 (Barbara)_cumulata_30min": "Cumulata Sensore 2858 (Barbara)",
+        "Cumulata Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
+    }
+    
+    df_historical_raw.rename(columns=column_mapping, inplace=True)
+    df_forecast_raw.rename(columns=column_mapping, inplace=True)
+    print("Mappatura nomi colonne applicata ai dati caricati.")
+    ### FINE MODIFICA/AGGIUNTA ###
+
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(df_historical_raw[GSHEET_DATE_COL_INPUT], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
     df_historical = df_historical_raw.dropna(subset=[GSHEET_DATE_COL_INPUT]).sort_values(by=GSHEET_DATE_COL_INPUT)
     latest_valid_timestamp = df_historical[GSHEET_DATE_COL_INPUT].iloc[-1]
     
     for col in past_feature_columns:
         if col not in df_historical.columns:
-            raise ValueError(f"Colonna storica '{col}' non trovata nel foglio.")
-        df_historical[col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
+            raise ValueError(f"Colonna storica '{col}' non trovata nel foglio dopo la mappatura.")
+        ### MODIFICA/AGGIUNTA: Uso di .loc per evitare SettingWithCopyWarning ###
+        df_historical.loc[:, col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
 
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
 
-    print(f"Caricamento dati previsionali da: '{GSHEET_FORECAST_DATA_SHEET_NAME}'")
-    forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
-    df_forecast_raw = pd.DataFrame(forecast_ws.get_all_records())
-    
     df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce')
     
     future_forecasts = df_forecast_raw[df_forecast_raw[GSHEET_FORECAST_DATE_COL] > latest_valid_timestamp].copy()
     if len(future_forecasts) < output_window_steps:
         raise ValueError(f"Previsioni future insufficienti ({len(future_forecasts)} righe), richieste {output_window_steps}.")
     
-    future_data = future_forecasts.head(output_window_steps)
+    ### MODIFICA/AGGIUNTA: Uso di .copy() per creare un DataFrame indipendente ###
+    future_data = future_forecasts.head(output_window_steps).copy()
     for col in forecast_feature_columns:
         if col not in future_data.columns:
-            raise ValueError(f"Colonna previsionale '{col}' non trovata nel foglio.")
-        future_data[col] = pd.to_numeric(future_data[col].astype(str).str.replace(',', '.'), errors='coerce')
+            raise ValueError(f"Colonna previsionale '{col}' non trovata nel foglio dopo la mappatura.")
+        ### MODIFICA/AGGIUNTA: Uso di .loc per evitare SettingWithCopyWarning ###
+        future_data.loc[:, col] = pd.to_numeric(future_data[col].astype(str).str.replace(',', '.'), errors='coerce')
 
     input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
     
@@ -185,7 +196,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
-# --- Funzione di Previsione (Invariata) ---
+
 def make_prediction(model, scalers, config, data_inputs, device):
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
     historical_data_np, forecast_data_np = data_inputs
@@ -200,7 +211,6 @@ def make_prediction(model, scalers, config, data_inputs, device):
     return predictions_scaled_back
 
 
-# --- Funzione `append_predictions_to_gsheet` (Invariata) ---
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
     sh = gc.open_by_key(sheet_id_str)
     try:
