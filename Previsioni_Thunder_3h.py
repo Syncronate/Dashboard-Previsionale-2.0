@@ -10,6 +10,7 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import traceback
+import io  # <-- IMPORTANTE: Assicurati che questo import sia presente
 
 # Imposta seed per riproducibilità
 torch.manual_seed(42)
@@ -158,7 +159,6 @@ def load_model_and_scalers(model_base_name, models_dir):
     decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop)
     model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
     
-    # Log del checksum del modello per verificare consistenza
     model_state = torch.load(model_path, map_location=device)
     print(f"Checksum parametri modello: {hash(str(list(model_state.keys())))}")
     
@@ -169,21 +169,17 @@ def load_model_and_scalers(model_base_name, models_dir):
     scaler_forecast_features = joblib.load(scaler_forecast_features_path)
     scaler_targets = joblib.load(scaler_targets_path)
     
-    # --- INIZIO BLOCCO CORRETTO ---
-    # Log delle statistiche degli scaler.
-    # Usiamo attributi validi per MinMaxScaler come .n_features_in_ e .scale_.shape
-    # invece di .mean_ che non esiste in questa classe di scaler.
-    print(f"Scaler past features - N. features: {scaler_past_features.n_features_in_}")
-    print(f"Scaler past features - scale shape: {scaler_past_features.scale_.shape}")
-    print(f"Scaler forecast features - N. features: {scaler_forecast_features.n_features_in_}")
-    print(f"Scaler targets - N. features: {scaler_targets.n_features_in_}")
-    # --- FINE BLOCCO CORRETTO ---
+    # Log corretto per MinMaxScaler
+    print(f"Scaler past features - N. features: {getattr(scaler_past_features, 'n_features_in_', 'N/A')}")
+    print(f"Scaler forecast features - N. features: {getattr(scaler_forecast_features, 'n_features_in_', 'N/A')}")
+    print(f"Scaler targets - N. features: {getattr(scaler_targets, 'n_features_in_', 'N/A')}")
     
     print("Modello e scaler caricati con successo.")
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
+# --- INIZIO FUNZIONE CORRETTA E ROBUSTA ---
 def fetch_and_prepare_data(gc, sheet_id, config):
-    print(f"\n=== CARICAMENTO E PREPARAZIONE DATI ===")
+    print(f"\n=== CARICAMENTO E PREPARAZIONE DATI (METODO CSV ROBUSTO) ===")
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     past_feature_columns = config["all_past_feature_columns"]
@@ -192,122 +188,83 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     print(f"Parametri:")
     print(f"  - Input window steps: {input_window_steps}")
     print(f"  - Output window steps: {output_window_steps}")
-    print(f"  - Past feature columns: {past_feature_columns}")
-    print(f"  - Forecast feature columns: {forecast_feature_columns}")
     
     sh = gc.open_by_key(sheet_id)
     
-    # Caricamento dati storici
-    print(f"Caricamento dati storici da: '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'")
+    # --- CARICAMENTO DATI STORICI COME CSV ---
+    print(f"Caricamento dati storici da '{GSHEET_HISTORICAL_DATA_SHEET_NAME}' come CSV...")
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
-    df_historical_raw = pd.DataFrame(historical_ws.get_all_records())
+    export_historical = historical_ws.export(format='csv')
+    # Usiamo il motore di parsing di Pandas, molto più robusto
+    df_historical_raw = pd.read_csv(io.StringIO(export_historical.decode('utf-8')))
     print(f"Righe dati storici grezzi: {len(df_historical_raw)}")
-    print(f"Colonne disponibili: {list(df_historical_raw.columns)}")
-    
-    # Caricamento dati previsionali
-    print(f"Caricamento dati previsionali da: '{GSHEET_FORECAST_DATA_SHEET_NAME}'")
-    forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
-    df_forecast_raw = pd.DataFrame(forecast_ws.get_all_records())
-    print(f"Righe dati previsionali grezzi: {len(df_forecast_raw)}")
-    print(f"Colonne disponibili: {list(df_forecast_raw.columns)}")
 
-    # Mappatura colonne
+    # --- CARICAMENTO DATI PREVISIONALI COME CSV ---
+    print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}' come CSV...")
+    forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
+    export_forecast = forecast_ws.export(format='csv')
+    df_forecast_raw = pd.read_csv(io.StringIO(export_forecast.decode('utf-8')))
+    print(f"Righe dati previsionali grezzi: {len(df_forecast_raw)}")
+
+    # Mappatura colonne (per sicurezza)
     column_mapping = {
         "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
         "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
         "Cumulata Sensore 2858 (Barbara)_cumulata_30min": "Cumulata Sensore 2858 (Barbara)",  
         "Cumulata Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
     }
-    
-    df_historical_raw.rename(columns=column_mapping, inplace=True)
-    df_forecast_raw.rename(columns=column_mapping, inplace=True)
-    print("Mappatura colonne applicata.")
+    df_historical_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
+    df_forecast_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
 
-    # Processamento dati storici
+    # --- PROCESSAMENTO DATI STORICI ---
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
         format=GSHEET_DATE_FORMAT_INPUT, 
         errors='coerce'
     )
-    
     df_historical = df_historical_raw.dropna(subset=[GSHEET_DATE_COL_INPUT]).sort_values(by=GSHEET_DATE_COL_INPUT)
-    print(f"Righe dati storici validi: {len(df_historical)}")
-    
     latest_valid_timestamp = df_historical[GSHEET_DATE_COL_INPUT].iloc[-1]
     print(f"Ultimo timestamp valido: {latest_valid_timestamp}")
     
-    # Conversione numerica con logging dettagliato
     for col in past_feature_columns:
         if col not in df_historical.columns:
-            raise ValueError(f"Colonna '{col}' non trovata nei dati storici")
-        
-        original_values = df_historical[col].copy()
-        converted_values = pd.to_numeric(
-            original_values.astype(str).str.replace(',', '.'), 
-            errors='coerce'
-        )
-        
-        nan_count = converted_values.isna().sum()
-        if nan_count > 0:
-            print(f"ATTENZIONE: Colonna '{col}' ha {nan_count} valori NaN dopo conversione")
-            print(f"Primi 5 valori originali: {original_values.head().tolist()}")
-            print(f"Primi 5 valori convertiti: {converted_values.head().tolist()}")
-        
-        df_historical.loc[:, col] = converted_values
+            raise ValueError(f"Colonna storica '{col}' non trovata dopo il caricamento CSV.")
+        # La lettura da CSV gestisce meglio i tipi, ma forziamo a numerico per sicurezza
+        df_historical[col] = pd.to_numeric(df_historical[col], errors='coerce')
 
-    # Riempimento valori mancanti
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
     
-    print(f"Dati storici finali shape: {input_data_historical.shape}")
-    print(f"Statistiche dati storici:")
-    print(f"  - Min: {input_data_historical.min()}")
-    print(f"  - Max: {input_data_historical.max()}")
-    print(f"  - Mean: {input_data_historical.mean()}")
-    print(f"  - Std: {input_data_historical.std()}")
-
-    # Processamento dati previsionali
+    # CONTROLLO DI VALIDITA' FINALE
+    min_val, max_val = input_data_historical.min(), input_data_historical.max()
+    print(f"Statistiche dati storici (dopo caricamento CSV): Min={min_val:.2f}, Max={max_val:.2f}, Mean={input_data_historical.mean():.2f}")
+    min_ragionevole, max_ragionevole = -1000, 100000
+    if min_val < min_ragionevole or max_val > max_ragionevole:
+        raise ValueError(f"Valori anomali rilevati dopo caricamento CSV. Min: {min_val}, Max: {max_val}. Controllare il foglio Google o il processo di pulizia.")
+    else:
+        print("✓ Controllo di validità dei dati storici superato.")
+    
+    # --- PROCESSAMENTO DATI PREVISIONALI ---
     df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(
         df_forecast_raw[GSHEET_FORECAST_DATE_COL], 
         format=GSHEET_FORECAST_DATE_FORMAT, 
         errors='coerce'
     )
-    
     future_forecasts = df_forecast_raw[df_forecast_raw[GSHEET_FORECAST_DATE_COL] > latest_valid_timestamp].copy()
-    print(f"Previsioni future disponibili: {len(future_forecasts)}")
-    
     if len(future_forecasts) < output_window_steps:
         raise ValueError(f"Previsioni insufficienti: {len(future_forecasts)} < {output_window_steps}")
-    
     future_data = future_forecasts.head(output_window_steps).copy()
     
-    # Conversione numerica dati previsionali
     for col in forecast_feature_columns:
         if col not in future_data.columns:
-            raise ValueError(f"Colonna '{col}' non trovata nei dati previsionali")
-        
-        original_values = future_data[col].copy()
-        converted_values = pd.to_numeric(
-            original_values.astype(str).str.replace(',', '.'), 
-            errors='coerce'
-        )
-        
-        nan_count = converted_values.isna().sum()
-        if nan_count > 0:
-            print(f"ATTENZIONE: Colonna previsionale '{col}' ha {nan_count} valori NaN")
-        
-        future_data.loc[:, col] = converted_values
+            raise ValueError(f"Colonna previsionale '{col}' non trovata dopo caricamento CSV.")
+        future_data[col] = pd.to_numeric(future_data[col], errors='coerce')
 
     input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
-    
     print(f"Dati previsionali finali shape: {input_data_forecast.shape}")
-    print(f"Statistiche dati previsionali:")
-    print(f"  - Min: {input_data_forecast.min()}")
-    print(f"  - Max: {input_data_forecast.max()}")
-    print(f"  - Mean: {input_data_forecast.mean()}")
-    print(f"  - Std: {input_data_forecast.std()}")
-    
+
     return input_data_historical, input_data_forecast, latest_valid_timestamp
+# --- FINE FUNZIONE CORRETTA E ROBUSTA ---
 
 def make_prediction(model, scalers, config, data_inputs, device):
     print(f"\n=== GENERAZIONE PREVISIONI ===")
@@ -317,27 +274,23 @@ def make_prediction(model, scalers, config, data_inputs, device):
     print(f"Dati input - Storici shape: {historical_data_np.shape}")
     print(f"Dati input - Previsionali shape: {forecast_data_np.shape}")
     
-    # Normalizzazione con logging
     historical_normalized = scaler_past_features.transform(historical_data_np)
     forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
     
     print(f"Dati normalizzati - Storici stats: min={historical_normalized.min():.4f}, max={historical_normalized.max():.4f}")
     print(f"Dati normalizzati - Previsionali stats: min={forecast_normalized.min():.4f}, max={forecast_normalized.max():.4f}")
     
-    # Conversione a tensori
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
     
     print(f"Tensori shape - Storici: {historical_tensor.shape}, Previsionali: {forecast_tensor.shape}")
     
-    # Predizione
     with torch.no_grad():
         predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
     print(f"Previsioni normalizzate shape: {predictions_normalized.shape}")
     print(f"Previsioni normalizzate stats: min={predictions_normalized.min():.4f}, max={predictions_normalized.max():.4f}")
     
-    # Denormalizzazione
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
     
@@ -369,7 +322,6 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
         row.extend([f"{val:.3f}".replace('.', ',') for val in predictions_np[i, :]])
         rows_to_append.append(row)
         
-        # Log delle prime righe
         if i < 3:
             print(f"Riga {i+1}: {row}")
     
@@ -382,10 +334,9 @@ def main():
     print(f"Modello: {MODEL_BASE_NAME}")
     
     try:
-        # Log ambiente
         log_environment_info()
         
-        # Autenticazione
+        # Le credenziali devono essere in un file 'credentials.json' o gestite come secrets
         credentials = Credentials.from_service_account_file(
             "credentials.json", 
             scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -393,19 +344,15 @@ def main():
         gc = gspread.authorize(credentials)
         print("✓ Autenticazione Google Sheets riuscita.")
         
-        # Caricamento modello
         model, scaler_past, scaler_forecast, scaler_target, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
-        # Preparazione dati
         hist_data, fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
         config["_prediction_start_time"] = last_ts
         
-        # Predizione
         scalers = (scaler_past, scaler_forecast, scaler_target)
         data_inputs = (hist_data, fcst_data)
         predictions = make_prediction(model, scalers, config, data_inputs, device)
         
-        # Salvataggio
         append_predictions_to_gsheet(gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions, config)
         
         print(f"\n✓ SCRIPT COMPLETATO - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
