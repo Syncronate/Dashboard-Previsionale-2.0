@@ -150,7 +150,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     model_state = torch.load(model_path, map_location=device)
     model.load_state_dict(model_state)
-    model.eval() # Imposta il modello in modalità valutazione
+    model.eval()
     
     scaler_past_features = joblib.load(scaler_past_features_path)
     scaler_forecast_features = joblib.load(scaler_forecast_features_path)
@@ -160,7 +160,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
 def fetch_and_prepare_data(gc, sheet_id, config):
-    print(f"\n=== CARICAMENTO E PREPARAZIONE DATI (METODO GET_ALL_VALUES ROBUSTO) ===")
+    print(f"\n=== CARICAMENTO E PREPARAZIONE DATI (METODO GET_ALL_VALUES ROBUSTO v2) ===")
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     past_feature_columns = config["all_past_feature_columns"]
@@ -178,16 +178,17 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
     historical_values = historical_ws.get_all_values()
     historical_csv_string = values_to_csv_string(historical_values)
-    df_historical_raw = pd.read_csv(io.StringIO(historical_csv_string))
-    print(f"Righe dati storici grezzi: {len(df_historical_raw)}")
+    df_historical_raw = pd.read_csv(io.StringIO(historical_csv_string), decimal=',')
+    print("--- DEBUG: PRIME RIGHE DATAFRAME STORICO GREZZO ---")
+    print(df_historical_raw.head())
+    print("--------------------------------------------------")
 
     print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     forecast_values = forecast_ws.get_all_values()
     forecast_csv_string = values_to_csv_string(forecast_values)
-    df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string))
-    print(f"Righe dati previsionali grezzi: {len(df_forecast_raw)}")
-
+    df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
+    
     column_mapping = {
         "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
         "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
@@ -215,7 +216,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
     
     min_val, max_val = input_data_historical.min(), input_data_historical.max()
-    print(f"Statistiche dati storici: Min={min_val:.2f}, Max={max_val:.2f}, Mean={input_data_historical.mean():.2f}")
+    print(f"Statistiche dati storici (finali): Min={min_val:.2f}, Max={max_val:.2f}, Mean={input_data_historical.mean():.2f}")
     min_ragionevole, max_ragionevole = -1000, 100000
     if min_val < min_ragionevole or max_val > max_ragionevole:
         raise ValueError(f"Valori anomali rilevati. Min: {min_val}, Max: {max_val}. Controllare i dati sorgente.")
@@ -241,38 +242,30 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
-# --- FUNZIONE MODIFICATA CON BLOCCO DI DEBUG ---
 def make_prediction(model, scalers, config, data_inputs, device):
     print(f"\n=== GENERAZIONE PREVISIONI ===")
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
     historical_data_np, forecast_data_np = data_inputs
     
-    # Normalizzazione
     historical_normalized = scaler_past_features.transform(historical_data_np)
     forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
     
-    # Conversione a tensori
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
     
-    # --- INIZIO BLOCCO DI DEBUG ---
     print("\n--- DEBUG TENSOR INPUT GITHUB ---")
     print(f"Shape tensore storico (normalizzato): {historical_tensor.shape}")
     print(f"Min tensore storico:   {torch.min(historical_tensor).item():.8f}")
     print(f"Max tensore storico:   {torch.max(historical_tensor).item():.8f}")
     print(f"Mean tensore storico:  {torch.mean(historical_tensor).item():.8f}")
     print(f"Std tensore storico:   {torch.std(historical_tensor).item():.8f}")
-    # Stampa i primi e gli ultimi 5 valori della prima feature (es. 'Variabile Dummy') per vedere la scala
     print(f"Primi 5 valori, Feature 0: {historical_tensor[0, :5, 0].tolist()}")
     print(f"Ultimi 5 valori, Feature 0: {historical_tensor[0, -5:, 0].tolist()}")
     print("---------------------------------\n")
-    # --- FINE BLOCCO DI DEBUG ---
 
-    # Predizione
     with torch.no_grad():
         predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
-    # Denormalizzazione
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
     
@@ -311,7 +304,6 @@ def main():
     print(f"Modello: {MODEL_BASE_NAME}")
     
     try:
-        # Aggiungiamo le versioni delle librerie al log per un debug più facile
         log_environment_info()
         
         credentials = Credentials.from_service_account_file(
