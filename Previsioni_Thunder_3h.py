@@ -149,8 +149,6 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     df_forecast_raw = pd.DataFrame(forecast_ws.get_all_records())
 
-    ### AGGIUNTO: Mappatura dei nomi delle colonne dal Google Sheet al nome atteso dal modello ###
-    # Dizionario: {"Nome Colonna nel Google Sheet": "Nome Colonna atteso dal modello"}
     column_mapping = {
         "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
         "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
@@ -158,11 +156,9 @@ def fetch_and_prepare_data(gc, sheet_id, config):
         "Cumulata Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
     }
     
-    # Applica la rinomina a entrambi i DataFrame. Se una colonna non esiste, viene ignorata.
     df_historical_raw.rename(columns=column_mapping, inplace=True)
     df_forecast_raw.rename(columns=column_mapping, inplace=True)
     print("Mappatura nomi colonne applicata ai dati caricati.")
-    ### FINE PARTE AGGIUNTA ###
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(df_historical_raw[GSHEET_DATE_COL_INPUT], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
     df_historical = df_historical_raw.dropna(subset=[GSHEET_DATE_COL_INPUT]).sort_values(by=GSHEET_DATE_COL_INPUT)
@@ -173,8 +169,12 @@ def fetch_and_prepare_data(gc, sheet_id, config):
             raise ValueError(f"Colonna storica '{col}' non trovata nel foglio dopo la mappatura.")
         df_historical.loc[:, col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
 
-    df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
+    # --- INIZIO MODIFICA: ORDINAMENTO ESPLICITO DELLE COLONNE ---
+    print("Ordinamento delle colonne dei dati storici in base alla configurazione del modello...")
+    df_historical_ordered = df_historical[past_feature_columns]
+    df_features_filled = df_historical_ordered.ffill().bfill().fillna(0)
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
+    # --- FINE MODIFICA ---
 
     df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce')
     
@@ -189,7 +189,11 @@ def fetch_and_prepare_data(gc, sheet_id, config):
             raise ValueError(f"Colonna previsionale '{col}' non trovata nel foglio dopo la mappatura.")
         future_data.loc[:, col] = pd.to_numeric(future_data[col].astype(str).str.replace(',', '.'), errors='coerce')
 
-    input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
+    # --- INIZIO MODIFICA: ORDINAMENTO ESPLICITO DELLE COLONNE ---
+    print("Ordinamento delle colonne dei dati previsionali in base alla configurazione del modello...")
+    df_forecast_ordered = future_data[forecast_feature_columns]
+    input_data_forecast = df_forecast_ordered.ffill().bfill().fillna(0).values
+    # --- FINE MODIFICA ---
     
     print(f"Dati storici preparati con shape: {input_data_historical.shape}")
     print(f"Dati previsionali preparati con shape: {input_data_forecast.shape}")
@@ -199,14 +203,20 @@ def fetch_and_prepare_data(gc, sheet_id, config):
 def make_prediction(model, scalers, config, data_inputs, device):
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
     historical_data_np, forecast_data_np = data_inputs
+    
+    # Ora che i dati sono già ordinati correttamente, la trasformazione sarà consistente.
     historical_normalized = scaler_past_features.transform(historical_data_np)
     forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
+    
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
+    
     with torch.no_grad():
         predictions_normalized, _ = model(historical_tensor, forecast_tensor)
+        
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
+    
     return predictions_scaled_back
 
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
