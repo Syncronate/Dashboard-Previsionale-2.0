@@ -169,11 +169,15 @@ def load_model_and_scalers(model_base_name, models_dir):
     scaler_forecast_features = joblib.load(scaler_forecast_features_path)
     scaler_targets = joblib.load(scaler_targets_path)
     
-    # Log delle statistiche degli scaler
-    print(f"Scaler past features - mean shape: {scaler_past_features.mean_.shape}")
+    # --- INIZIO BLOCCO CORRETTO ---
+    # Log delle statistiche degli scaler.
+    # Usiamo attributi validi per MinMaxScaler come .n_features_in_ e .scale_.shape
+    # invece di .mean_ che non esiste in questa classe di scaler.
+    print(f"Scaler past features - N. features: {scaler_past_features.n_features_in_}")
     print(f"Scaler past features - scale shape: {scaler_past_features.scale_.shape}")
-    print(f"Scaler forecast features - mean shape: {scaler_forecast_features.mean_.shape}")
-    print(f"Scaler targets - mean shape: {scaler_targets.mean_.shape}")
+    print(f"Scaler forecast features - N. features: {scaler_forecast_features.n_features_in_}")
+    print(f"Scaler targets - N. features: {scaler_targets.n_features_in_}")
+    # --- FINE BLOCCO CORRETTO ---
     
     print("Modello e scaler caricati con successo.")
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
