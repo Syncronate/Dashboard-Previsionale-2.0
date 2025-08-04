@@ -107,6 +107,8 @@ def log_environment_info():
     print(f"PyTorch version: {torch.__version__}")
     print(f"Pandas version: {pd.__version__}")
     print(f"NumPy version: {np.__version__}")
+    print(f"gspread version: {gspread.__version__}")
+    print(f"joblib version: {joblib.__version__}")
     print(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"CUDA device: {torch.cuda.get_device_name()}")
@@ -121,19 +123,14 @@ def load_model_and_scalers(model_base_name, models_dir):
     scaler_forecast_features_path = os.path.join(models_dir, f"{model_base_name}_forecast_features.joblib")
     scaler_targets_path = os.path.join(models_dir, f"{model_base_name}_targets.joblib")
     
-    required_files = [config_path, model_path, scaler_past_features_path, scaler_forecast_features_path, scaler_targets_path]
-    for p in required_files:
+    for p in [config_path, model_path, scaler_past_features_path, scaler_forecast_features_path, scaler_targets_path]:
         if not os.path.exists(p):
             raise FileNotFoundError(f"ERRORE CRITICO: File non trovato -> {p}")
-        print(f"✓ File trovato: {p}")
     
     with open(config_path, 'r', encoding='utf-8-sig') as f:
         config = json.load(f)
     
-    print(f"Configurazione caricata: {json.dumps(config, indent=2)}")
-    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device selezionato: {device}")
     
     model_type = config.get("model_type")
     if model_type != "Seq2SeqAttention":
@@ -147,22 +144,13 @@ def load_model_and_scalers(model_base_name, models_dir):
     drop = config["dropout"]
     out_win = config["output_window_steps"]
     
-    print(f"Parametri modello:")
-    print(f"  - Encoder input size: {enc_input_size}")
-    print(f"  - Decoder input size: {dec_input_size}")
-    print(f"  - Decoder output size: {dec_output_size}")
-    print(f"  - Hidden size: {hidden}")
-    print(f"  - Num layers: {layers}")
-    print(f"  - Dropout: {drop}")
-    print(f"  - Output window: {out_win}")
-    
     encoder = EncoderLSTM(enc_input_size, hidden, layers, drop)
     decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop)
     model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
     
     model_state = torch.load(model_path, map_location=device)
     model.load_state_dict(model_state)
-    model.eval()
+    model.eval() # Imposta il modello in modalità valutazione
     
     scaler_past_features = joblib.load(scaler_past_features_path)
     scaler_forecast_features = joblib.load(scaler_forecast_features_path)
@@ -177,10 +165,6 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     output_window_steps = config["output_window_steps"]
     past_feature_columns = config["all_past_feature_columns"]
     forecast_feature_columns = config["forecast_input_columns"]
-    
-    print(f"Parametri:")
-    print(f"  - Input window steps: {input_window_steps}")
-    print(f"  - Output window steps: {output_window_steps}")
     
     sh = gc.open_by_key(sheet_id)
     
@@ -254,24 +238,41 @@ def fetch_and_prepare_data(gc, sheet_id, config):
         future_data[col] = pd.to_numeric(future_data[col], errors='coerce')
 
     input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
-    print(f"Dati previsionali finali shape: {input_data_forecast.shape}")
-
+    
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
+# --- FUNZIONE MODIFICATA CON BLOCCO DI DEBUG ---
 def make_prediction(model, scalers, config, data_inputs, device):
     print(f"\n=== GENERAZIONE PREVISIONI ===")
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
     historical_data_np, forecast_data_np = data_inputs
     
+    # Normalizzazione
     historical_normalized = scaler_past_features.transform(historical_data_np)
     forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
     
+    # Conversione a tensori
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
     
+    # --- INIZIO BLOCCO DI DEBUG ---
+    print("\n--- DEBUG TENSOR INPUT GITHUB ---")
+    print(f"Shape tensore storico (normalizzato): {historical_tensor.shape}")
+    print(f"Min tensore storico:   {torch.min(historical_tensor).item():.8f}")
+    print(f"Max tensore storico:   {torch.max(historical_tensor).item():.8f}")
+    print(f"Mean tensore storico:  {torch.mean(historical_tensor).item():.8f}")
+    print(f"Std tensore storico:   {torch.std(historical_tensor).item():.8f}")
+    # Stampa i primi e gli ultimi 5 valori della prima feature (es. 'Variabile Dummy') per vedere la scala
+    print(f"Primi 5 valori, Feature 0: {historical_tensor[0, :5, 0].tolist()}")
+    print(f"Ultimi 5 valori, Feature 0: {historical_tensor[0, -5:, 0].tolist()}")
+    print("---------------------------------\n")
+    # --- FINE BLOCCO DI DEBUG ---
+
+    # Predizione
     with torch.no_grad():
         predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
+    # Denormalizzazione
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
     
@@ -310,6 +311,7 @@ def main():
     print(f"Modello: {MODEL_BASE_NAME}")
     
     try:
+        # Aggiungiamo le versioni delle librerie al log per un debug più facile
         log_environment_info()
         
         credentials = Credentials.from_service_account_file(
