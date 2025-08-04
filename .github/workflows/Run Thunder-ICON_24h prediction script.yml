@@ -4,10 +4,6 @@ name: Scheduled Thunder-ICON Prediction
 on:
   # Permette di avviare il workflow manualmente dalla UI di GitHub.
   workflow_dispatch:
-  
-  # Trigger schedulato (es. ogni 30 minuti)
-  schedule:
-    - cron: '*/30 * * * *'
 
 jobs:
   run-prediction:
