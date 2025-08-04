@@ -1,5 +1,5 @@
 # File di requisiti per l'ambiente di GitHub Actions
-# Questo file contiene le versioni esatte delle librerie per garantire la riproducibilità.
+# Contiene versioni compatibili per garantire la riproducibilità.
 
 # Librerie principali per il Machine Learning
 pandas==2.3.1
@@ -7,11 +7,11 @@ numpy==1.26.4
 scikit-learn==1.2.2
 joblib==1.5.1
 
-# PyTorch per CPU - La direttiva --find-links si occuperà di trovare la build per CPU
+# PyTorch per CPU - Set di versioni compatibili (es. 2.3.1)
 --find-links https://download.pytorch.org/whl/cpu/torch_stable.html
-torch==2.7.1
-torchaudio==2.5.1
-torchvision==0.20.1
+torch==2.3.1
+torchaudio==2.3.1
+torchvision==0.18.1
 
 # Librerie per l'interazione con Google Sheets e utility
 gspread==6.2.1
