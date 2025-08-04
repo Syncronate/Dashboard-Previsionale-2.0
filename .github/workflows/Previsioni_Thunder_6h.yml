@@ -4,10 +4,6 @@ name: Previsioni_Thunder_6h
 on:
   # Permette di avviare il workflow manualmente dalla UI di GitHub.
   workflow_dispatch:
-  
-  # Trigger schedulato (es. ogni 30 minuti)
-  schedule:
-    - cron: '*/30 * * * *'
 
 jobs:
   run-prediction:
@@ -54,4 +50,5 @@ jobs:
 
     # 6. Esegue il nuovo script Python di previsione.
     - name: Run Previsioni_Thunder_6h.py
+
       run: python Previsioni_Thunder_6h.py
