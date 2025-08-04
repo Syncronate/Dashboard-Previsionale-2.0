@@ -4,14 +4,14 @@
 # Librerie principali per il Machine Learning
 pandas==2.3.1
 numpy==1.26.4
-scikit-learn==1.2.2  # Una versione stabile spesso compatibile con file joblib
+scikit-learn==1.2.2
 joblib==1.5.1
 
-# PyTorch per CPU, come specificato nel workflow originale
+# PyTorch per CPU - La direttiva --find-links si occuperà di trovare la build per CPU
 --find-links https://download.pytorch.org/whl/cpu/torch_stable.html
-torch==2.7.1+cpu
-torchaudio==2.5.1+cpu
-torchvision==0.20.1+cpu
+torch==2.7.1
+torchaudio==2.5.1
+torchvision==0.20.1
 
 # Librerie per l'interazione con Google Sheets e utility
 gspread==6.2.1
