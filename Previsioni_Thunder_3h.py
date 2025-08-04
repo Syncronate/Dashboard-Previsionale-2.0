@@ -80,6 +80,7 @@ class Seq2SeqWithAttention(nn.Module):
                 decoder_input_step = x_future_forecast[:, t+1:t+2, :]
         return outputs, attn_weights
 
+
 # --- Costanti Aggiornate per il NUOVO modello ---
 MODELS_DIR = "models"
 MODEL_BASE_NAME = "modello_seq2seq_20250801_1755"
@@ -88,6 +89,11 @@ GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
 GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Idro-Bettolelle 3h"
+
+# --- MODIFICA: Aggiunta nomi per i fogli di debug ---
+DEBUG_HISTORICAL_SHEET_NAME = "DEBUG Dati Input Storico"
+DEBUG_FORECAST_SHEET_NAME = "DEBUG Dati Input Previsionale"
+# --- FINE MODIFICA ---
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
@@ -149,8 +155,6 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     df_forecast_raw = pd.DataFrame(forecast_ws.get_all_records())
 
-    ### AGGIUNTO: Mappatura dei nomi delle colonne dal Google Sheet al nome atteso dal modello ###
-    # Dizionario: {"Nome Colonna nel Google Sheet": "Nome Colonna atteso dal modello"}
     column_mapping = {
         "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
         "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
@@ -158,11 +162,9 @@ def fetch_and_prepare_data(gc, sheet_id, config):
         "Cumulata Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
     }
     
-    # Applica la rinomina a entrambi i DataFrame. Se una colonna non esiste, viene ignorata.
     df_historical_raw.rename(columns=column_mapping, inplace=True)
     df_forecast_raw.rename(columns=column_mapping, inplace=True)
     print("Mappatura nomi colonne applicata ai dati caricati.")
-    ### FINE PARTE AGGIUNTA ###
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(df_historical_raw[GSHEET_DATE_COL_INPUT], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
     df_historical = df_historical_raw.dropna(subset=[GSHEET_DATE_COL_INPUT]).sort_values(by=GSHEET_DATE_COL_INPUT)
@@ -174,7 +176,9 @@ def fetch_and_prepare_data(gc, sheet_id, config):
         df_historical.loc[:, col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
 
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
-    input_data_historical = df_features_filled.iloc[-input_window_steps:].values
+    
+    # --- MODIFICA: Creiamo un DataFrame con i dati finali invece di un array numpy ---
+    df_input_historical = df_features_filled.iloc[-input_window_steps:]
 
     df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce')
     
@@ -189,12 +193,44 @@ def fetch_and_prepare_data(gc, sheet_id, config):
             raise ValueError(f"Colonna previsionale '{col}' non trovata nel foglio dopo la mappatura.")
         future_data.loc[:, col] = pd.to_numeric(future_data[col].astype(str).str.replace(',', '.'), errors='coerce')
 
-    input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
+    # --- MODIFICA: Creiamo un DataFrame con i dati finali invece di un array numpy ---
+    df_input_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0)
     
-    print(f"Dati storici preparati con shape: {input_data_historical.shape}")
-    print(f"Dati previsionali preparati con shape: {input_data_forecast.shape}")
+    print(f"Dati storici preparati con shape: {df_input_historical.shape}")
+    print(f"Dati previsionali preparati con shape: {df_input_forecast.shape}")
     
-    return input_data_historical, input_data_forecast, latest_valid_timestamp
+    # --- MODIFICA: Restituiamo i DataFrame per il debug ---
+    return df_input_historical, df_input_forecast, latest_valid_timestamp
+
+# --- MODIFICA: Nuova funzione per scrivere i dati di debug su un foglio Google ---
+def write_debug_data_to_gsheet(gc, sheet_id_str, sheet_name, df_to_write):
+    """
+    Scrive il contenuto di un DataFrame su un foglio di lavoro specificato per il debug.
+    Il foglio viene prima pulito.
+    """
+    print(f"--- DEBUG: Avvio scrittura dati su foglio '{sheet_name}' ---")
+    try:
+        sh = gc.open_by_key(sheet_id_str)
+        try:
+            worksheet = sh.worksheet(sheet_name)
+            worksheet.clear()
+            print(f"--- DEBUG: Foglio '{sheet_name}' trovato e pulito.")
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = sh.add_worksheet(title=sheet_name, rows=df_to_write.shape[0] + 10, cols=df_to_write.shape[1] + 10)
+            print(f"--- DEBUG: Foglio '{sheet_name}' non trovato, creato ex-novo.")
+        
+        # Prepara i dati per l'inserimento (header + righe)
+        # Sostituisce i punti con le virgole per la visualizzazione corretta in formato italiano
+        df_str = df_to_write.astype(str).apply(lambda x: x.str.replace('.', ',', regex=False))
+        rows_to_append = [df_str.columns.values.tolist()] + df_str.values.tolist()
+        
+        worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+        print(f"--- DEBUG: Scritti {df_to_write.shape[0]} dati di debug su '{sheet_name}'. ---")
+
+    except Exception as e:
+        print(f"ATTENZIONE: Impossibile scrivere i dati di debug su '{sheet_name}'. Errore: {e}")
+# --- FINE MODIFICA ---
+
 
 def make_prediction(model, scalers, config, data_inputs, device):
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
@@ -208,6 +244,7 @@ def make_prediction(model, scalers, config, data_inputs, device):
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
     return predictions_scaled_back
+
 
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
     sh = gc.open_by_key(sheet_id_str)
@@ -231,6 +268,7 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
         print(f"Aggiunte {len(rows_to_append)} righe di previsione.")
 
+
 def main():
     print(f"Avvio script di previsione (Modello: {MODEL_BASE_NAME}) alle {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     try:
@@ -240,11 +278,17 @@ def main():
         
         model, scaler_past, scaler_forecast, scaler_target, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
-        hist_data, fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
+        # --- MODIFICA: Riceviamo i DataFrame invece degli array numpy ---
+        df_hist_data, df_fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
         config["_prediction_start_time"] = last_ts
 
+        # --- MODIFICA: Scriviamo i dati di debug sui fogli Google ---
+        write_debug_data_to_gsheet(gc, GSHEET_ID, DEBUG_HISTORICAL_SHEET_NAME, df_hist_data)
+        write_debug_data_to_gsheet(gc, GSHEET_ID, DEBUG_FORECAST_SHEET_NAME, df_fcst_data)
+
         scalers = (scaler_past, scaler_forecast, scaler_target)
-        data_inputs = (hist_data, fcst_data)
+        # --- MODIFICA: Otteniamo i valori numpy dai DataFrame per la previsione ---
+        data_inputs = (df_hist_data.values, df_fcst_data.values)
         
         predictions = make_prediction(model, scalers, config, data_inputs, device)
         
