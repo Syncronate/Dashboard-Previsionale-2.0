@@ -11,7 +11,8 @@ import pandas as pd
 import numpy as np
 import traceback
 
-# --- NOTA: Classi del modello corrette ---
+# --- NOTA: Le classi del modello (EncoderLSTM, Attention, etc.) sono corrette ---
+# Assicurati che le definizioni delle classi con __init__ siano presenti qui
 
 class EncoderLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
@@ -83,11 +84,10 @@ class Seq2SeqWithAttention(nn.Module):
                 decoder_input_step = x_future_forecast[:, t+1:t+2, :]
         return outputs, attn_weights
 
-
-# --- Costanti Aggiornate per il NUOVO modello ---
+# --- Costanti ---
 
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20250801_1755"
+MODEL_BASE_NAME = "modello_seq2seq_20250801_1755" # Assicurati che questo sia il nome base corretto
 
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
@@ -135,16 +135,13 @@ def load_model_and_scalers(model_base_name, models_dir):
     model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
     
     print(f"Architettura modello '{model_type}' istanziata correttamente.")
-    
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
-    
     print(f"Modello '{model_base_name}' caricato con successo su {device}.")
     
     scaler_past_features = joblib.load(scaler_past_features_path)
     scaler_forecast_features = joblib.load(scaler_forecast_features_path)
     scaler_targets = joblib.load(scaler_targets_path)
-    
     print("Scaler caricati con successo.")
     
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
@@ -153,9 +150,11 @@ def load_model_and_scalers(model_base_name, models_dir):
 def fetch_and_prepare_data(gc, sheet_id, config):
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
+    
+    # Prendi le liste di colonne direttamente dalla config. L'ordine qui è CRUCIALE.
     past_feature_columns = config["all_past_feature_columns"]
     forecast_feature_columns = config["forecast_input_columns"]
-    
+
     sh = gc.open_by_key(sheet_id)
 
     print(f"Caricamento dati storici da: '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'")
@@ -166,44 +165,69 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     df_forecast_raw = pd.DataFrame(forecast_ws.get_all_records())
 
-    # Mappatura dei nomi delle colonne dal Google Sheet al nome atteso dal modello
+    # --- NUOVA SEZIONE DI MAPPATURA E CONTROLLO ---
+    # 1. Mappatura per uniformare i nomi tra GSheet e modello
     column_mapping = {
         "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
         "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
         "Cumulata Sensore 2858 (Barbara)_cumulata_30min": "Cumulata Sensore 2858 (Barbara)",
         "Cumulata Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
     }
-    
     df_historical_raw.rename(columns=column_mapping, inplace=True)
     df_forecast_raw.rename(columns=column_mapping, inplace=True)
-    print("Mappatura nomi colonne applicata ai dati caricati.")
+    print("Mappatura nomi colonne '_cumulata_30min' applicata.")
 
+    # 2. Controllo che tutte le colonne richieste ESISTANO dopo la mappatura
+    for col in past_feature_columns:
+        if col not in df_historical_raw.columns:
+            raise ValueError(f"ERRORE CRITICO: La colonna storica '{col}', richiesta dal modello, non è stata trovata nel Foglio Google '{GSHEET_HISTORICAL_DATA_SHEET_NAME}' dopo la mappatura.")
+    
+    for col in forecast_feature_columns:
+        if col not in df_forecast_raw.columns:
+             raise ValueError(f"ERRORE CRITICO: La colonna forecast '{col}', richiesta dal modello, non è stata trovata nel Foglio Google '{GSHEET_FORECAST_DATA_SHEET_NAME}' dopo la mappatura.")
+    print("LOG: Tutte le colonne richieste dal modello sono presenti nei dati caricati.")
+    # --- FINE NUOVA SEZIONE ---
+
+    # Preparazione Dati Storici (Encoder)
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(df_historical_raw[GSHEET_DATE_COL_INPUT], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce')
     df_historical = df_historical_raw.dropna(subset=[GSHEET_DATE_COL_INPUT]).sort_values(by=GSHEET_DATE_COL_INPUT)
+    
+    for col in past_feature_columns:
+        df_historical[col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
+
+    # SELEZIONA le colonne nell'ORDINE ESATTO definito dal config
+    df_historical_ordered = df_historical[past_feature_columns]
+    
+    input_data_historical_df = df_historical_ordered.iloc[-input_window_steps:].copy()
+    input_data_historical_df = input_data_historical_df.ffill().bfill() # Riempimento sicuro
+    
+    if input_data_historical_df.isnull().values.any():
+        raise ValueError(f"ERRORE CRITICO: Trovati valori NaN nei dati storici (ultime {input_window_steps} righe) anche dopo ffill/bfill. Controlla il GSheet.")
+    
+    input_data_historical = input_data_historical_df.values
     latest_valid_timestamp = df_historical[GSHEET_DATE_COL_INPUT].iloc[-1]
 
-    for col in past_feature_columns:
-        if col not in df_historical.columns:
-            raise ValueError(f"Colonna storica '{col}' non trovata nel foglio dopo la mappatura.")
-        df_historical.loc[:, col] = pd.to_numeric(df_historical[col].astype(str).str.replace(',', '.'), errors='coerce')
-
-    df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
-    input_data_historical = df_features_filled.iloc[-input_window_steps:].values
-
+    # Preparazione Dati Futuri (Decoder)
     df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce')
-
     future_forecasts = df_forecast_raw[df_forecast_raw[GSHEET_FORECAST_DATE_COL] > latest_valid_timestamp].copy()
+    
     if len(future_forecasts) < output_window_steps:
-        raise ValueError(f"Previsioni future insufficienti ({len(future_forecasts)} righe), richieste {output_window_steps}.")
+        raise ValueError(f"Previsioni future (ICON) insufficienti. Trovate {len(future_forecasts)} righe, ma richieste {output_window_steps}.")
 
     future_data = future_forecasts.head(output_window_steps).copy()
 
     for col in forecast_feature_columns:
-        if col not in future_data.columns:
-            raise ValueError(f"Colonna previsionale '{col}' non trovata nel foglio dopo la mappatura.")
         future_data.loc[:, col] = pd.to_numeric(future_data[col].astype(str).str.replace(',', '.'), errors='coerce')
+    
+    # SELEZIONA le colonne nell'ORDINE ESATTO definito dal config
+    future_data_ordered = future_data[forecast_feature_columns]
 
-    input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
+    input_data_forecast_df = future_data_ordered.ffill().bfill() # Riempimento sicuro
+    
+    if input_data_forecast_df.isnull().values.any():
+        raise ValueError(f"ERRORE CRITICO: Trovati valori NaN nei dati previsionali (ICON) anche dopo ffill/bfill. Controlla il GSheet.")
+        
+    input_data_forecast = input_data_forecast_df.values
 
     print(f"Dati storici preparati con shape: {input_data_historical.shape}")
     print(f"Dati previsionali preparati con shape: {input_data_forecast.shape}")
@@ -259,7 +283,12 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
 def main():
     print(f"Avvio script di previsione (Modello: {MODEL_BASE_NAME}) alle {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     try:
-        credentials = Credentials.from_service_account_file("credentials.json", scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
+        creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+        if not creds_json:
+            raise ValueError("La variabile d'ambiente GOOGLE_CREDENTIALS non è impostata.")
+        
+        creds_dict = json.loads(creds_json)
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
         gc = gspread.authorize(credentials)
         print("Autenticazione a Google Sheets riuscita.")
 
@@ -281,7 +310,6 @@ def main():
     except Exception as e:
         print(f"ERRORE CRITICO DURANTE L'ESECUZIONE: {e}")
         traceback.print_exc()
-
 
 if __name__ == "__main__":
     main()
