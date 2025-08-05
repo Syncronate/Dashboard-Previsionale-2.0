@@ -1284,8 +1284,11 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
         st.error(f"Errore: Parametri modello LSTM non validi: input_size={input_size}, output_size={output_size}, output_window_steps={output_window_steps}")
         return None, ([], []), ([], []) # Ensure consistent return structure
 
-    if preferred_device == 'auto': device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else: device = torch.device('cpu')
+    # NEW: Robust device selection
+    if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower()) and torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
     print(f"Training LSTM userà: {device}")
 
     # Loss Function Selection
@@ -1526,8 +1529,11 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     
     # Il controllo dei parametri del modello ora è implicito nella sua creazione esterna
 
-    if 'Auto' in preferred_device: device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else: device = torch.device('cpu')
+    # NEW: Robust device selection
+    if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower()) and torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
     print(f"Training Seq2Seq userà: {device}")
     model.to(device) # Sposta il modello ricevuto sul device corretto
 
@@ -3905,9 +3911,9 @@ elif page == 'Post-Training Modello':
 
             # Istanzia il wrapper corretto in base al tipo di modello originale
             if original_config.get("model_type") == "Seq2SeqAttention":
-                model_instance_for_pt_s2s = Seq2SeqWithAttention(enc_instance_pt_s2s, dec_instance_pt_s2s, output_window_steps_s2s_pt, current_device_pt)
+                model_instance_for_pt_s2s = Seq2SeqWithAttention(enc_instance_pt_s2s, dec_instance_pt_s2s, output_window_steps_s2s_pt)
             else: # "Seq2Seq"
-                model_instance_for_pt_s2s = Seq2SeqHydro(enc_instance_pt_s2s, dec_instance_pt_s2s, output_window_steps_s2s_pt, current_device_pt)
+                model_instance_for_pt_s2s = Seq2SeqHydro(enc_instance_pt_s2s, dec_instance_pt_s2s, output_window_steps_s2s_pt)
 
             # Carica i pesi nel modello wrapper completo
             model_instance_for_pt_s2s.load_state_dict(model_to_fine_tune_state_dict)
