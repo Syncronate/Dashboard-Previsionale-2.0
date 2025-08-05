@@ -3775,7 +3775,7 @@ elif page == 'Post-Training Modello':
                 except Exception as e_save_pt_lstm: st.error(f"Errore salvataggio LSTM affinato: {e_save_pt_lstm}"); st.error(traceback.format_exc())
             else: st.error("Post-Training LSTM fallito. Modello non salvato.")
 
-        elif active_model_type == "Seq2Seq":
+        elif active_model_type in ["Seq2Seq", "Seq2SeqAttention"]:
             past_feature_cols_orig_s2s = original_config.get("all_past_feature_columns")
             forecast_feature_cols_orig_s2s = original_config.get("forecast_input_columns")
             target_cols_orig_s2s = original_config.get("target_columns")
