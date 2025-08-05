@@ -27,21 +27,20 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        python-version: '3.11' # Assicurati che questa versione sia coerente con il tuo ambiente locale
 
-    # 3. Debug: Mostra la struttura dei file.
+    # 3. Debug: Mostra la struttura dei file per assicurarsi che requirementsgit.txt sia presente.
     - name: "Debug: List all files in the repository"
       run: ls -lR
 
-    # 4. Installa le dipendenze Python con versioni specifiche.
-    #    <<< MODIFICA APPORTATA QUI >>>
-    - name: Install dependencies
+    # 4. <<< INIZIO BLOCCO MODIFICATO >>>
+    #    Installa le dipendenze Python direttamente dal file requirementsgit.txt.
+    #    Questo garantisce che l'ambiente di GitHub sia una copia esatta del tuo.
+    - name: Install dependencies from requirementsgit.txt
       run: |
         python -m pip install --upgrade pip
-        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-        # Forziamo le versioni di numpy e scikit-learn per compatibilità binaria
-        # SOSTITUISCI 1.23.5 CON LA TUA VERSIONE DI NUMPY
-        pip install pandas "numpy==1.26.4" "scikit-learn==1.2.2" joblib gspread google-auth-oauthlib pytz google-api-python-client
+        pip install -r requirementsgit.txt
+    # <<< FINE BLOCCO MODIFICATO >>>
 
     # 5. Crea il file credentials.json dal secret di GitHub.
     - name: Create Google Credentials File
@@ -50,5 +49,4 @@ jobs:
 
     # 6. Esegue il nuovo script Python di previsione.
     - name: Run Previsioni_Thunder_6h.py
-
       run: python Previsioni_Thunder_6h.py
