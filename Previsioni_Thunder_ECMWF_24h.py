@@ -91,7 +91,7 @@ MODEL_BASE_NAME = "modello_seq2seq_20250801_1433" # Nome modello specifico
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ECMWF"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ICON 24h" # Nome foglio output specifico
+GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ECMWF 24h" # Nome foglio output specifico
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
