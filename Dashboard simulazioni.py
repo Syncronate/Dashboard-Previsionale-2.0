@@ -920,7 +920,7 @@ def load_specific_scalers(config, model_info):
          else: raise TypeError(f"Percorso scaler non valido: {type(path)}")
 
     try:
-        if model_type == "Seq2Seq" or model_type == "Seq2SeqAttention":
+        if model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
             scaler_past = _load_joblib(model_info["scaler_past_features_path"])
             scaler_forecast = _load_joblib(model_info["scaler_forecast_features_path"])
             scaler_targets = _load_joblib(model_info["scaler_targets_path"])
@@ -934,7 +934,7 @@ def load_specific_scalers(config, model_info):
     except Exception as e:
         st.error(f"Errore caricamento scaler (Tipo: {model_type}): {e}")
         st.error(traceback.format_exc())
-        if model_type == "Seq2Seq": return None
+        if model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]: return None
         else: return None, None
 
 # --- Funzioni Predict (Standard e Seq2Seq) ---
