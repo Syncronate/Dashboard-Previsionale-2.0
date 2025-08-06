@@ -1282,13 +1282,14 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
     
     if input_size <= 0 or output_size <= 0 or output_window_steps <= 0:
         st.error(f"Errore: Parametri modello LSTM non validi: input_size={input_size}, output_size={output_size}, output_window_steps={output_window_steps}")
-        return None, ([], []), ([], []) # Ensure consistent return structure
+        return None, ([], []), ([], [])
 
-    # NEW: Robust device selection
+    # --- INIZIO BLOCCO CORRETTO ---
     if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower()) and torch.cuda.is_available():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
+    # --- FINE BLOCCO CORRETTO ---
     print(f"Training LSTM userà: {device}")
 
     # Loss Function Selection
@@ -1527,13 +1528,12 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         st.error("output_window_steps deve essere maggiore di 0 per train_model_seq2seq.")
         return None, ([], []), ([], [])
     
-    # Il controllo dei parametri del modello ora è implicito nella sua creazione esterna
-
-    # NEW: Robust device selection
+    # --- INIZIO BLOCCO CORRETTO ---
     if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower()) and torch.cuda.is_available():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
+    # --- FINE BLOCCO CORRETTO ---
     print(f"Training Seq2Seq userà: {device}")
     model.to(device) # Sposta il modello ricevuto sul device corretto
 
