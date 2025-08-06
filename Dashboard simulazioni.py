@@ -1285,7 +1285,8 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
         return None, ([], []), ([], [])
 
     # --- INIZIO BLOCCO CORRETTO ---
-    if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower()) and torch.cuda.is_available():
+    # La condizione è stata resa più robusta per accettare anche 'cuda' come richiesta per la GPU.
+    if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower() or 'cuda' in preferred_device.lower()) and torch.cuda.is_available():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
@@ -1529,7 +1530,8 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         return None, ([], []), ([], [])
     
     # --- INIZIO BLOCCO CORRETTO ---
-    if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower()) and torch.cuda.is_available():
+    # La condizione è stata resa più robusta per accettare anche 'cuda' come richiesta per la GPU.
+    if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower() or 'cuda' in preferred_device.lower()) and torch.cuda.is_available():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
