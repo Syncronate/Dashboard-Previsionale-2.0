@@ -2906,7 +2906,7 @@ elif page == 'Test Modello su Storico':
         st.caption(f"Dati CSV Caricati: {len(df_current_csv)} righe. Colonna data non valida o assente per range.")
 
     target_columns_model_test = active_config['target_columns']
-    if "Seq2Seq" in active_model_type:
+    if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
         input_steps_model_test = active_config['input_window_steps']
         output_steps_model_test = active_config['output_window_steps']
         past_feature_cols_model_test = active_config['all_past_feature_columns']
