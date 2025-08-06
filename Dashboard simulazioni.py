@@ -984,7 +984,7 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
          st.error("Predict Seq2Seq: Input mancanti."); return None, None
 
     model_type = config.get("model_type")
-    if model_type not in ["Seq2Seq", "Seq2SeqAttention"]: 
+    if model_type not in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
         st.error(f"Funzione predict_seq2seq chiamata su modello non supportato ({model_type})"); return None, None
 
     input_steps = config["input_window_steps"]
