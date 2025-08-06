@@ -3084,7 +3084,7 @@ elif page == 'Test Modello su Storico':
                     actual_target_data_np_test_period = actual_data_for_comparison_df_period[target_columns_model_test].astype(float).values
                     prediction_start_time_test_period = actual_data_for_comparison_df_period[date_col_name_csv].iloc[0]
 
-                    if "Seq2Seq" in active_model_type: # <-- Usiamo il controllo robusto
+                    if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
                         # --- INIZIO RIGHE AGGIUNTE ---
                         # Calcoliamo l'indice finale per i dati del decoder QUI, dentro il loop
                         num_rows_decoder_input_test_wf = max(forecast_steps_model_test, output_steps_model_test)
