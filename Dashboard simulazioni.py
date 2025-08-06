@@ -338,6 +338,109 @@ class Seq2SeqWithAttention(nn.Module):
         # Restituisci anche i pesi di attenzione per la visualizzazione
         return outputs, attention_weights_history
 
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
+
+class HydroTransformer(nn.Module):
+    def __init__(self,
+                 input_dim_encoder: int,
+                 input_dim_decoder: int,
+                 output_dim: int,
+                 d_model: int = 128,
+                 nhead: int = 8,
+                 num_encoder_layers: int = 3,
+                 num_decoder_layers: int = 3,
+                 dim_feedforward: int = 512,
+                 dropout: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        
+        # Livelli di embedding per proiettare le feature di input alla dimensione del modello (d_model)
+        self.encoder_embedding = nn.Linear(input_dim_encoder, d_model)
+        self.decoder_embedding = nn.Linear(input_dim_decoder, d_model)
+        
+        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        
+        # Il componente Transformer principale di PyTorch
+        self.transformer = nn.Transformer(
+            d_model=d_model,
+            nhead=nhead,
+            num_encoder_layers=num_encoder_layers,
+            num_decoder_layers=num_decoder_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True  # Assolutamente cruciale per la coerenza con il tuo codice!
+        )
+        
+        # Layer lineare finale per mappare l'output del Transformer alla dimensione del target
+        self.fc_out = nn.Linear(d_model, output_dim)
+        
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor, src_padding_mask: torch.Tensor = None, tgt_padding_mask: torch.Tensor = None, teacher_forcing_ratio=0.0) -> torch.Tensor:
+        """
+        Args:
+            src: Dati di input dell'encoder (storici). Shape: [batch_size, src_seq_len, input_dim_encoder]
+            tgt: Dati di input del decoder (futuri, shiftati). Shape: [batch_size, tgt_seq_len, input_dim_decoder]
+            src_padding_mask: Maschera per il padding dell'input. Shape: [batch_size, src_seq_len]
+            tgt_padding_mask: Maschera per il padding del target. Shape: [batch_size, tgt_seq_len]
+        """
+        # 1. Applica embedding e positional encoding
+        # La shape attesa dal PositionalEncoding di Pytorch è (seq_len, batch, dim) se batch_first=False
+        # Ma con batch_first=True, il nostro Transformer si aspetta (batch, seq_len, dim)
+        # La nostra implementazione di PositionalEncoding sembra aspettarsi (seq_len, batch, dim)
+        # Questo è un potenziale punto di conflitto. Il Transformer Layer vuole batch_first, ma il positional encoding no.
+        # Dobbiamo adattare. La cosa più semplice è fare il permute prima e dopo il positional encoding.
+        # src: [batch_size, src_seq_len, input_dim_encoder] -> embed -> [batch, seq, d_model]
+        # permute -> [seq, batch, d_model] -> pos_enc -> [seq, batch, d_model] -> permute -> [batch, seq, d_model]
+        
+        src_embedded_no_pos = self.encoder_embedding(src) * math.sqrt(self.d_model)
+        tgt_embedded_no_pos = self.decoder_embedding(tgt) * math.sqrt(self.d_model)
+
+        # PyTorch PositionalEncoding si aspetta [seq_len, batch_size, embedding_dim].
+        # Il nostro dato è [batch_size, seq_len, embedding_dim] perché usiamo batch_first=True.
+        # Dobbiamo fare un transpose prima di passarlo al positional encoder e poi di nuovo dopo.
+        src_embedded = self.pos_encoder(src_embedded_no_pos.permute(1, 0, 2)).permute(1, 0, 2)
+        tgt_embedded = self.pos_encoder(tgt_embedded_no_pos.permute(1, 0, 2)).permute(1, 0, 2)
+
+        # 2. Crea la maschera causale per il decoder
+        # Questa maschera impedisce al decoder di "vedere" i passi temporali futuri durante la previsione di un certo step.
+        tgt_seq_len = tgt.size(1)
+        tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_seq_len).to(src.device)
+
+        # 3. Passa i dati attraverso il Transformer
+        output = self.transformer(
+            src=src_embedded,
+            tgt=tgt_embedded,
+            tgt_mask=tgt_mask,
+            src_key_padding_mask=src_padding_mask,
+            tgt_key_padding_mask=tgt_padding_mask
+        ) # Shape: [batch_size, tgt_seq_len, d_model]
+
+        # 4. Applica il layer lineare finale
+        prediction = self.fc_out(output) # Shape: [batch_size, tgt_seq_len, output_dim]
+        
+        # Per coerenza con le altre classi, restituiamo solo la predizione.
+        # La funzione di training dovrà gestire questo output singolo.
+        return prediction, None # Aggiungiamo None per compatibilità con la tupla (output, attention_weights)
+
 # --- Funzioni Utilità Modello/Dati ---
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, # REMOVED val_split
                           lag_config=None, cumulative_config=None): 
@@ -685,6 +788,24 @@ def find_available_models(models_dir=MODELS_DIR):
                         "model_type": model_type # Preserve original type
                     })
                     valid_model = True
+            elif model_type == "Transformer":
+                required_keys = [
+                    "input_window_steps", "output_window_steps", "forecast_window_steps",
+                    "d_model", "nhead", "num_encoder_layers", "num_decoder_layers", "dim_feedforward", "dropout",
+                    "all_past_feature_columns", "forecast_input_columns", "target_columns"
+                ]
+                s_past_p = os.path.join(models_dir, f"{base}_past_features.joblib")
+                s_fore_p = os.path.join(models_dir, f"{base}_forecast_features.joblib")
+                s_targ_p = os.path.join(models_dir, f"{base}_targets.joblib")
+                if (all(k in config_data for k in required_keys) and
+                    os.path.exists(s_past_p) and os.path.exists(s_fore_p) and os.path.exists(s_targ_p)):
+                    model_info.update({
+                        "scaler_past_features_path": s_past_p,
+                        "scaler_forecast_features_path": s_fore_p,
+                        "scaler_targets_path": s_targ_p,
+                        "model_type": "Transformer"
+                    })
+                    valid_model = True
             else: # LSTM Standard
                 required_keys = ["input_window", "output_window", "hidden_size", "num_layers", "dropout", "target_columns", "feature_columns"]
                 scf_p = os.path.join(models_dir, f"{base}_features.joblib")
@@ -741,6 +862,22 @@ def load_specific_model(_model_path, config):
             encoder = EncoderLSTM(enc_input_size, hidden, layers, drop).to(device)
             decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop).to(device)
             model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
+        elif model_type == "Transformer":
+            enc_input_size = len(config["all_past_feature_columns"])
+            dec_input_size = len(config["forecast_input_columns"])
+            dec_output_size = len(config["target_columns"])
+            
+            model = HydroTransformer(
+                input_dim_encoder=enc_input_size,
+                input_dim_decoder=dec_input_size,
+                output_dim=dec_output_size,
+                d_model=config["d_model"],
+                nhead=config["nhead"],
+                num_encoder_layers=config["num_encoder_layers"],
+                num_decoder_layers=config["num_decoder_layers"],
+                dim_feedforward=config["dim_feedforward"],
+                dropout=config["dropout"]
+            ).to(device)
         else: # LSTM Standard
             f_cols_lstm = config.get("feature_columns")
             if not f_cols_lstm:
@@ -3163,7 +3300,7 @@ elif page == 'Allenamento Modello':
 
     if not data_ready_csv: st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar per avviare l'allenamento."); st.stop()
     st.success(f"Dati CSV disponibili per l'allenamento: {len(df_current_csv)} righe."); st.subheader('Configurazione Addestramento')
-    train_model_type = st.radio("Tipo di Modello da Allenare:", ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione"], key="train_select_type", horizontal=True)
+    train_model_type = st.radio("Tipo di Modello da Allenare:", ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"], key="train_select_type", horizontal=True)
     default_save_name = f"modello_{train_model_type.split()[0].lower()}_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"; save_name_input = st.text_input("Nome base per salvare il modello e i file associati:", default_save_name, key="train_save_filename")
     save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_') or "modello_default"; os.makedirs(MODELS_DIR, exist_ok=True)
     if save_name != save_name_input: st.caption(f"Nome file valido: `{save_name}`")
@@ -3523,6 +3660,155 @@ elif page == 'Allenamento Modello':
                     find_available_models.clear()
                 except Exception as e_save_s2s: st.error(f"Errore salvataggio modello {train_model_type}: {e_save_s2s}"); st.error(traceback.format_exc())
             else: st.error(f"Addestramento {train_model_type} fallito. Modello non salvato.")
+    elif train_model_type == "Transformer":
+        st.markdown("**1. Seleziona Feature (Transformer)**")
+        # Questa parte è IDENTICA alla UI per Seq2Seq, puoi riutilizzarla
+        features_present_in_csv_trans = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist()
+        default_past_features_trans = [f for f in st.session_state.feature_columns if f in features_present_in_csv_trans]
+        selected_past_features_trans = st.multiselect("Feature Storiche (Input Encoder):", options=features_present_in_csv_trans, default=default_past_features_trans, key="train_trans_past_feat")
+        
+        options_forecast_trans = selected_past_features_trans
+        default_forecast_cols_trans = [f for f in options_forecast_trans if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]
+        selected_forecast_features_trans = st.multiselect("Feature Future (Input Decoder):", options=options_forecast_trans, default=default_forecast_cols_trans, key="train_trans_forecast_feat")
+        
+        level_options_trans = [f for f in selected_past_features_trans if 'livello' in f.lower() or '[m]' in f.lower()]
+        default_targets_trans = level_options_trans[:1]
+        selected_targets_trans = st.multiselect("Target Output (Livelli):", options=level_options_trans, default=default_targets_trans, key="train_trans_target_feat")
+
+        st.markdown("**2. Parametri Finestre, Modello e Training (Transformer)**")
+        with st.expander("Impostazioni Allenamento Transformer", expanded=True):
+            c1_trans, c2_trans, c3_trans = st.columns(3)
+            with c1_trans:
+                # Finestre temporali (identico a Seq2Seq)
+                iw_steps_trans = st.number_input("Input Storico (steps da 30min)", min_value=2, value=48, step=2, key="t_trans_in")
+                fw_steps_trans = st.number_input("Input Forecast (steps da 30min)", min_value=1, value=6, step=1, key="t_trans_fore", help="Deve essere uguale a Output Steps per il Transformer base.")
+                ow_steps_trans = st.number_input("Output Previsione (steps da 30min)", min_value=1, value=6, step=1, key="t_trans_out", help="Deve essere uguale a Input Forecast Steps.")
+                st.caption("Nota: Per questa implementazione, 'Input Forecast' e 'Output Previsione' devono avere la stessa lunghezza.")
+                n_splits_cv_trans = st.number_input("Numero di Fold per TimeSeriesSplit CV:", min_value=2, value=3, step=1, key="t_trans_n_splits_cv")
+            with c2_trans:
+                # Iperparametri specifici del Transformer
+                d_model_trans = st.number_input("Dimensione Modello (d_model)", min_value=16, value=64, step=16, key="t_trans_dmodel")
+                nhead_trans = st.number_input("Numero di Teste (nhead)", min_value=1, value=4, step=1, key="t_trans_nhead")
+                dim_ff_trans = st.number_input("Dimensione FeedForward", min_value=64, value=256, step=64, key="t_trans_dimff")
+                num_enc_l_trans = st.number_input("Numero Layers Encoder", min_value=1, value=2, step=1, key="t_trans_encl")
+                num_dec_l_trans = st.number_input("Numero Layers Decoder", min_value=1, value=2, step=1, key="t_trans_decl")
+            with c3_trans:
+                # Parametri di training (identico a Seq2Seq)
+                lr_t_trans = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", step=1e-4, key="t_trans_lr")
+                bs_t_trans = st.select_slider("Batch Size", [8, 16, 32, 64, 128, 256], 32, key="t_trans_bs")
+                ep_t_trans = st.number_input("Numero Epoche", min_value=1, value=50, step=5, key="t_trans_ep")
+                dr_t_trans = st.slider("Dropout", 0.0, 0.5, 0.1, 0.05, key="t_trans_dr")
+
+            # Selezioni finali (identico a Seq2Seq)
+            col_loss_trans, col_dev_trans, col_save_trans = st.columns(3)
+            with col_loss_trans: loss_choice_trans = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss"], key="t_trans_loss_choice")
+            with col_dev_trans: device_option_trans = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_trans', horizontal=True)
+            with col_save_trans: save_choice_trans = st.radio("Strategia Salvataggio:", ['Migliore (su Validazione)', 'Modello Finale'], index=0, key='train_save_trans', horizontal=True)
+
+        st.divider()
+        ready_to_train_trans = bool(save_name and selected_past_features_trans and selected_forecast_features_trans and selected_targets_trans and ow_steps_trans > 0 and fw_steps_trans == ow_steps_trans)
+        if fw_steps_trans != ow_steps_trans:
+            st.error("Per questa implementazione base del Transformer, le finestre di 'Input Forecast' e 'Output Previsione' devono essere identiche.")
+
+        if st.button("Avvia Addestramento Transformer", type="primary", disabled=not ready_to_train_trans, key="train_run_transformer"):
+            st.info(f"Avvio addestramento Transformer per '{save_name}'...")
+            with st.spinner("Preparazione dati Transformer..."):
+                data_tuple_trans = prepare_training_data_seq2seq(
+                    df_current_csv.copy(), selected_past_features_trans, selected_forecast_features_trans,
+                    selected_targets_trans, iw_steps_trans, fw_steps_trans, ow_steps_trans
+                )
+            if data_tuple_trans is None or len(data_tuple_trans) != 6:
+                st.error("Preparazione dati Transformer fallita."); st.stop()
+
+            (X_enc_scaled_full_trans, X_dec_scaled_full_trans, y_tar_scaled_full_trans,
+             sc_past_trans, sc_fore_trans, sc_tar_trans) = data_tuple_trans
+
+            if X_enc_scaled_full_trans.shape[0] < n_splits_cv_trans:
+                st.error(f"Dati insufficienti ({X_enc_scaled_full_trans.shape[0]} campioni) per {n_splits_cv_trans} splits CV.")
+                st.stop()
+            
+            # Istanziamo il modello Transformer con i parametri dalla UI
+            try:
+                model_to_train_trans = HydroTransformer(
+                    input_dim_encoder=X_enc_scaled_full_trans.shape[2],
+                    input_dim_decoder=X_dec_scaled_full_trans.shape[2],
+                    output_dim=y_tar_scaled_full_trans.shape[2],
+                    d_model=d_model_trans,
+                    nhead=nhead_trans,
+                    num_encoder_layers=num_enc_l_trans,
+                    num_decoder_layers=num_dec_l_trans,
+                    dim_feedforward=dim_ff_trans,
+                    dropout=dr_t_trans
+                )
+            except Exception as e_init:
+                st.error(f"Errore inizializzazione modello Transformer: {e_init}"); st.stop()
+                
+            # La tua funzione train_model_seq2seq può essere riutilizzata!
+            # Gestisce già il formato dei dati. Dobbiamo solo assicurarci che gestisca
+            # un modello che restituisce (prediction, None) invece di (prediction, attention_weights).
+            # La tua implementazione attuale con `outputs, _ = model(...)` dovrebbe già funzionare.
+            trained_model_trans, train_hist_trans, val_hist_trans = train_model_seq2seq(
+                X_enc_scaled_full=X_enc_scaled_full_trans,
+                X_dec_scaled_full=X_dec_scaled_full_trans, # Questo sarà l'input `tgt`
+                y_tar_scaled_full=y_tar_scaled_full_trans, # Questo è usato per la loss
+                model=model_to_train_trans, # Passiamo il nuovo modello
+                output_window_steps=ow_steps_trans,
+                epochs=ep_t_trans, batch_size=bs_t_trans, learning_rate=lr_t_trans,
+                save_strategy=('migliore' if 'Migliore' in save_choice_trans else 'finale'),
+                preferred_device=device_option_trans,
+                teacher_forcing_ratio_schedule=None, # Non applicabile ai Transformer in questo modo
+                n_splits_cv=n_splits_cv_trans,
+                loss_function_name=loss_choice_trans
+            )
+            
+            if trained_model_trans:
+                st.success("Addestramento Transformer completato!")
+                try:
+                    base_path = os.path.join(MODELS_DIR, save_name)
+                    m_path = f"{base_path}.pth"; torch.save(trained_model_trans.state_dict(), m_path)
+                    sp_path = f"{base_path}_past_features.joblib"; joblib.dump(sc_past_trans, sp_path)
+                    sf_path = f"{base_path}_forecast_features.joblib"; joblib.dump(sc_fore_trans, sf_path)
+                    st_path = f"{base_path}_targets.joblib"; joblib.dump(sc_tar_trans, st_path)
+                    c_path = f"{base_path}.json"
+
+                    config_save_trans = {
+                        "model_type": "Transformer",
+                        "display_name": save_name,
+                        # Parametri finestra
+                        "input_window_steps": iw_steps_trans,
+                        "forecast_window_steps": fw_steps_trans,
+                        "output_window_steps": ow_steps_trans,
+                        # Iperparametri Transformer
+                        "d_model": d_model_trans, "nhead": nhead_trans, "dim_feedforward": dim_ff_trans,
+                        "num_encoder_layers": num_enc_l_trans, "num_decoder_layers": num_dec_l_trans,
+                        "dropout": dr_t_trans,
+                        # Colonne
+                        "all_past_feature_columns": selected_past_features_trans,
+                        "forecast_input_columns": selected_forecast_features_trans,
+                        "target_columns": selected_targets_trans,
+                        # Metadati di training
+                        "training_date": datetime.now(italy_tz).isoformat(),
+                        "n_splits_cv": n_splits_cv_trans,
+                        "loss_function": loss_choice_trans,
+                        "learning_rate": lr_t_trans, "batch_size": bs_t_trans, "epochs": ep_t_trans
+                    }
+                    with open(c_path, 'w', encoding='utf-8') as f: json.dump(config_save_trans, f, indent=4)
+                    st.success(f"Modello Transformer '{save_name}' salvato in '{MODELS_DIR}'.")
+                    st.subheader("Download File Modello Transformer")
+                    col_dl_trans_1, col_dl_trans_2 = st.columns(2)
+                    with col_dl_trans_1:
+                        st.markdown(get_download_link_for_file(m_path), unsafe_allow_html=True)
+                        st.markdown(get_download_link_for_file(sp_path,"Scaler Passato (.joblib)"), unsafe_allow_html=True)
+                        st.markdown(get_download_link_for_file(st_path,"Scaler Target (.joblib)"), unsafe_allow_html=True)
+                    with col_dl_trans_2:
+                        st.markdown(get_download_link_for_file(c_path), unsafe_allow_html=True)
+                        st.markdown(get_download_link_for_file(sf_path,"Scaler Forecast (.joblib)"), unsafe_allow_html=True)
+                    find_available_models.clear()
+                except Exception as e_save_trans:
+                    st.error(f"Errore salvataggio modello Transformer: {e_save_trans}")
+                    st.error(traceback.format_exc())
+            else:
+                st.error("Addestramento Transformer fallito. Modello non salvato.")
 
 # --- INIZIO BLOCCO NUOVO CODICE PER POST-TRAINING ---
 # --- PAGINA POST-TRAINING MODELLO ---
