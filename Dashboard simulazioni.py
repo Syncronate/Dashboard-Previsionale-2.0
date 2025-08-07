@@ -25,7 +25,7 @@ from streamlit_js_eval import streamlit_js_eval # Per forzare refresh periodico
 import pytz # Per gestione timezone
 import math # Per calcoli matematici (potenza)
 from sklearn.model_selection import TimeSeriesSplit # NEW: For Time-Series Cross-Validation
-from pytorch_dilate.loss import dilate_loss
+from dilate_loss_src import dilate_loss
 
 # --- Configurazione Pagina Streamlit ---
 st.set_page_config(page_title="Modello Predittivo Idrologico", layout="wide")
