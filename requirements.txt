@@ -1,12 +1,16 @@
 streamlit
 torch
+torchvision
+torchaudio
+--extra-index-url https://download.pytorch.org/whl/cu118
 pandas
 numpy
 scikit-learn
+joblib
 plotly
 gspread
-google-oauth2-service-account
 streamlit-js-eval
+oauth2client
+google-generativeai
 pytz
-# Aggiungi la nuova libreria per DILATE Loss
 pytorch-dilate-loss
