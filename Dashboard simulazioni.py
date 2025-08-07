@@ -25,6 +25,7 @@ from streamlit_js_eval import streamlit_js_eval # Per forzare refresh periodico
 import pytz # Per gestione timezone
 import math # Per calcoli matematici (potenza)
 from sklearn.model_selection import TimeSeriesSplit # NEW: For Time-Series Cross-Validation
+from pytorch_dilate.loss import dilate_loss
 
 # --- Configurazione Pagina Streamlit ---
 st.set_page_config(page_title="Modello Predittivo Idrologico", layout="wide")
@@ -479,6 +480,52 @@ class DynamicWeightedMSELoss(nn.Module):
             return weighted_loss.sum()
         
         return weighted_loss
+
+class DilateLoss(nn.Module):
+    """
+    Wrapper per la funzione di loss DILATE (DIstance-based Loss function for Time-sEries).
+    Questa loss penalizza sia gli errori di forma (usando Dynamic Time Warping)
+    sia gli errori temporali (sfasamento della previsione).
+    """
+    def __init__(self, alpha=0.5, gamma=0.01, reduction='mean', device='cpu'):
+        super().__init__()
+        self.alpha = alpha  # Bilancia tra loss di forma (DTW) e temporale. 0.5 è bilanciato.
+        self.gamma = gamma  # Parametro di smoothing per il soft-DTW.
+        self.reduction = reduction
+        self.device = device # DILATE richiede che il device sia specificato.
+
+    def forward(self, y_pred, y_true):
+        # DILATE si aspetta tensori con shape (batch, sequence_length, 1).
+        # Il nostro output ha shape (batch, sequence_length, num_targets).
+        # Dobbiamo quindi applicare la loss a ogni target separatamente e poi aggregare.
+        
+        batch_size = y_true.shape[0]
+        num_targets = y_true.shape[2]
+        
+        # Inizializza un tensore per memorizzare la loss per ogni elemento nel batch
+        total_loss_per_batch_item = torch.zeros(batch_size).to(self.device)
+
+        # Itera su ogni feature target (es. ogni sensore idrometrico)
+        for i in range(num_targets):
+            # Estrai la i-esima serie temporale per l'intero batch
+            y_pred_i = y_pred[:, :, i].unsqueeze(2) # Shape -> (batch, seq_len, 1)
+            y_true_i = y_true[:, :, i].unsqueeze(2) # Shape -> (batch, seq_len, 1)
+
+            # Calcola la DILATE loss per questo target.
+            # La funzione restituisce la loss per ogni elemento nel batch.
+            loss_i, _, _ = dilate_loss(y_true_i, y_pred_i, alpha=self.alpha, gamma=self.gamma, device=self.device)
+            total_loss_per_batch_item += loss_i
+
+        # Fa la media delle loss dei vari target per ogni elemento del batch
+        avg_loss_per_batch_item = total_loss_per_batch_item / num_targets
+        
+        # Applica la riduzione finale
+        if self.reduction == 'mean':
+            return avg_loss_per_batch_item.mean()
+        elif self.reduction == 'sum':
+            return avg_loss_per_batch_item.sum()
+            
+        return avg_loss_per_batch_item
 
 # --- Funzioni Utilità Modello/Dati ---
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, # REMOVED val_split
@@ -1474,12 +1521,13 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
         criterion = nn.HuberLoss(reduction='none')
         print("Using HuberLoss")
     elif loss_function_name == "DynamicWeightedMSE":
-        # Istanziamo la nostra nuova classe di loss.
-        # Il reduction='mean' è gestito internamente dalla classe.
-        # Ma per il calcolo delle loss "per step" è meglio ritornare il tensore non ridotto
-        # e fare la media nel loop. Modifichiamo il loop di training.
-        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction='none') # Usa la stessa logica di 'none'
+        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction='none')
         print("Using Dynamic Weighted MSE Loss (exponent=2.0)")
+    elif loss_function_name == "DilateLoss":
+        # DILATE non può calcolare la loss per step, quindi gestisce la riduzione internamente.
+        # Passiamo il device corretto che sarà usato per il training.
+        criterion = DilateLoss(alpha=0.5, gamma=0.01, reduction='mean', device=device)
+        print("Using DILATE Loss")
     else: # Default to MSE
         criterion = nn.MSELoss(reduction='none')
         print("Using MSELoss")
@@ -1560,15 +1608,24 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
             X_batch, y_batch = batch_data[0].to(device, non_blocking=True), batch_data[1].to(device, non_blocking=True)
             outputs = model(X_batch)
             
-            loss_per_element = criterion(outputs, y_batch) 
-            scalar_loss_for_backward = loss_per_element.mean()
-            
+            if loss_function_name == "DilateLoss":
+                # DILATE calcola direttamente la loss scalare per il batch
+                scalar_loss_for_backward = criterion(outputs, y_batch)
+                # Non possiamo calcolare la loss per step con DILATE
+            else:
+                # Logica esistente per le altre loss
+                loss_per_element = criterion(outputs, y_batch) 
+                scalar_loss_for_backward = loss_per_element.mean()
+
             optimizer.zero_grad()
             scalar_loss_for_backward.backward()
             optimizer.step()
-            
+
             epoch_train_loss_scalar_sum += scalar_loss_for_backward.item() * X_batch.size(0)
-            epoch_train_loss_per_step_sum += loss_per_element.mean(dim=2).sum(dim=0).detach()
+
+            if loss_function_name != "DilateLoss":
+                # Calcoliamo la loss per step solo se non stiamo usando DILATE
+                epoch_train_loss_per_step_sum += loss_per_element.mean(dim=2).sum(dim=0).detach()
 
         avg_epoch_train_loss_scalar = epoch_train_loss_scalar_sum / len(train_loader_final.dataset)
         train_losses_scalar_history.append(avg_epoch_train_loss_scalar)
@@ -1586,11 +1643,17 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
                 for batch_data_val in val_loader_final:
                     X_batch_val, y_batch_val = batch_data_val[0].to(device, non_blocking=True), batch_data_val[1].to(device, non_blocking=True)
                     outputs_val = model(X_batch_val)
-                    loss_per_element_val = criterion(outputs_val, y_batch_val)
                     
-                    scalar_loss_val_batch = loss_per_element_val.mean()
+                    if loss_function_name == "DilateLoss":
+                        scalar_loss_val_batch = criterion(outputs_val, y_batch_val)
+                    else:
+                        loss_per_element_val = criterion(outputs_val, y_batch_val)
+                        scalar_loss_val_batch = loss_per_element_val.mean()
+
                     epoch_val_loss_scalar_sum += scalar_loss_val_batch.item() * X_batch_val.size(0)
-                    epoch_val_loss_per_step_sum += loss_per_element_val.mean(dim=2).sum(dim=0).detach()
+                    
+                    if loss_function_name != "DilateLoss":
+                        epoch_val_loss_per_step_sum += loss_per_element_val.mean(dim=2).sum(dim=0).detach()
 
             if len(val_loader_final.dataset) > 0:
                 avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader_final.dataset)
@@ -1614,10 +1677,10 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
         current_lr = optimizer.param_groups[0]['lr']
         epoch_time = pytime.time() - epoch_start_time
         
-        train_loss_per_step_str = " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step]) # MODIFICA 4
+        train_loss_per_step_str = "N/A (DILATE Loss)" if loss_function_name == "DilateLoss" else " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step])
         val_loss_scalar_str = f"{avg_epoch_val_loss_scalar:.6f}" if avg_epoch_val_loss_scalar is not None and avg_epoch_val_loss_scalar != float('inf') else "N/A (Final Split)"
-        val_loss_per_step_str = "N/A (Final Split)"
-        if val_loader_final and not np.all(np.isnan(avg_epoch_val_loss_per_step)):
+        val_loss_per_step_str = "N/A (DILATE Loss)" if loss_function_name == "DilateLoss" else "N/A (Final Split)"
+        if val_loader_final and not np.all(np.isnan(avg_epoch_val_loss_per_step)) and loss_function_name != "DilateLoss":
              val_loss_per_step_str = " | ".join([f"{l:.4f}" for l in avg_epoch_val_loss_per_step])
 
         status_text.markdown( 
@@ -1729,6 +1792,11 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     elif loss_function_name == "DynamicWeightedMSE":
         criterion = DynamicWeightedMSELoss(exponent=2.0, reduction='none')
         print("Using Dynamic Weighted MSE Loss (exponent=2.0) for Seq2Seq")
+    elif loss_function_name == "DilateLoss":
+        # DILATE non può calcolare la loss per step, quindi gestisce la riduzione internamente.
+        # Passiamo il device corretto che sarà usato per il training.
+        criterion = DilateLoss(alpha=0.5, gamma=0.01, reduction='mean', device=device)
+        print("Using DILATE Loss")
     else: # Default to MSE
         criterion = nn.MSELoss(reduction='none')
         print("Using MSELoss for Seq2Seq")
@@ -1797,14 +1865,18 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             # CHIAMATA AL MODELLO SEMPLIFICATA: il forward del modello gestisce tutto
             outputs_train_epoch, _ = model(x_enc_b, x_dec_b, teacher_forcing_ratio=current_tf_ratio)
             
-            loss_per_element_train = criterion(outputs_train_epoch, y_tar_b)
-            scalar_loss_for_backward_train = loss_per_element_train.mean()
+            if loss_function_name == "DilateLoss":
+                scalar_loss_for_backward_train = criterion(outputs_train_epoch, y_tar_b)
+            else:
+                loss_per_element_train = criterion(outputs_train_epoch, y_tar_b)
+                scalar_loss_for_backward_train = loss_per_element_train.mean()
             
             scalar_loss_for_backward_train.backward()
             optimizer.step()
             
             epoch_train_loss_scalar_sum += scalar_loss_for_backward_train.item() * x_enc_b.size(0)
-            epoch_train_loss_per_step_sum += loss_per_element_train.mean(dim=2).sum(dim=0).detach()
+            if loss_function_name != "DilateLoss":
+                epoch_train_loss_per_step_sum += loss_per_element_train.mean(dim=2).sum(dim=0).detach()
 
         avg_epoch_train_loss_scalar = epoch_train_loss_scalar_sum / len(train_loader_final_s2s.dataset)
         train_losses_scalar_history.append(avg_epoch_train_loss_scalar)
@@ -1822,11 +1894,16 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                 for x_enc_vb, x_dec_vb, y_tar_vb in val_loader_final_s2s:
                     x_enc_vb, x_dec_vb, y_tar_vb = x_enc_vb.to(device, non_blocking=True), x_dec_vb.to(device, non_blocking=True), y_tar_vb.to(device, non_blocking=True)
                     outputs_val_epoch, _ = model(x_enc_vb, x_dec_vb, teacher_forcing_ratio=0.0)
-                    loss_per_element_val = criterion(outputs_val_epoch, y_tar_vb)
                     
-                    scalar_loss_val_batch = loss_per_element_val.mean()
+                    if loss_function_name == "DilateLoss":
+                        scalar_loss_val_batch = criterion(outputs_val_epoch, y_tar_vb)
+                    else:
+                        loss_per_element_val = criterion(outputs_val_epoch, y_tar_vb)
+                        scalar_loss_val_batch = loss_per_element_val.mean()
+
                     epoch_val_loss_scalar_sum += scalar_loss_val_batch.item() * x_enc_vb.size(0)
-                    epoch_val_loss_per_step_sum += loss_per_element_val.mean(dim=2).sum(dim=0).detach()
+                    if loss_function_name != "DilateLoss":
+                        epoch_val_loss_per_step_sum += loss_per_element_val.mean(dim=2).sum(dim=0).detach()
             
             if len(val_loader_final_s2s.dataset) > 0:
                 avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader_final_s2s.dataset)
@@ -1849,10 +1926,10 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         epoch_time = pytime.time() - epoch_start_time
         tf_ratio_str = f"{current_tf_ratio:.2f}" if teacher_forcing_ratio_schedule else "N/A"
 
-        train_loss_per_step_str_s2s = " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step])
+        train_loss_per_step_str_s2s = "N/A (DILATE Loss)" if loss_function_name == "DilateLoss" else " | ".join([f"{l:.4f}" for l in avg_epoch_train_loss_per_step])
         val_loss_scalar_str_s2s = f"{avg_epoch_val_loss_scalar:.6f}" if avg_epoch_val_loss_scalar is not None and avg_epoch_val_loss_scalar != float('inf') else "N/A (Final Split)"
-        val_loss_per_step_str_s2s = "N/A (Final Split)"
-        if val_loader_final_s2s and not np.all(np.isnan(avg_epoch_val_loss_per_step)):
+        val_loss_per_step_str_s2s = "N/A (DILATE Loss)" if loss_function_name == "DilateLoss" else "N/A (Final Split)"
+        if val_loader_final_s2s and not np.all(np.isnan(avg_epoch_val_loss_per_step)) and loss_function_name != "DilateLoss":
              val_loss_per_step_str_s2s = " | ".join([f"{l:.4f}" for l in avg_epoch_val_loss_per_step])
 
         status_text.markdown( 
@@ -3430,7 +3507,7 @@ elif page == 'Allenamento Modello':
             
             col_loss_lstm, col_dev_lstm, col_save_lstm = st.columns(3) # Added col_loss_lstm
             with col_loss_lstm:
-                loss_choice_lstm = st.selectbox("Funzione di Loss (LSTM):", ["MSELoss", "HuberLoss", "DynamicWeightedMSE"], key="t_lstm_loss_choice")
+                loss_choice_lstm = st.selectbox("Funzione di Loss (LSTM):", ["MSELoss", "HuberLoss", "DynamicWeightedMSE", "DilateLoss"], key="t_lstm_loss_choice")
             with col_dev_lstm: 
                 device_option_lstm = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_lstm', horizontal=True)
             with col_save_lstm: 
@@ -3594,7 +3671,7 @@ elif page == 'Allenamento Modello':
             
              col_loss_s2s, col_dev_s2s, col_save_s2s = st.columns(3) # Added col_loss_s2s
              with col_loss_s2s:
-                 loss_choice_s2s = st.selectbox("Funzione di Loss (Seq2Seq):", ["MSELoss", "HuberLoss", "DynamicWeightedMSE"], key="t_s2s_loss_choice")
+                 loss_choice_s2s = st.selectbox("Funzione di Loss (Seq2Seq):", ["MSELoss", "HuberLoss", "DynamicWeightedMSE", "DilateLoss"], key="t_s2s_loss_choice")
              with col_dev_s2s: 
                  device_option_s2s = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_s2s', horizontal=True)
              with col_save_s2s: 
@@ -3752,7 +3829,7 @@ elif page == 'Allenamento Modello':
 
             # Selezioni finali (identico a Seq2Seq)
             col_loss_trans, col_dev_trans, col_save_trans = st.columns(3)
-            with col_loss_trans: loss_choice_trans = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss", "DynamicWeightedMSE"], key="t_trans_loss_choice")
+            with col_loss_trans: loss_choice_trans = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss", "DynamicWeightedMSE", "DilateLoss"], key="t_trans_loss_choice")
             with col_dev_trans: device_option_trans = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_trans', horizontal=True)
             with col_save_trans: save_choice_trans = st.radio("Strategia Salvataggio:", ['Migliore (su Validazione)', 'Modello Finale'], index=0, key='train_save_trans', horizontal=True)
 
