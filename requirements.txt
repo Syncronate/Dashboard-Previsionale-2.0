@@ -13,7 +13,6 @@ pytz
 
 # --- Dipendenze Speciali da GitHub ---
 # CORRETTO: Cambiato @main con @master
-pytorch-dilate-loss @ git+https://github.com/vincent-leguen/DILATE.git@master
 
 # --- Librerie PyTorch ---
 # Mantenere questo blocco alla fine per assicurare la corretta installazione di PyTorch
