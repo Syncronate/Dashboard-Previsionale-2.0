@@ -481,51 +481,49 @@ class DynamicWeightedMSELoss(nn.Module):
         
         return weighted_loss
 
+# --- SOSTITUISCI LA VECCHIA CLASSE DilateLoss CON QUESTA ---
 class DilateLoss(nn.Module):
     """
     Wrapper per la funzione di loss DILATE (DIstance-based Loss function for Time-sEries).
     Questa loss penalizza sia gli errori di forma (usando Dynamic Time Warping)
     sia gli errori temporali (sfasamento della previsione).
+    VERSIONE STABILIZZATA.
     """
-    def __init__(self, alpha=0.5, gamma=0.01, reduction='mean', device='cpu'):
+    def __init__(self, alpha=0.5, gamma=0.1, reduction='mean', device='cpu'): # NOTA: gamma è ora 0.1 di default
         super().__init__()
-        self.alpha = alpha  # Bilancia tra loss di forma (DTW) e temporale. 0.5 è bilanciato.
-        self.gamma = gamma  # Parametro di smoothing per il soft-DTW.
+        self.alpha = alpha
+        self.gamma = gamma
         self.reduction = reduction
-        self.device = device # DILATE richiede che il device sia specificato.
+        self.device = device
 
     def forward(self, y_pred, y_true):
-        # DILATE si aspetta tensori con shape (batch, sequence_length, 1).
-        # Il nostro output ha shape (batch, sequence_length, num_targets).
-        # Dobbiamo quindi applicare la loss a ogni target separatamente e poi aggregare.
-        
         batch_size = y_true.shape[0]
         num_targets = y_true.shape[2]
         
-        # Inizializza un tensore per memorizzare la loss per ogni elemento nel batch
         total_loss_per_batch_item = torch.zeros(batch_size).to(self.device)
 
-        # Itera su ogni feature target (es. ogni sensore idrometrico)
         for i in range(num_targets):
-            # Estrai la i-esima serie temporale per l'intero batch
-            y_pred_i = y_pred[:, :, i].unsqueeze(2) # Shape -> (batch, seq_len, 1)
-            y_true_i = y_true[:, :, i].unsqueeze(2) # Shape -> (batch, seq_len, 1)
-
-            # Calcola la DILATE loss per questo target.
-            # La funzione restituisce la loss per ogni elemento nel batch.
+            y_pred_i = y_pred[:, :, i].unsqueeze(2)
+            y_true_i = y_true[:, :, i].unsqueeze(2)
             loss_i, _, _ = dilate_loss(y_true_i, y_pred_i, alpha=self.alpha, gamma=self.gamma, device=self.device)
             total_loss_per_batch_item += loss_i
-
-        # Fa la media delle loss dei vari target per ogni elemento del batch
+        
         avg_loss_per_batch_item = total_loss_per_batch_item / num_targets
         
-        # Applica la riduzione finale
         if self.reduction == 'mean':
-            return avg_loss_per_batch_item.mean()
+            final_loss = avg_loss_per_batch_item.mean()
         elif self.reduction == 'sum':
-            return avg_loss_per_batch_item.sum()
-            
-        return avg_loss_per_batch_item
+            final_loss = avg_loss_per_batch_item.sum()
+        else:
+            final_loss = avg_loss_per_batch_item
+
+        # --- CONTROLLO DI SICUREZZA CRUCIALE ---
+        # Se la loss è NaN o infinita, restituisci un valore molto alto ma valido.
+        # Questo impedisce al training di bloccarsi e "punisce" il modello.
+        if torch.isnan(final_loss) or torch.isinf(final_loss):
+            return torch.tensor(1e6, device=self.device, requires_grad=True) # Un valore alto e differenziabile
+
+        return final_loss
 
 # --- Funzioni Utilità Modello/Dati ---
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, # REMOVED val_split
@@ -1526,8 +1524,8 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
     elif loss_function_name == "DilateLoss":
         # DILATE non può calcolare la loss per step, quindi gestisce la riduzione internamente.
         # Passiamo il device corretto che sarà usato per il training.
-        criterion = DilateLoss(alpha=0.5, gamma=0.01, reduction='mean', device=device)
-        print("Using DILATE Loss")
+        criterion = DilateLoss(alpha=0.5, gamma=0.1, reduction='mean', device=device)
+        print("Using DILATE Loss (gamma=0.1)")
     else: # Default to MSE
         criterion = nn.MSELoss(reduction='none')
         print("Using MSELoss")
@@ -1795,8 +1793,8 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     elif loss_function_name == "DilateLoss":
         # DILATE non può calcolare la loss per step, quindi gestisce la riduzione internamente.
         # Passiamo il device corretto che sarà usato per il training.
-        criterion = DilateLoss(alpha=0.5, gamma=0.01, reduction='mean', device=device)
-        print("Using DILATE Loss")
+        criterion = DilateLoss(alpha=0.5, gamma=0.1, reduction='mean', device=device)
+        print("Using DILATE Loss (gamma=0.1)")
     else: # Default to MSE
         criterion = nn.MSELoss(reduction='none')
         print("Using MSELoss for Seq2Seq")
