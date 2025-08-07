@@ -441,6 +441,45 @@ class HydroTransformer(nn.Module):
         # La funzione di training dovrà gestire questo output singolo.
         return prediction, None # Aggiungiamo None per compatibilità con la tupla (output, attention_weights)
 
+# --- AGGIUNGI QUESTA NUOVA CLASSE ---
+
+class DynamicWeightedMSELoss(nn.Module):
+    """
+    Calcola la Mean Squared Error (MSE) ma applica un peso che aumenta
+    dinamicamente con il valore del target (y_true). Questo forza il modello
+    a penalizzare maggiormente gli errori su valori alti (es. picchi di piena).
+    """
+    def __init__(self, exponent=2.0, reduction='mean'):
+        super().__init__()
+        self.exponent = exponent
+        self.reduction = reduction
+        # Usiamo la MSE di PyTorch con reduction='none' per ottenere la loss
+        # per ogni singolo elemento, così da poter applicare i pesi.
+        self.mse = nn.MSELoss(reduction='none')
+
+    def forward(self, y_pred, y_true):
+        # 1. Calcola la MSE base per ogni elemento nel batch.
+        #    Shape: (batch_size, sequence_length, num_targets)
+        per_element_loss = self.mse(y_pred, y_true)
+
+        # 2. Crea i pesi dinamici.
+        #    I pesi sono basati sui valori REALI (y_true). Usiamo 1 + y_true^exponent
+        #    per assicurare che il peso sia sempre >= 1 e cresca con il valore.
+        #    Il clamp(min=0) è una sicurezza per evitare problemi con valori negativi.
+        with torch.no_grad(): # I pesi non devono avere gradienti
+            weights = 1.0 + torch.pow(torch.clamp(y_true, min=0), self.exponent)
+
+        # 3. Applica i pesi moltiplicando la loss di ogni elemento per il suo peso.
+        weighted_loss = per_element_loss * weights
+
+        # 4. Applica la riduzione finale (solitamente 'mean').
+        if self.reduction == 'mean':
+            return weighted_loss.mean()
+        elif self.reduction == 'sum':
+            return weighted_loss.sum()
+        
+        return weighted_loss
+
 # --- Funzioni Utilità Modello/Dati ---
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window, # REMOVED val_split
                           lag_config=None, cumulative_config=None): 
@@ -1434,6 +1473,13 @@ def train_model(X_scaled_full, y_scaled_full, # CHANGED: from X_train, y_train, 
     if loss_function_name == "HuberLoss":
         criterion = nn.HuberLoss(reduction='none')
         print("Using HuberLoss")
+    elif loss_function_name == "DynamicWeightedMSE":
+        # Istanziamo la nostra nuova classe di loss.
+        # Il reduction='mean' è gestito internamente dalla classe.
+        # Ma per il calcolo delle loss "per step" è meglio ritornare il tensore non ridotto
+        # e fare la media nel loop. Modifichiamo il loop di training.
+        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction='none') # Usa la stessa logica di 'none'
+        print("Using Dynamic Weighted MSE Loss (exponent=2.0)")
     else: # Default to MSE
         criterion = nn.MSELoss(reduction='none')
         print("Using MSELoss")
@@ -1680,6 +1726,9 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     if loss_function_name == "HuberLoss":
         criterion = nn.HuberLoss(reduction='none')
         print("Using HuberLoss for Seq2Seq")
+    elif loss_function_name == "DynamicWeightedMSE":
+        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction='none')
+        print("Using Dynamic Weighted MSE Loss (exponent=2.0) for Seq2Seq")
     else: # Default to MSE
         criterion = nn.MSELoss(reduction='none')
         print("Using MSELoss for Seq2Seq")
@@ -3381,7 +3430,7 @@ elif page == 'Allenamento Modello':
             
             col_loss_lstm, col_dev_lstm, col_save_lstm = st.columns(3) # Added col_loss_lstm
             with col_loss_lstm:
-                loss_choice_lstm = st.selectbox("Funzione di Loss (LSTM):", ["MSELoss", "HuberLoss"], key="t_lstm_loss_choice")
+                loss_choice_lstm = st.selectbox("Funzione di Loss (LSTM):", ["MSELoss", "HuberLoss", "DynamicWeightedMSE"], key="t_lstm_loss_choice")
             with col_dev_lstm: 
                 device_option_lstm = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_lstm', horizontal=True)
             with col_save_lstm: 
@@ -3545,7 +3594,7 @@ elif page == 'Allenamento Modello':
             
              col_loss_s2s, col_dev_s2s, col_save_s2s = st.columns(3) # Added col_loss_s2s
              with col_loss_s2s:
-                 loss_choice_s2s = st.selectbox("Funzione di Loss (Seq2Seq):", ["MSELoss", "HuberLoss"], key="t_s2s_loss_choice")
+                 loss_choice_s2s = st.selectbox("Funzione di Loss (Seq2Seq):", ["MSELoss", "HuberLoss", "DynamicWeightedMSE"], key="t_s2s_loss_choice")
              with col_dev_s2s: 
                  device_option_s2s = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_s2s', horizontal=True)
              with col_save_s2s: 
@@ -3703,7 +3752,7 @@ elif page == 'Allenamento Modello':
 
             # Selezioni finali (identico a Seq2Seq)
             col_loss_trans, col_dev_trans, col_save_trans = st.columns(3)
-            with col_loss_trans: loss_choice_trans = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss"], key="t_trans_loss_choice")
+            with col_loss_trans: loss_choice_trans = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss", "DynamicWeightedMSE"], key="t_trans_loss_choice")
             with col_dev_trans: device_option_trans = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_trans', horizontal=True)
             with col_save_trans: save_choice_trans = st.radio("Strategia Salvataggio:", ['Migliore (su Validazione)', 'Modello Finale'], index=0, key='train_save_trans', horizontal=True)
 
