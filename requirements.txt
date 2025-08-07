@@ -1,15 +1,21 @@
+# --- Librerie Standard ---
 streamlit
-torch
-torchvision
-torchaudio
---extra-index-url https://download.pytorch.org/whl/cu118
 pandas
 numpy
 scikit-learn
 joblib
 plotly
 gspread
-streamlit-js-eval
+google-api-python-client
 oauth2client
-google-generativeai
+streamlit-js-eval
+pytz
+# Aggiunta per DILATE Loss
 pytorch-dilate-loss
+
+# --- Librerie PyTorch ---
+# Mantenere questo blocco alla fine per assicurare la corretta installazione di PyTorch
+torch
+torchvision
+torchaudio
+--extra-index-url https://download.pytorch.org/whl/cu118
