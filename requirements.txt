@@ -10,8 +10,11 @@ google-api-python-client
 oauth2client
 streamlit-js-eval
 pytz
-# Aggiunta per DILATE Loss
-pytorch-dilate-loss
+
+# --- Dipendenze Speciali da GitHub ---
+# Aggiungiamo il link diretto a GitHub per pytorch-dilate-loss
+# Questo risolve l'errore "No matching distribution found"
+pytorch-dilate-loss @ git+https://github.com/vincent-leguen/DILATE.git@main
 
 # --- Librerie PyTorch ---
 # Mantenere questo blocco alla fine per assicurare la corretta installazione di PyTorch
