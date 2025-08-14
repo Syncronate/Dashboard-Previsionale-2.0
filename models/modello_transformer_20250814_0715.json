@@ -1,6 +1,6 @@
 {
     "model_type": "Transformer",
-    "save_name": "modello_test_transformer_20250814_0715",
+    "save_name": "modello_transformer_20250814_0715",
     "epochs": 50,
     "batch_size": 32,
     "learning_rate": 0.0005,
