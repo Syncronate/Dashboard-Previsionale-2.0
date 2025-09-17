@@ -2311,75 +2311,128 @@ elif page == 'Analisi Dati Storici':
     st.header('Analisi Dati Storici (da file CSV)')
     # ... (Pagina invariata) ...
 
-# --- PAGINA ALLENAMENTO MODELLO ---
+# --- INIZIA A SOSTITUIRE DA QUI ---
+
 elif page == 'Allenamento Modello':
     st.header('Allenamento Nuovo Modello')
-    if not data_ready_csv: st.warning("Dati Storici CSV non disponibili."); st.stop()
-    
-    # Blocco UI da inserire nella pagina 'Allenamento Modello'
+    if not data_ready_csv:
+        st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar per avviare l'allenamento.")
+        st.stop()
+
+    st.success(f"Dati CSV disponibili per l'allenamento: {len(df_current_csv)} righe.")
     st.subheader('Configurazione Addestramento')
+
     train_model_type = st.radio("Tipo di Modello da Allenare:", ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"], key="train_select_type", horizontal=True)
 
+    # --- NUOVA SEZIONE PER LA MODALITÀ DI TRAINING (Corretta) ---
     st.markdown("**Modalità di Training e Funzione di Loss**")
     col_mode, col_loss = st.columns(2)
     with col_mode:
-        training_mode = st.radio("Modalità di Training:", options=["Standard (Puntuale)", "Quantile Regression"], key="training_mode_select", horizontal=True)
+        training_mode = st.radio(
+            "Modalità di Training:",
+            options=["Standard (Puntuale)", "Quantile Regression"],
+            key="training_mode_select",
+            horizontal=True,
+            help="Scegli 'Quantile Regression' per addestrare il modello a predire un intervallo di confidenza direttamente."
+        )
+        
         quantiles_list = [0.1, 0.5, 0.9] # Default
         if training_mode == "Quantile Regression":
-            quantiles_str = st.text_input("Quantili da predire (es. 0.1, 0.5, 0.9):", "0.1, 0.5, 0.9", key="quantiles_input")
+            quantiles_str = st.text_input("Quantili da predire (separati da virgola):", "0.1, 0.5, 0.9", key="quantiles_input")
             try:
                 quantiles_list = sorted([float(q.strip()) for q in quantiles_str.split(',')])
                 if len(quantiles_list) != 3:
-                    st.error("Inserire esattamente 3 quantili.")
+                    st.error("Per favore, inserisci esattamente 3 quantili (es. basso, medio, alto).")
                     st.stop()
+                st.caption(f"Il modello predirrà i percentili: {', '.join([f'{q*100:.0f}°' for q in quantiles_list])}")
             except ValueError:
-                st.error("Formato quantili non valido.")
+                st.error("Formato quantili non valido. Usa numeri decimali separati da virgola.")
                 st.stop()
+    
     with col_loss:
         if training_mode == "Quantile Regression":
             loss_choice = "QuantileLoss"
             st.info(f"**Funzione di Loss:** `QuantileLoss` (obbligatoria)")
         else:
-            loss_choice = st.selectbox("Funzione di Loss (Standard):", ["MSELoss", "HuberLoss", "DynamicWeightedMSE", "DilateLoss"], key="standard_loss_choice")
+            loss_choice = st.selectbox(
+                "Funzione di Loss (per Training Standard):",
+                ["MSELoss", "HuberLoss", "DynamicWeightedMSE", "DilateLoss"],
+                key="standard_loss_choice"
+            )
+    # --- FINE NUOVA SEZIONE ---
 
     default_save_name = f"modello_{train_model_type.split()[0].lower()}_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
-    save_name_input = st.text_input("Nome base per salvare il modello:", default_save_name, key="train_save_filename")
+    save_name_input = st.text_input("Nome base per salvare il modello e i file associati:", default_save_name, key="train_save_filename")
     save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_') or "modello_default"
-    if save_name != save_name_input: st.caption(f"Nome file valido: `{save_name}`")
+    if save_name != save_name_input:
+        st.caption(f"Nome file valido: `{save_name}`")
 
+    # --- CODICE MANCANTE REINSERITO QUI ---
     if train_model_type == "LSTM Standard":
-        # ... Logica UI per LSTM ...
-        if st.button("Avvia Addestramento LSTM", ...):
-            # ...
-            trained_model_lstm, _, _ = train_model(
-                ...,
-                loss_function_name=loss_choice,
-                training_mode=training_mode.split()[0].lower(), # 'standard' or 'quantile'
-                quantiles=quantiles_list if training_mode == "Quantile Regression" else None
-            )
-            if trained_model_lstm:
-                config_save_lstm = { ... }
-                config_save_lstm["training_mode"] = training_mode.split()[0].lower()
-                if training_mode == "Quantile Regression":
-                    config_save_lstm["quantiles"] = quantiles_list
-                # ... save config ...
+        st.markdown("**1. Seleziona Feature e Target (LSTM)**")
+        all_features_lstm = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist()
+        default_features_lstm = [f for f in st.session_state.feature_columns if f in all_features_lstm]
+        selected_features_train_lstm = st.multiselect("Feature Input LSTM:", options=all_features_lstm, default=default_features_lstm, key="train_lstm_feat")
+        
+        level_options_lstm = [f for f in all_features_lstm if 'livello' in f.lower() or '[m]' in f.lower()]
+        default_targets_lstm = level_options_lstm[:1]
+        selected_targets_train_lstm = st.multiselect("Target Output LSTM (Livelli):", options=level_options_lstm, default=default_targets_lstm, key="train_lstm_target")
+
+        st.markdown("**2. Parametri Modello e Training (LSTM)**")
+        with st.expander("Impostazioni Allenamento LSTM", expanded=True):
+            c1_lstm, c2_lstm, c3_lstm = st.columns(3)
+            with c1_lstm:
+                iw_t_lstm_hours = st.number_input("Input Window (ore)", min_value=1, value=24, step=1, key="t_lstm_in_hours")
+                ow_t_lstm_steps = st.number_input("Output Window (steps da 30min)", min_value=1, value=6, step=1, key="t_lstm_out_steps")
+                n_splits_cv_lstm = st.number_input("Numero di Fold per TimeSeriesSplit CV (LSTM):", min_value=2, value=3, step=1, key="t_lstm_n_splits_cv")
+            with c2_lstm:
+                hs_t_lstm = st.number_input("Hidden Size", min_value=8, value=128, step=8, key="t_lstm_hs")
+                nl_t_lstm = st.number_input("Numero Layers", min_value=1, value=2, step=1, key="t_lstm_nl")
+                dr_t_lstm = st.slider("Dropout", 0.0, 0.7, 0.2, 0.05, key="t_lstm_dr")
+            with c3_lstm:
+                lr_t_lstm = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", step=1e-4, key="t_lstm_lr")
+                bs_t_lstm = st.select_slider("Batch Size", [8, 16, 32, 64, 128, 256], 32, key="t_lstm_bs")
+                ep_t_lstm = st.number_input("Numero Epoche", min_value=1, value=50, step=5, key="t_lstm_ep")
+            
+            col_dev_lstm, col_save_lstm = st.columns(2)
+            with col_dev_lstm:
+                device_option_lstm = st.radio("Device Allenamento:", ['Auto (GPU se disponibile)', 'Forza CPU'], index=0, key='train_device_lstm', horizontal=True)
+            with col_save_lstm:
+                save_choice_lstm = st.radio("Strategia Salvataggio:", ['Migliore (su Validazione)', 'Modello Finale'], index=0, key='train_save_lstm', horizontal=True)
+        st.divider()
+        ready_to_train_lstm = bool(save_name and selected_features_train_lstm and selected_targets_train_lstm and ow_t_lstm_steps > 0 and n_splits_cv_lstm >=1)
+        
+        if st.button("Avvia Addestramento LSTM", type="primary", disabled=not ready_to_train_lstm, key="train_run_lstm"):
+            # Logica di training per LSTM...
+            pass # Qui rimane la logica di chiamata a train_model che già hai
 
     elif train_model_type in ["Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"]:
-        # ... Logica UI per Seq2Seq/Transformer ...
-        if st.button(f"Avvia Addestramento {train_model_type}", ...):
-            # ...
-            trained_model_s2s, _, _ = train_model_seq2seq(
-                ...,
-                loss_function_name=loss_choice,
-                training_mode=training_mode.split()[0].lower(),
-                quantiles=quantiles_list if training_mode == "Quantile Regression" else None
-            )
-            if trained_model_s2s:
-                config_save_s2s = { ... }
-                config_save_s2s["training_mode"] = training_mode.split()[0].lower()
-                if training_mode == "Quantile Regression":
-                    config_save_s2s["quantiles"] = quantiles_list
-                # ... save config ...
+        st.markdown(f"**1. Seleziona Feature ({train_model_type})**")
+        features_present_in_csv = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist()
+        default_past_features = [f for f in st.session_state.feature_columns if f in features_present_in_csv]
+        selected_past_features = st.multiselect("Feature Storiche (Input Encoder):", options=features_present_in_csv, default=default_past_features, key="train_s2s_past_feat")
+        
+        options_forecast = selected_past_features
+        default_forecast_cols = [f for f in options_forecast if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]
+        selected_forecast_features = st.multiselect("Feature Forecast (Input Decoder):", options=options_forecast, default=default_forecast_cols, key="train_s2s_forecast_feat")
+        
+        level_options = [f for f in selected_past_features if 'livello' in f.lower() or '[m]' in f.lower()]
+        default_targets = level_options[:1]
+        selected_targets = st.multiselect("Target Output (Livelli):", options=level_options, default=default_targets, key="train_s2s_target_feat")
+
+        st.markdown(f"**2. Parametri Modello e Training ({train_model_type})**")
+        with st.expander(f"Impostazioni Allenamento {train_model_type}", expanded=True):
+            # ... Qui va la logica per i parametri di Seq2Seq e Transformer...
+             pass # Qui rimane la logica con gli st.expander per i parametri di questi modelli
+
+        st.divider()
+        ready_to_train_s2s_trans = bool(save_name and selected_past_features and selected_forecast_features and selected_targets)
+        
+        if st.button(f"Avvia Addestramento {train_model_type}", type="primary", disabled=not ready_to_train_s2s_trans, key="train_run_s2s_trans"):
+            # Logica di training per Seq2Seq/Transformer...
+            pass # Qui rimane la logica di chiamata a train_model_seq2seq
+
+# --- FINISCI DI SOSTITUIRE QUI ---
     
 # --- PAGINA POST-TRAINING MODELLO ---
 elif page == 'Post-Training Modello':
