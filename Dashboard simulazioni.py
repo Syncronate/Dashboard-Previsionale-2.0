@@ -2317,8 +2317,7 @@ elif page == 'Allenamento Modello':
     st.header('Allenamento Nuovo Modello')
 
     def parse_hour_periods(periods_str, context=""):
-        if not periods_str.strip():
-            return []
+        if not periods_str.strip(): return []
         try:
             periods = [int(p.strip()) for p in periods_str.split(',') if p.strip()]
             if not all(p > 0 for p in periods):
@@ -2367,6 +2366,7 @@ elif page == 'Allenamento Modello':
         st.caption(f"Nome file valido: `{save_name}`")
     os.makedirs(MODELS_DIR, exist_ok=True)
 
+    # --- Logica per LSTM Standard ---
     if train_model_type == "LSTM Standard":
         st.markdown("**1. Seleziona Feature e Target (LSTM)**")
         all_features = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist()
@@ -2390,7 +2390,6 @@ elif page == 'Allenamento Modello':
                 lr = st.number_input("Learning Rate", 1e-6, value=0.001, format="%.5f", step=1e-4, key="t_lstm_lr")
                 bs = st.select_slider("Batch Size", [8,16,32,64,128,256], 32, key="t_lstm_bs")
                 ep = st.number_input("Numero Epoche", 1, value=50, step=5, key="t_lstm_ep")
-            
             c4, c5 = st.columns(2)
             with c4: device_option = st.radio("Device:", ['Auto', 'CPU'], 0, key='train_dev_lstm', horizontal=True)
             with c5: save_choice = st.radio("Salvataggio:", ['Migliore', 'Finale'], 0, key='train_save_lstm', horizontal=True)
@@ -2398,18 +2397,27 @@ elif page == 'Allenamento Modello':
         st.divider()
         ready_to_train = bool(save_name and selected_features and selected_targets and ow_steps > 0)
         if st.button("Avvia Addestramento LSTM", type="primary", disabled=not ready_to_train, key="train_run_lstm"):
-            # ... Logica di chiamata a train_model
-            pass
+            st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
+            with st.spinner("Preparazione dati LSTM..."):
+                X_scaled, y_scaled, sc_f, sc_t = prepare_training_data(df_current_csv.copy(), selected_features, selected_targets, iw_hours, int(ow_steps / 2.0))
+            if X_scaled is not None and y_scaled is not None:
+                trained_model, _, _ = train_model(X_scaled, y_scaled, X_scaled.shape[2], len(selected_targets), ow_steps, hs, nl, ep, bs, lr, dr, 'migliore' if 'Migliore' in save_choice else 'finale', 'auto' if 'Auto' in device_option else 'cpu', n_splits_cv=n_splits, loss_function_name=loss_choice, training_mode=training_mode.split()[0].lower(), quantiles=quantiles_list if training_mode == "Quantile Regression" else None)
+                if trained_model:
+                    st.success("Addestramento LSTM completato!")
+                    # Salva modello e scaler...
+                    config_save = {"model_type": "LSTM", "input_window": X_scaled.shape[1], "output_window": ow_steps, "hidden_size": hs, "num_layers": nl, "dropout": dr, "feature_columns": selected_features, "target_columns": selected_targets, "training_date": datetime.now(italy_tz).isoformat(), "display_name": save_name, "training_mode": training_mode.split()[0].lower()}
+                    if training_mode == "Quantile Regression": config_save["quantiles"] = quantiles_list
+                    # ... (Logica di salvataggio file)
+            else: st.error("Preparazione dati LSTM fallita.")
 
+    # --- Logica per Seq2Seq e Transformer ---
     elif train_model_type in ["Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"]:
         st.markdown(f"**1. Seleziona Feature ({train_model_type})**")
         all_features = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist()
         default_past = [f for f in st.session_state.feature_columns if f in all_features]
         selected_past = st.multiselect("Feature Storiche (Input Encoder):", all_features, default_past, key="train_s2s_past")
-        
         default_forecast = [f for f in selected_past if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]
         selected_forecast = st.multiselect("Feature Forecast (Input Decoder):", selected_past, default_forecast, key="train_s2s_fore")
-        
         level_options = [f for f in selected_past if 'livello' in f.lower() or '[m]' in f.lower()]
         selected_targets = st.multiselect("Target Output (Livelli):", level_options, default=level_options[:1], key="train_s2s_target")
 
@@ -2421,7 +2429,6 @@ elif page == 'Allenamento Modello':
                 fw_steps = st.number_input("Input Forecast (steps 30min)", 1, value=6, step=1, key="t_s2s_fore")
                 ow_steps = st.number_input("Output Previsione (steps 30min)", 1, value=6, step=1, key="t_s2s_out")
                 n_splits = st.number_input("Numero Fold CV", 2, value=3, step=1, key="t_s2s_n_splits")
-            
             with c2:
                 if train_model_type == "Transformer":
                     d_model = st.number_input("Dimensione Modello (d_model)", 16, value=64, step=16, key="t_trans_dmodel")
@@ -2429,26 +2436,36 @@ elif page == 'Allenamento Modello':
                     dim_ff = st.number_input("Dim FeedForward", 64, value=256, step=64, key="t_trans_dimff")
                     num_enc_l = st.number_input("Layers Encoder", 1, value=2, step=1, key="t_trans_encl")
                     num_dec_l = st.number_input("Layers Decoder", 1, value=2, step=1, key="t_trans_decl")
-                else: # Seq2Seq
+                else:
                     hs = st.number_input("Hidden Size", 8, value=128, step=8, key="t_s2s_hs")
                     nl = st.number_input("Numero Layers", 1, value=2, step=1, key="t_s2s_nl")
-                
                 dr = st.slider("Dropout", 0.0, 0.7, 0.2, 0.05, key="t_s2s_dr")
-
             with c3:
                 lr = st.number_input("Learning Rate", 1e-6, value=0.001, format="%.5f", step=1e-4, key="t_s2s_lr")
                 bs = st.select_slider("Batch Size", [8,16,32,64,128,256], 32, key="t_s2s_bs")
                 ep = st.number_input("Numero Epoche", 1, value=50, step=5, key="t_s2s_ep")
-            
             c4, c5 = st.columns(2)
             with c4: device_option = st.radio("Device:", ['Auto', 'CPU'], 0, key='train_dev_s2s', horizontal=True)
             with c5: save_choice = st.radio("Salvataggio:", ['Migliore', 'Finale'], 0, key='train_save_s2s', horizontal=True)
-            
+
         st.divider()
         ready_to_train = bool(save_name and selected_past and selected_forecast and selected_targets and ow_steps > 0)
         if st.button(f"Avvia Addestramento {train_model_type}", type="primary", disabled=not ready_to_train, key="train_run_s2s_trans"):
-            # ... Logica di chiamata a train_model_seq2seq
-            pass
+            st.info(f"Avvio addestramento {train_model_type} per '{save_name}'...")
+            with st.spinner(f"Preparazione dati {train_model_type}..."):
+                data_tuple = prepare_training_data_seq2seq(df_current_csv.copy(), selected_past, selected_forecast, selected_targets, iw_steps, fw_steps, ow_steps)
+            if data_tuple:
+                X_enc, X_dec, y_tar, sc_past, sc_fore, sc_tar = data_tuple
+                model_to_train = None
+                if train_model_type == "Transformer":
+                    # Istanziare Transformer...
+                    pass
+                else:
+                    # Istanziare Seq2Seq...
+                    pass
+                # trained_model, _, _ = train_model_seq2seq(...)
+                # Salva modello e scaler...
+            else: st.error(f"Preparazione dati {train_model_type} fallita.")
     
 # --- PAGINA POST-TRAINING MODELLO ---
 elif page == 'Post-Training Modello':
