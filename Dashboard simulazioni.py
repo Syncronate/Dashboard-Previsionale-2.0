@@ -1401,108 +1401,95 @@ def train_model(X_scaled_full, y_scaled_full,
         device = torch.device('cpu')
     print(f"Training LSTM userà: {device}")
 
-    # Loss Function Selection
+    # Selezione Loss Function
+    criterion = None
     if training_mode == 'quantile':
         criterion = QuantileLoss(quantiles=quantiles)
         print(f"Using QuantileLoss with quantiles: {quantiles}")
     elif loss_function_name == "HuberLoss":
         criterion = nn.HuberLoss()
-        print("Using HuberLoss")
     elif loss_function_name == "DynamicWeightedMSE":
         criterion = DynamicWeightedMSELoss(exponent=2.0)
-        print("Using Dynamic Weighted MSE Loss")
     elif loss_function_name == "DilateLoss":
         criterion = DilateLoss(alpha=0.5, gamma=0.1, reduction='mean', device=device)
-        print("Using DILATE Loss")
     else:
         criterion = nn.MSELoss()
-        print("Using MSELoss")
     
+    # Istanziazione Modello
     if _model_to_continue_train is not None:
         model = _model_to_continue_train.to(device)
-        print("Continuo training da modello LSTM esistente.")
     else:
-        num_quantiles_train = len(quantiles) if training_mode == 'quantile' else 1
-        model = HydroLSTM(input_size, hidden_size, output_size, output_window_steps, num_layers, dropout, num_quantiles=num_quantiles_train).to(device)
-        print("Creato nuovo modello LSTM per training.")
+        num_q = len(quantiles) if training_mode == 'quantile' else 1
+        model = HydroLSTM(input_size, hidden_size, output_size, output_window_steps, num_layers, dropout, num_quantiles=num_q).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    tscv_final_pass = TimeSeriesSplit(n_splits=n_splits_cv)
-    all_splits_indices = list(tscv_final_pass.split(X_scaled_full))
-    
-    train_indices_final, val_indices_final = all_splits_indices[-1]
-    
-    X_train_final, y_train_final = X_scaled_full[train_indices_final], y_scaled_full[train_indices_final]
-    X_val_final, y_val_final = X_scaled_full[val_indices_final], y_scaled_full[val_indices_final]
+    tscv = TimeSeriesSplit(n_splits=n_splits_cv)
+    train_indices, val_indices = list(tscv.split(X_scaled_full))[-1]
+    X_train, y_train = X_scaled_full[train_indices], y_scaled_full[train_indices]
+    X_val, y_val = X_scaled_full[val_indices], y_scaled_full[val_indices]
 
-    train_dataset_final = TimeSeriesDataset(X_train_final, y_train_final)
-    train_loader_final = DataLoader(train_dataset_final, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
+    train_dataset = TimeSeriesDataset(X_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size) if len(X_val) > 0 else None
+
+    train_losses, val_losses = [], []
+    best_val_loss = float('inf')
+    best_model_state = None
     
-    val_loader_final = None
-    if X_val_final.size > 0 and y_val_final.size > 0:
-        val_dataset_final = TimeSeriesDataset(X_val_final, y_val_final)
-        val_loader_final = DataLoader(val_dataset_final, batch_size=batch_size, num_workers=0, pin_memory=True if device.type == 'cuda' else False)
-        print(f"Training finale su {len(X_train_final)} campioni, validazione su {len(X_val_final)} campioni.")
-    else:
-        st.warning("Set di validazione finale vuoto.")
+    progress_bar = st.progress(0.0, text="Training LSTM: Inizio...")
+    status_text = st.empty()
+    loss_chart_placeholder = st.empty()
 
-    train_losses_scalar_history, val_losses_scalar_history = [], []
-    best_val_loss_scalar = float('inf')
-    best_model_state_dict = None
-    progress_bar = st.progress(0.0, text="Training LSTM: Inizio..."); status_text = st.empty(); loss_chart_placeholder = st.empty()
+    def update_loss_chart(t_loss, v_loss, placeholder):
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=t_loss, mode='lines', name='Train Loss'))
+        if v_loss: fig.add_trace(go.Scatter(y=v_loss, mode='lines', name='Validation Loss'))
+        fig.update_layout(title='Andamento Loss', xaxis_title='Epoca', yaxis_title='Loss', height=300, margin=dict(t=30, b=0), template="plotly_white")
+        placeholder.plotly_chart(fig, use_container_width=True)
 
-    st.write(f"Inizio training LSTM per {epochs} epoche su **{device}**..."); start_training_time = pytime.time()
+    st.write(f"Inizio training LSTM per {epochs} epoche su {device}...")
     for epoch in range(epochs):
         model.train()
-        epoch_train_loss_scalar_sum = 0.0
-
-        for i, batch_data in enumerate(train_loader_final): 
-            X_batch, y_batch = batch_data[0].to(device, non_blocking=True), batch_data[1].to(device, non_blocking=True)
+        epoch_train_loss = 0.0
+        for X_batch, y_batch in train_loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            optimizer.zero_grad()
             outputs = model(X_batch)
             loss = criterion(outputs, y_batch)
-            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            epoch_train_loss_scalar_sum += loss.item() * X_batch.size(0)
-
-        avg_epoch_train_loss_scalar = epoch_train_loss_scalar_sum / len(train_loader_final.dataset)
-        train_losses_scalar_history.append(avg_epoch_train_loss_scalar)
+            epoch_train_loss += loss.item() * X_batch.size(0)
         
-        avg_epoch_val_loss_scalar = None
-        if val_loader_final:
+        train_losses.append(epoch_train_loss / len(train_loader.dataset))
+        
+        epoch_val_loss = None
+        if val_loader:
             model.eval()
-            epoch_val_loss_scalar_sum = 0.0
+            epoch_val_loss_sum = 0.0
             with torch.no_grad():
-                for batch_data_val in val_loader_final:
-                    X_batch_val, y_batch_val = batch_data_val[0].to(device, non_blocking=True), batch_data_val[1].to(device, non_blocking=True)
-                    outputs_val = model(X_batch_val)
-                    loss_val = criterion(outputs_val, y_batch_val)
-                    epoch_val_loss_scalar_sum += loss_val.item() * X_batch_val.size(0)
-
-            avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader_final.dataset)
-            val_losses_scalar_history.append(avg_epoch_val_loss_scalar)
-            scheduler.step(avg_epoch_val_loss_scalar)
-            if avg_epoch_val_loss_scalar < best_val_loss_scalar:
-                best_val_loss_scalar = avg_epoch_val_loss_scalar
-                best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()}
-        else:
-            val_losses_scalar_history.append(None) 
+                for X_batch, y_batch in val_loader:
+                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                    outputs = model(X_batch)
+                    loss = criterion(outputs, y_batch)
+                    epoch_val_loss_sum += loss.item() * X_batch.size(0)
+            epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
+            val_losses.append(epoch_val_loss)
+            scheduler.step(epoch_val_loss)
+            if epoch_val_loss < best_val_loss:
+                best_val_loss = epoch_val_loss
+                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         
-        status_text.markdown(f'Epoca {epoch+1}/{epochs} | Train Loss: {avg_epoch_train_loss_scalar:.6f} | Val Loss: {avg_epoch_val_loss_scalar if avg_epoch_val_loss_scalar is not None else "N/A"}')
+        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {epoch_val_loss:.6f if epoch_val_loss else 'N/A'}")
         progress_bar.progress((epoch + 1) / epochs)
+        update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
-    total_training_time = pytime.time() - start_training_time
-    st.write(f"Training LSTM completato in {total_training_time:.1f} secondi.")
-    
-    final_model_to_return = model
-    if save_strategy == 'migliore' and best_model_state_dict:
-        model.load_state_dict({k: v.to(device) for k, v in best_model_state_dict.items()})
-        final_model_to_return = model
-        st.success(f"Strategia 'migliore': Caricato modello LSTM con Val Loss minima ({best_val_loss_scalar:.6f}).")
+    if save_strategy == 'migliore' and best_model_state:
+        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
+        st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
 
-    return final_model_to_return, (train_losses_scalar_history, []), (val_losses_scalar_history, [])
+    return model, (train_losses, []), (val_losses, [])
 
 
 def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
@@ -1517,109 +1504,93 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
-    print(f"Training Seq2Seq userà: {device}")
     model.to(device)
 
-    # Loss Function Selection
+    criterion = None
     if training_mode == 'quantile':
         criterion = QuantileLoss(quantiles=quantiles)
-        print(f"Using QuantileLoss with quantiles: {quantiles}")
     elif loss_function_name == "HuberLoss":
         criterion = nn.HuberLoss()
-        print("Using HuberLoss for Seq2Seq")
     elif loss_function_name == "DynamicWeightedMSE":
         criterion = DynamicWeightedMSELoss(exponent=2.0)
-        print("Using Dynamic Weighted MSE Loss for Seq2Seq")
     elif loss_function_name == "DilateLoss":
-        criterion = DilateLoss(alpha=0.5, gamma=0.1, reduction='mean', device=device)
-        print("Using DILATE Loss")
+        criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device)
     else:
         criterion = nn.MSELoss()
-        print("Using MSELoss for Seq2Seq")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    tscv_final_pass_s2s = TimeSeriesSplit(n_splits=n_splits_cv)
-    all_splits_indices_s2s = list(tscv_final_pass_s2s.split(X_enc_scaled_full))
+    tscv = TimeSeriesSplit(n_splits=n_splits_cv)
+    train_indices, val_indices = list(tscv.split(X_enc_scaled_full))[-1]
+    
+    X_enc_train, X_dec_train, y_tar_train = X_enc_scaled_full[train_indices], X_dec_scaled_full[train_indices], y_tar_scaled_full[train_indices]
+    X_enc_val, X_dec_val, y_tar_val = X_enc_scaled_full[val_indices], X_dec_scaled_full[val_indices], y_tar_scaled_full[val_indices]
 
-    train_indices_final_s2s, val_indices_final_s2s = all_splits_indices_s2s[-1]
+    train_loader = DataLoader(TimeSeriesDataset(X_enc_train, X_dec_train, y_tar_train), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(TimeSeriesDataset(X_enc_val, X_dec_val, y_tar_val), batch_size=batch_size) if len(X_enc_val) > 0 else None
 
-    X_enc_train_final, X_dec_train_final, y_tar_train_final = X_enc_scaled_full[train_indices_final_s2s], X_dec_scaled_full[train_indices_final_s2s], y_tar_scaled_full[train_indices_final_s2s]
-    X_enc_val_final, X_dec_val_final, y_tar_val_final = X_enc_scaled_full[val_indices_final_s2s], X_dec_scaled_full[val_indices_final_s2s], y_tar_scaled_full[val_indices_final_s2s]
+    train_losses, val_losses = [], []
+    best_val_loss = float('inf')
+    best_model_state = None
+    
+    progress_bar = st.progress(0.0, text="Training Seq2Seq: Inizio...")
+    status_text = st.empty()
+    loss_chart_placeholder = st.empty()
 
-    train_dataset_final_s2s = TimeSeriesDataset(X_enc_train_final, X_dec_train_final, y_tar_train_final)
-    train_loader_final_s2s = DataLoader(train_dataset_final_s2s, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True if device.type=='cuda' else False)
+    def update_loss_chart(t_loss, v_loss, placeholder):
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=t_loss, mode='lines', name='Train Loss'))
+        if v_loss: fig.add_trace(go.Scatter(y=v_loss, mode='lines', name='Validation Loss'))
+        fig.update_layout(title='Andamento Loss', xaxis_title='Epoca', yaxis_title='Loss', height=300, margin=dict(t=30, b=0), template="plotly_white")
+        placeholder.plotly_chart(fig, use_container_width=True)
 
-    val_loader_final_s2s = None
-    if X_enc_val_final.size > 0 and y_tar_val_final.size > 0:
-        val_dataset_final_s2s = TimeSeriesDataset(X_enc_val_final, X_dec_val_final, y_tar_val_final)
-        val_loader_final_s2s = DataLoader(val_dataset_final_s2s, batch_size=batch_size, num_workers=0, pin_memory=True if device.type=='cuda' else False)
-        print(f"Training finale Seq2Seq su {len(X_enc_train_final)} campioni, validazione su {len(X_enc_val_final)} campioni.")
-    else:
-        st.warning("Set di validazione finale Seq2Seq vuoto.")
-
-    train_losses_scalar_history, val_losses_scalar_history = [], []
-    best_val_loss_scalar = float('inf')
-    best_model_state_dict = None
-    progress_bar = st.progress(0.0, text="Training Seq2Seq: Inizio..."); status_text = st.empty()
-
-    st.write(f"Inizio training Seq2Seq per {epochs} epoche su **{device}**..."); start_training_time = pytime.time()
+    st.write(f"Inizio training Seq2Seq per {epochs} epoche su {device}...")
     for epoch in range(epochs):
         model.train()
-        epoch_train_loss_scalar_sum = 0.0
-        
+        epoch_train_loss = 0.0
         current_tf_ratio = 0.5
         if teacher_forcing_ratio_schedule:
             start_tf, end_tf = teacher_forcing_ratio_schedule
-            if epochs > 1: current_tf_ratio = max(end_tf, start_tf - (start_tf - end_tf) * epoch / (epochs - 1))
-            else: current_tf_ratio = start_tf
+            current_tf_ratio = max(end_tf, start_tf - (start_tf - end_tf) * epoch / (epochs -1 if epochs > 1 else 1))
         
-        for i, (x_enc_b, x_dec_b, y_tar_b) in enumerate(train_loader_final_s2s):
-            x_enc_b, x_dec_b, y_tar_b = x_enc_b.to(device, non_blocking=True), x_dec_b.to(device, non_blocking=True), y_tar_b.to(device, non_blocking=True)
+        for x_enc, x_dec, y_tar in train_loader:
+            x_enc, x_dec, y_tar = x_enc.to(device), x_dec.to(device), y_tar.to(device)
             optimizer.zero_grad()
-            
-            outputs_train_epoch, _ = model(x_enc_b, x_dec_b, teacher_forcing_ratio=current_tf_ratio)
-            loss = criterion(outputs_train_epoch, y_tar_b)
+            outputs, _ = model(x_enc, x_dec, teacher_forcing_ratio=current_tf_ratio)
+            loss = criterion(outputs, y_tar)
             loss.backward()
             optimizer.step()
-            epoch_train_loss_scalar_sum += loss.item() * x_enc_b.size(0)
-
-        avg_epoch_train_loss_scalar = epoch_train_loss_scalar_sum / len(train_loader_final_s2s.dataset)
-        train_losses_scalar_history.append(avg_epoch_train_loss_scalar)
-
-        avg_epoch_val_loss_scalar = None
-        if val_loader_final_s2s:
+            epoch_train_loss += loss.item() * x_enc.size(0)
+        
+        train_losses.append(epoch_train_loss / len(train_loader.dataset))
+        
+        epoch_val_loss = None
+        if val_loader:
             model.eval()
-            epoch_val_loss_scalar_sum = 0.0
+            epoch_val_loss_sum = 0.0
             with torch.no_grad():
-                for x_enc_vb, x_dec_vb, y_tar_vb in val_loader_final_s2s:
-                    x_enc_vb, x_dec_vb, y_tar_vb = x_enc_vb.to(device, non_blocking=True), x_dec_vb.to(device, non_blocking=True), y_tar_vb.to(device, non_blocking=True)
-                    outputs_val_epoch, _ = model(x_enc_vb, x_dec_vb, teacher_forcing_ratio=0.0)
-                    loss_val = criterion(outputs_val_epoch, y_tar_vb)
-                    epoch_val_loss_scalar_sum += loss_val.item() * x_enc_vb.size(0)
-            
-            avg_epoch_val_loss_scalar = epoch_val_loss_scalar_sum / len(val_loader_final_s2s.dataset)
-            val_losses_scalar_history.append(avg_epoch_val_loss_scalar)
-            scheduler.step(avg_epoch_val_loss_scalar)
-            if avg_epoch_val_loss_scalar < best_val_loss_scalar:
-                best_val_loss_scalar = avg_epoch_val_loss_scalar
-                best_model_state_dict = {k: v.cpu().detach().clone() for k, v in model.state_dict().items()}
-        else:
-            val_losses_scalar_history.append(None)
+                for x_enc, x_dec, y_tar in val_loader:
+                    x_enc, x_dec, y_tar = x_enc.to(device), x_dec.to(device), y_tar.to(device)
+                    outputs, _ = model(x_enc, x_dec, teacher_forcing_ratio=0.0)
+                    loss = criterion(outputs, y_tar)
+                    epoch_val_loss_sum += loss.item() * x_enc.size(0)
+            epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
+            val_losses.append(epoch_val_loss)
+            scheduler.step(epoch_val_loss)
+            if epoch_val_loss < best_val_loss:
+                best_val_loss = epoch_val_loss
+                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         
-        status_text.markdown(f'Epoca {epoch+1}/{epochs} | Train Loss: {avg_epoch_train_loss_scalar:.6f} | Val Loss: {avg_epoch_val_loss_scalar if avg_epoch_val_loss_scalar is not None else "N/A"}')
+        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {epoch_val_loss:.6f if epoch_val_loss else 'N/A'}")
         progress_bar.progress((epoch + 1) / epochs)
+        update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
-    total_training_time = pytime.time() - start_training_time
-    st.write(f"Training Seq2Seq completato in {total_training_time:.1f} secondi.")
-    final_model_to_return = model
-    if save_strategy == 'migliore' and best_model_state_dict:
-        model.load_state_dict({k: v.to(device) for k, v in best_model_state_dict.items()})
-        final_model_to_return = model
-        st.success(f"Strategia 'migliore': Caricato modello Seq2Seq con Val Loss minima ({best_val_loss_scalar:.6f}).")
-        
-    return model, (train_losses_scalar_history, []), (val_losses_scalar_history, [])
+    if save_strategy == 'migliore' and best_model_state:
+        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
+        st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
+
+    return model, (train_losses, []), (val_losses, [])
 
 # --- Funzioni Helper Download ---
 def get_table_download_link(df, filename="data.csv", link_text="Scarica CSV"):
