@@ -2248,23 +2248,122 @@ elif page == 'Test Modello su Storico':
 
     st.info(f"Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
     
+    target_columns_model_test = active_config['target_columns']
+    if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
+        input_steps_model_test = active_config['input_window_steps']
+        output_steps_model_test = active_config['output_window_steps']
+        past_feature_cols_model_test = active_config['all_past_feature_columns']
+        forecast_feature_cols_model_test = active_config['forecast_input_columns']
+        required_len_for_test = input_steps_model_test + output_steps_model_test
+    else: # LSTM
+        feature_columns_model_test = active_config.get("feature_columns", [])
+        input_steps_model_test = active_config['input_window']
+        output_steps_model_test = active_config['output_window']
+        required_len_for_test = input_steps_model_test + output_steps_model_test
+
     st.subheader("Configurazione Walk-Forward Evaluation")
     col_wf1, col_wf2, col_wf3, col_wf4 = st.columns(4)
     with col_wf1:
         num_evaluation_periods = st.number_input("Numero di Periodi di Test:", min_value=1, value=3, step=1, key="wf_num_periods")
     with col_wf2:
-        first_input_start_index = st.number_input("Primo Indice di Inizio per Input nel CSV:", min_value=0, value=0, step=1, key="wf_first_start_idx")
+        max_start_idx = len(df_current_csv) - required_len_for_test
+        first_input_start_index = st.number_input("Primo Indice di Inizio per Input nel CSV:", min_value=0, max_value=max(0, max_start_idx), value=0, step=1, key="wf_first_start_idx")
     with col_wf3:
-        stride_between_periods = st.number_input("Passo tra Periodi di Test (righe):", min_value=1, value=1, step=1, key="wf_stride")
+        stride_between_periods = st.number_input("Passo tra Periodi di Test (righe):", min_value=1, value=output_steps_model_test, step=1, key="wf_stride")
     with col_wf4:
         is_quantile_model_test = active_config.get("training_mode") == "quantile"
         if is_quantile_model_test:
             st.info("Modello Quantile: no MC Dropout.")
             num_passes_test = 1
         else:
-            num_passes_test = st.number_input("Passaggi per Incertezza:", min_value=1, max_value=100, value=25, step=1, key="wf_num_passes", help="Se > 1, calcola l'incertezza (MC Dropout).")
+            num_passes_test = st.number_input("Passaggi per Incertezza:", min_value=1, max_value=100, value=25, step=1, key="wf_num_passes")
+
+    st.markdown("---")
     
-    # ... (Il resto della pagina Test Modello rimane invariato nella sua logica di esecuzione) ...
+    if st.button("Esegui Test Walk-Forward su Storico", type="primary", key="run_walk_forward_test_button"):
+        from sklearn.metrics import mean_squared_error
+        
+        evaluation_results_list = []
+        all_period_mses = {target_col: [] for target_col in target_columns_model_test}
+        
+        progress_bar_test = st.progress(0.0, text="Avvio test walk-forward...")
+
+        for i_period in range(num_evaluation_periods):
+            progress_bar_test.progress((i_period + 1) / num_evaluation_periods, text=f"Elaborazione Periodo {i_period + 1}/{num_evaluation_periods}...")
+            
+            current_input_start_index = first_input_start_index + (i_period * stride_between_periods)
+            input_data_end_index = current_input_start_index + input_steps_model_test
+            actual_data_start_idx = current_input_start_index + input_steps_model_test
+            actual_data_end_idx = actual_data_start_idx + output_steps_model_test
+            
+            if actual_data_end_idx > len(df_current_csv):
+                st.warning(f"Periodo {i_period+1} saltato: dati insufficienti nel CSV.")
+                continue
+
+            predictions_period = None
+            uncertainty_period = None
+            
+            input_df = df_current_csv.iloc[current_input_start_index:input_data_end_index]
+            actual_df = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx]
+            actual_data_np = actual_df[target_columns_model_test].values
+            start_time_period = actual_df[date_col_name_csv].iloc[0]
+
+            if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
+                past_input_np = input_df[past_feature_cols_model_test].values
+                future_input_np = actual_df[forecast_feature_cols_model_test].values
+                if num_passes_test > 1 and not is_quantile_model_test:
+                    predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(active_model, past_input_np, future_input_np, active_scalers, active_config, active_device, num_passes=num_passes_test)
+                else:
+                    predictions_period, _ = predict_seq2seq(active_model, past_input_np, future_input_np, active_scalers, active_config, active_device)
+            else: # LSTM
+                input_np = input_df[feature_columns_model_test].values
+                if num_passes_test > 1 and not is_quantile_model_test:
+                    predictions_period, uncertainty_period = predict_with_uncertainty(active_model, input_np, active_scalers[0], active_scalers[1], active_config, active_device, num_passes=num_passes_test)
+                else:
+                    predictions_period = predict(active_model, input_np, active_scalers[0], active_scalers[1], active_config, active_device)
+
+            if predictions_period is not None:
+                period_mses = {}
+                for i_target, target_col in enumerate(target_columns_model_test):
+                    pred_series = predictions_period[:, i_target, 1] if predictions_period.ndim == 3 else predictions_period[:, i_target]
+                    mse = mean_squared_error(actual_data_np[:, i_target], pred_series)
+                    period_mses[target_col] = mse
+                    all_period_mses[target_col].append(mse)
+
+                evaluation_results_list.append({
+                    "period_num": i_period + 1,
+                    "predictions": predictions_period,
+                    "actuals": actual_data_np,
+                    "uncertainty": uncertainty_period,
+                    "start_time": start_time_period,
+                    "mses": period_mses
+                })
+
+        progress_bar_test.empty()
+        
+        if not evaluation_results_list:
+            st.error("Nessun periodo di test è stato completato con successo.")
+        else:
+            st.success(f"Test completato per {len(evaluation_results_list)} periodi.")
+            for result in evaluation_results_list:
+                st.subheader(f"Risultati Test - Periodo {result['period_num']}")
+                st.markdown(f"**Inizio periodo di previsione:** {result['start_time'].strftime('%d/%m/%Y %H:%M')}")
+                
+                figs = plot_predictions(result['predictions'], active_config, start_time=result['start_time'], actual_data=result['actuals'], uncertainty=result['uncertainty'])
+                
+                num_graph_cols = min(len(figs), 2)
+                graph_cols = st.columns(num_graph_cols)
+                for i_fig, fig in enumerate(figs):
+                    with graph_cols[i_fig % num_graph_cols]:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                st.write("Errore Quadratico Medio (MSE) per il periodo:")
+                st.dataframe(pd.DataFrame.from_dict(result['mses'], orient='index', columns=['MSE']).round(5))
+                st.divider()
+
+            st.subheader("Riepilogo Metriche Medie su Tutti i Periodi")
+            avg_mse_data = {get_station_label(k): np.mean(v) for k, v in all_period_mses.items() if v}
+            st.dataframe(pd.DataFrame.from_dict(avg_mse_data, orient='index', columns=['MSE Medio']).round(5))
 
 # --- PAGINA ANALISI DATI STORICI ---
 elif page == 'Analisi Dati Storici':
