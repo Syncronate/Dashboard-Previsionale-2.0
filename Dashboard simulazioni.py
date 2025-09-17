@@ -1395,29 +1395,17 @@ def train_model(X_scaled_full, y_scaled_full,
                 _model_to_continue_train=None):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM (mode={training_mode}, n_splits={n_splits_cv}, loss={loss_function_name})...")
     
-    if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower() or 'cuda' in preferred_device.lower()) and torch.cuda.is_available():
-        device = torch.device('cuda')
-    else:
-        device = torch.device('cpu')
+    device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     print(f"Training LSTM userà: {device}")
 
-    # Selezione Loss Function
     criterion = None
-    if training_mode == 'quantile':
-        criterion = QuantileLoss(quantiles=quantiles)
-        print(f"Using QuantileLoss with quantiles: {quantiles}")
-    elif loss_function_name == "HuberLoss":
-        criterion = nn.HuberLoss()
-    elif loss_function_name == "DynamicWeightedMSE":
-        criterion = DynamicWeightedMSELoss(exponent=2.0)
-    elif loss_function_name == "DilateLoss":
-        criterion = DilateLoss(alpha=0.5, gamma=0.1, reduction='mean', device=device)
-    else:
-        criterion = nn.MSELoss()
+    if training_mode == 'quantile': criterion = QuantileLoss(quantiles=quantiles)
+    elif loss_function_name == "HuberLoss": criterion = nn.HuberLoss()
+    elif loss_function_name == "DynamicWeightedMSE": criterion = DynamicWeightedMSELoss(exponent=2.0)
+    elif loss_function_name == "DilateLoss": criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device)
+    else: criterion = nn.MSELoss()
     
-    # Istanziazione Modello
-    if _model_to_continue_train is not None:
-        model = _model_to_continue_train.to(device)
+    if _model_to_continue_train is not None: model = _model_to_continue_train.to(device)
     else:
         num_q = len(quantiles) if training_mode == 'quantile' else 1
         model = HydroLSTM(input_size, hidden_size, output_size, output_window_steps, num_layers, dropout, num_quantiles=num_q).to(device)
@@ -1430,8 +1418,7 @@ def train_model(X_scaled_full, y_scaled_full,
     X_train, y_train = X_scaled_full[train_indices], y_scaled_full[train_indices]
     X_val, y_val = X_scaled_full[val_indices], y_scaled_full[val_indices]
 
-    train_dataset = TimeSeriesDataset(X_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(TimeSeriesDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size) if len(X_val) > 0 else None
 
     train_losses, val_losses = [], []
@@ -1445,7 +1432,7 @@ def train_model(X_scaled_full, y_scaled_full,
     def update_loss_chart(t_loss, v_loss, placeholder):
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=t_loss, mode='lines', name='Train Loss'))
-        if v_loss: fig.add_trace(go.Scatter(y=v_loss, mode='lines', name='Validation Loss'))
+        if v_loss and any(v is not None for v in v_loss): fig.add_trace(go.Scatter(y=v_loss, mode='lines', name='Validation Loss'))
         fig.update_layout(title='Andamento Loss', xaxis_title='Epoca', yaxis_title='Loss', height=300, margin=dict(t=30, b=0), template="plotly_white")
         placeholder.plotly_chart(fig, use_container_width=True)
 
@@ -1461,7 +1448,6 @@ def train_model(X_scaled_full, y_scaled_full,
             loss.backward()
             optimizer.step()
             epoch_train_loss += loss.item() * X_batch.size(0)
-        
         train_losses.append(epoch_train_loss / len(train_loader.dataset))
         
         epoch_val_loss = None
@@ -1480,8 +1466,14 @@ def train_model(X_scaled_full, y_scaled_full,
             if epoch_val_loss < best_val_loss:
                 best_val_loss = epoch_val_loss
                 best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        
-        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {epoch_val_loss:.6f if epoch_val_loss else 'N/A'}")
+        else:
+             val_losses.append(None)
+
+        # --- CORREZIONE QUI ---
+        val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
+        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
+        # --- FINE CORREZIONE ---
+
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
@@ -1500,23 +1492,15 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                         training_mode='standard', quantiles=None):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq (mode={training_mode}, n_splits={n_splits_cv}, loss={loss_function_name})...")
     
-    if ('auto' in preferred_device.lower() or 'gpu' in preferred_device.lower() or 'cuda' in preferred_device.lower()) and torch.cuda.is_available():
-        device = torch.device('cuda')
-    else:
-        device = torch.device('cpu')
+    device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     model.to(device)
 
     criterion = None
-    if training_mode == 'quantile':
-        criterion = QuantileLoss(quantiles=quantiles)
-    elif loss_function_name == "HuberLoss":
-        criterion = nn.HuberLoss()
-    elif loss_function_name == "DynamicWeightedMSE":
-        criterion = DynamicWeightedMSELoss(exponent=2.0)
-    elif loss_function_name == "DilateLoss":
-        criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device)
-    else:
-        criterion = nn.MSELoss()
+    if training_mode == 'quantile': criterion = QuantileLoss(quantiles=quantiles)
+    elif loss_function_name == "HuberLoss": criterion = nn.HuberLoss()
+    elif loss_function_name == "DynamicWeightedMSE": criterion = DynamicWeightedMSELoss(exponent=2.0)
+    elif loss_function_name == "DilateLoss": criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device)
+    else: criterion = nn.MSELoss()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
@@ -1541,7 +1525,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     def update_loss_chart(t_loss, v_loss, placeholder):
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=t_loss, mode='lines', name='Train Loss'))
-        if v_loss: fig.add_trace(go.Scatter(y=v_loss, mode='lines', name='Validation Loss'))
+        if v_loss and any(v is not None for v in v_loss): fig.add_trace(go.Scatter(y=v_loss, mode='lines', name='Validation Loss'))
         fig.update_layout(title='Andamento Loss', xaxis_title='Epoca', yaxis_title='Loss', height=300, margin=dict(t=30, b=0), template="plotly_white")
         placeholder.plotly_chart(fig, use_container_width=True)
 
@@ -1581,8 +1565,14 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             if epoch_val_loss < best_val_loss:
                 best_val_loss = epoch_val_loss
                 best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        
-        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {epoch_val_loss:.6f if epoch_val_loss else 'N/A'}")
+        else:
+            val_losses.append(None)
+
+        # --- CORREZIONE QUI ---
+        val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
+        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
+        # --- FINE CORREZIONE ---
+
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
@@ -1591,7 +1581,6 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
 
     return model, (train_losses, []), (val_losses, [])
-
 # --- Funzioni Helper Download ---
 def get_table_download_link(df, filename="data.csv", link_text="Scarica CSV"):
     try:
