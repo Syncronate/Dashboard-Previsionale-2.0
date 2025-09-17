@@ -2513,7 +2513,12 @@ elif page == 'Post-Training Modello':
             lr_pt = st.number_input("Learning Rate per Post-Training:", min_value=1e-7, value=lr_pt_default / 10, format="%.6f", step=1e-5, key="pt_lr")
             bs_pt = st.select_slider("Batch Size:", options=[8, 16, 32, 64], value=original_config.get('batch_size', 32), key="pt_batch_size")
         with c3_pt:
-            loss_choice_pt = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss"], index=["MSELoss", "HuberLoss"].index(original_config.get('loss_function', 'MSELoss')), key="pt_loss_choice")
+            training_mode_pt = original_config.get("training_mode", "standard")
+            if training_mode_pt == 'quantile':
+                loss_choice_pt = "QuantileLoss"
+                st.info("**Loss:** `QuantileLoss` (dal modello originale)")
+            else:
+                loss_choice_pt = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss"], index=["MSELoss", "HuberLoss"].index(original_config.get('loss_function', 'MSELoss')), key="pt_loss_choice")
             save_choice_pt = st.radio("Strategia Salvataggio:", ['Migliore', 'Finale'], index=0, key='pt_save_choice', horizontal=True)
     
     st.divider()
@@ -2522,16 +2527,55 @@ elif page == 'Post-Training Modello':
         st.info(f"Avvio post-training per '{st.session_state.active_model_name}'...")
         
         current_device_pt = st.session_state.active_device
-        training_mode_pt = original_config.get("training_mode", "standard")
         quantiles_pt = original_config.get("quantiles") if training_mode_pt == 'quantile' else None
 
-        # Logica specifica per tipo di modello
+        # Logica di preparazione dati e training
         if active_model_type == "LSTM":
-            # ... (Tutta la logica di preparazione dati e chiamata a train_model per LSTM)
-            pass
+            # Prepara nuovi dati usando i vecchi scaler
+            with st.spinner("Preparazione nuovi dati per post-training LSTM..."):
+                X_new_scaled, y_new_scaled = prepare_training_data(df_current_csv.copy(), original_config["feature_columns"], original_config["target_columns"], original_config["input_window"]/2, original_config["output_window"]/2)[0:2] #Prendiamo solo i primi due elementi
+            
+            if X_new_scaled is not None:
+                num_q_pt = len(quantiles_pt) if training_mode_pt == 'quantile' else 1
+                model_instance = HydroLSTM(X_new_scaled.shape[2], original_config["hidden_size"], len(original_config["target_columns"]), original_config["output_window"], original_config["num_layers"], original_config["dropout"], num_quantiles=num_q_pt).to(current_device_pt)
+                model_instance.load_state_dict(model_to_fine_tune_state_dict)
+
+                fine_tuned_model, _, _ = train_model(X_new_scaled, y_new_scaled, X_new_scaled.shape[2], len(original_config["target_columns"]), original_config["output_window"],_model_to_continue_train=model_instance, epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt, save_strategy='migliore' if 'Migliore' in save_choice_pt else 'finale', n_splits_cv=n_splits_cv_pt, loss_function_name=loss_choice_pt, training_mode=training_mode_pt, quantiles=quantiles_pt)
+
+                if fine_tuned_model:
+                    st.success("Post-Training LSTM completato!")
+                    # Salva il modello affinato
+                    # ... (logica di salvataggio)
+        
         elif active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
-            # ... (Tutta la logica di preparazione dati e chiamata a train_model_seq2seq)
-            pass
+            with st.spinner(f"Preparazione nuovi dati per post-training {active_model_type}..."):
+                 data_tuple = prepare_training_data_seq2seq(df_current_csv.copy(), original_config["all_past_feature_columns"], original_config["forecast_input_columns"], original_config["target_columns"], original_config["input_window_steps"], original_config["forecast_window_steps"], original_config["output_window_steps"])
+
+            if data_tuple:
+                (X_enc_new, X_dec_new, y_tar_new, _, _, _) = data_tuple
+                num_q_pt = len(quantiles_pt) if training_mode_pt == 'quantile' else 1
+                
+                model_instance = None
+                # Ricrea l'istanza del modello con la configurazione originale
+                if active_model_type == "Transformer":
+                    model_instance = HydroTransformer(X_enc_new.shape[2], X_dec_new.shape[2], len(original_config["target_columns"]), **original_config, num_quantiles=num_q_pt)
+                else:
+                    encoder = EncoderLSTM(X_enc_new.shape[2], original_config['hidden_size'], original_config['num_layers'], original_config['dropout'])
+                    if active_model_type == "Seq2Seq con Attenzione":
+                        decoder = DecoderLSTMWithAttention(X_dec_new.shape[2], original_config['hidden_size'], len(original_config["target_columns"]), original_config['num_layers'], original_config['dropout'], num_quantiles=num_q_pt)
+                        model_instance = Seq2SeqWithAttention(encoder, decoder, original_config["output_window_steps"])
+                    else:
+                        decoder = DecoderLSTM(X_dec_new.shape[2], original_config['hidden_size'], len(original_config["target_columns"]), original_config['num_layers'], original_config['dropout'], num_quantiles=num_q_pt)
+                        model_instance = Seq2SeqHydro(encoder, decoder, original_config["output_window_steps"])
+
+                model_instance.load_state_dict(model_to_fine_tune_state_dict)
+
+                fine_tuned_model, _, _ = train_model_seq2seq(X_enc_new, X_dec_new, y_tar_new, model_instance, original_config["output_window_steps"], epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt, save_strategy='migliore' if 'Migliore' in save_choice_pt else 'finale', n_splits_cv=n_splits_cv_pt, loss_function_name=loss_choice_pt, training_mode=training_mode_pt, quantiles=quantiles_pt)
+
+                if fine_tuned_model:
+                    st.success(f"Post-Training {active_model_type} completato!")
+                    # Salva il modello affinato
+                    # ... (logica di salvataggio)
         else:
             st.error(f"Tipo modello '{active_model_type}' non supportato per il post-training.")
             st.stop()
