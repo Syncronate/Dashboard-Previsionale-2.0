@@ -2480,7 +2480,61 @@ elif page == 'Allenamento Modello':
 # --- PAGINA POST-TRAINING MODELLO ---
 elif page == 'Post-Training Modello':
     st.header('Post-Training Modello Esistente')
-    # ... (Pagina invariata) ...
+
+    if not model_ready:
+        st.warning("Seleziona un Modello esistente dalla sidebar per caricarlo e poi procedere con il post-training.")
+        st.stop()
+    
+    if not data_ready_csv:
+        st.warning("Dati Storici CSV (per il post-training) non disponibili. Caricane uno dalla sidebar.")
+        st.stop()
+
+    st.info(f"Modello selezionato per post-training: **{st.session_state.active_model_name}** (Tipo: {active_model_type})")
+    
+    original_config = st.session_state.active_config
+    model_to_fine_tune_state_dict = st.session_state.active_model.state_dict()
+    original_scalers = st.session_state.active_scalers
+
+    st.subheader("Configurazione Post-Training")
+    
+    default_save_name_pt = f"{original_config.get('config_name', 'modello')}_posttrained_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
+    save_name_input_pt = st.text_input("Nome base per salvare il modello affinato:", default_save_name_pt, key="pt_save_filename")
+    save_name_pt = re.sub(r'[^\w-]', '_', save_name_input_pt).strip('_') or "modello_posttrained_default"
+    if save_name_pt != save_name_input_pt:
+        st.caption(f"Nome file valido per il salvataggio: `{save_name_pt}`")
+
+    with st.expander("Parametri di Fine-Tuning", expanded=True):
+        c1_pt, c2_pt, c3_pt = st.columns(3)
+        with c1_pt:
+            ep_pt = st.number_input("Numero Epoche Aggiuntive:", min_value=1, value=10, step=1, key="pt_epochs")
+            n_splits_cv_pt = st.number_input("Numero di Fold CV (su nuovi dati):", min_value=1, value=max(1, original_config.get('n_splits_cv', 3)), step=1, key="pt_n_splits_cv")
+        with c2_pt:
+            lr_pt_default = original_config.get('learning_rate', 0.001)
+            lr_pt = st.number_input("Learning Rate per Post-Training:", min_value=1e-7, value=lr_pt_default / 10, format="%.6f", step=1e-5, key="pt_lr")
+            bs_pt = st.select_slider("Batch Size:", options=[8, 16, 32, 64], value=original_config.get('batch_size', 32), key="pt_batch_size")
+        with c3_pt:
+            loss_choice_pt = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss"], index=["MSELoss", "HuberLoss"].index(original_config.get('loss_function', 'MSELoss')), key="pt_loss_choice")
+            save_choice_pt = st.radio("Strategia Salvataggio:", ['Migliore', 'Finale'], index=0, key='pt_save_choice', horizontal=True)
+    
+    st.divider()
+    
+    if st.button("Avvia Post-Training", type="primary", key="run_post_training_button"):
+        st.info(f"Avvio post-training per '{st.session_state.active_model_name}'...")
+        
+        current_device_pt = st.session_state.active_device
+        training_mode_pt = original_config.get("training_mode", "standard")
+        quantiles_pt = original_config.get("quantiles") if training_mode_pt == 'quantile' else None
+
+        # Logica specifica per tipo di modello
+        if active_model_type == "LSTM":
+            # ... (Tutta la logica di preparazione dati e chiamata a train_model per LSTM)
+            pass
+        elif active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
+            # ... (Tutta la logica di preparazione dati e chiamata a train_model_seq2seq)
+            pass
+        else:
+            st.error(f"Tipo modello '{active_model_type}' non supportato per il post-training.")
+            st.stop()
 
 # --- Footer ---
 st.sidebar.divider()
