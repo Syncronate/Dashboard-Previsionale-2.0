@@ -810,40 +810,67 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
             scaler_past_features, scaler_forecast_features, scaler_targets)
 
 
-# AGGIUNGI QUESTE FUNZIONI NELLA SEZIONE DELLE UTILITY MODELLO/DATI
-def prepare_training_data_gnn(df, node_columns, target_columns, input_window_steps, output_window_steps):
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati GNN...")
-    df_nodes = df[node_columns]
-    df_targets = df[target_columns]
+# SOSTITUISCI la vecchia funzione `prepare_training_data_gnn` con questa:
 
+def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping, input_window_steps, output_window_steps):
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati GNN con feature arricchite...")
+    
     num_nodes = len(node_columns)
-    num_features = 1 # Usiamo solo una feature per nodo (il livello)
+    
+    # Calcola il numero di feature dinamicamente.
+    # Ogni nodo avrà 1 feature (il suo livello) + N feature aggiuntive.
+    # Assicuriamoci che tutti i nodi abbiano lo stesso numero totale di feature.
+    num_features_per_node = [1 + len(feature_mapping.get(node, [])) for node in node_columns]
+    if len(set(num_features_per_node)) > 1:
+        st.error("Errore di configurazione: Tutti i nodi devono avere lo stesso numero totale di feature. Rendi uniformi le selezioni di feature aggiuntive per ciascun nodo.")
+        return None, None, None, None, -1 # Ritorna un valore di errore
+    num_features = num_features_per_node[0] if num_features_per_node else 1
+    
+    if num_features == 0:
+        st.error("Nessuna feature definita per i nodi.")
+        return None, None, None, None, -1
+        
+    print(f"Ogni nodo del grafo avrà {num_features} feature.")
 
     X, y = [], []
     total_len = len(df)
     required_len = input_window_steps + output_window_steps
 
     for i in range(total_len - required_len + 1):
-        feature_window = df_nodes.iloc[i : i + input_window_steps].values
-        target_window = df_targets.iloc[i + input_window_steps : i + required_len].values
-        if np.isnan(feature_window).any() or np.isnan(target_window).any(): continue
-        X.append(feature_window.reshape(input_window_steps, num_nodes, num_features))
+        feature_window = np.zeros((input_window_steps, num_nodes, num_features), dtype=np.float32)
+        
+        for t in range(input_window_steps):
+            for node_idx, node_name in enumerate(node_columns):
+                # Feature 0: il livello del nodo stesso
+                feature_window[t, node_idx, 0] = df[node_name].iloc[i + t]
+                
+                # Feature 1...N: le feature aggiuntive mappate
+                additional_features = feature_mapping.get(node_name, [])
+                for feature_idx, feature_col in enumerate(additional_features):
+                    feature_window[t, node_idx, 1 + feature_idx] = df[feature_col].iloc[i + t]
+        
+        target_window = df[target_columns].iloc[i + input_window_steps : i + required_len].values
+        
+        if np.isnan(feature_window).any() or np.isnan(target_window).any():
+            continue
+            
+        X.append(feature_window)
         y.append(target_window)
 
     if not X:
-        st.error("Errore creazione sequenze X/y GNN.")
-        return None, None, None, None
+        st.error("Errore durante la creazione delle sequenze X/y per il GNN. Controlla i dati di input.")
+        return None, None, None, None, -1
+        
     X, y = np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
 
     scaler_features = MinMaxScaler()
     scaler_targets = MinMaxScaler()
     
-    # Reshape per lo scaling: ogni nodo/feature è trattato indipendentemente
     X_scaled = scaler_features.fit_transform(X.reshape(-1, num_features)).reshape(X.shape)
     y_scaled = scaler_targets.fit_transform(y.reshape(-1, y.shape[-1])).reshape(y.shape)
     
     print(f"Dati GNN pronti: X_scaled shape={X_scaled.shape}, y_scaled shape={y_scaled.shape}")
-    return X_scaled, y_scaled, scaler_features, scaler_targets
+    return X_scaled, y_scaled, scaler_features, scaler_targets, num_features
 
 def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weights, epochs=50, batch_size=32, learning_rate=0.001, save_strategy='migliore', preferred_device='auto', n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None):
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
@@ -940,29 +967,26 @@ def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weight
 
     return model, (train_losses, []), (val_losses, [])
 
-def predict_gnn(model, input_data, scalers, config, device, uncertainty_passes=1):
+def predict_gnn(model, input_data_multi_feature, scalers, config, device, uncertainty_passes=1):
     model.eval()
     if uncertainty_passes > 1 and config.get("training_mode") != "quantile":
-        model.train() # Enable dropout for uncertainty estimation
+        model.train()
 
     scaler_features, scaler_targets = scalers
     edge_index = torch.tensor(config['edge_index'], dtype=torch.long).to(device)
     edge_weights = torch.tensor(config['edge_weights'], dtype=torch.float32).to(device) if config.get('edge_weights') else None
     
-    num_nodes = len(config['node_order'])
-    num_features = 1 # Coerente con la preparazione dati
+    # MODIFICATO: Leggi il numero di feature dalla config
+    num_features = config.get("num_features", 1)
     
     predictions_list = []
     
-    # Disable gradients for prediction, even if model is in train mode for dropout
     with torch.no_grad():
         for _ in range(uncertainty_passes):
-            # Input data shape is (seq_len, num_nodes)
-            # Scaler expects (n_samples, n_features) -> (seq_len * num_nodes, 1)
-            inp_norm = scaler_features.transform(input_data.reshape(-1, num_features))
-            # Reshape back to (seq_len, num_nodes, num_features) for the model
-            inp_reshaped = inp_norm.reshape(input_data.shape[0], num_nodes, num_features)
-            # Add batch dimension
+            # L'input_data ora ha shape (seq_len, num_nodes, num_features)
+            # Lo scaler si aspetta (n_samples, n_features)
+            inp_norm = scaler_features.transform(input_data_multi_feature.reshape(-1, num_features))
+            inp_reshaped = inp_norm.reshape(input_data_multi_feature.shape)
             inp_tens = torch.FloatTensor(inp_reshaped).unsqueeze(0).to(device)
             
             output, _ = model(inp_tens, edge_index, edge_weight=edge_weights)
@@ -1134,9 +1158,13 @@ def load_specific_model(_model_path, config):
             ).to(device)
         elif model_type == "SpatioTemporalGNN":
             if not PYG_AVAILABLE: raise RuntimeError("PyTorch Geometric non trovato.")
+            
+            # MODIFICATO: Leggi il numero di feature dalla config
+            num_features_from_config = config.get("num_features", 1) # Default a 1 per retrocompatibilità
+            
             model = SpatioTemporalGNN(
                 num_nodes=len(config["node_order"]),
-                num_features=1, # Coerente con training
+                num_features=num_features_from_config, # <-- Usa il valore dalla config
                 hidden_dim=config["hidden_dim"],
                 num_layers=config["num_layers"],
                 output_window=config["output_window_steps"],
@@ -2544,10 +2572,30 @@ elif page == 'Simulazione':
             
             st.markdown("**Passo 2: Esegui Simulazione**")
             if st.button(f"Esegui Simulazione {active_model_type}", type="primary"):
-                with st.spinner("Esecuzione previsione GNN..."):
-                    historical_data_np = st.session_state.imported_sim_data_gs_df_gnn[node_columns_model].values
+                with st.spinner("Preparazione dati di input e esecuzione previsione GNN..."):
+                    # Recupera i dati storici dal dataframe in sessione
+                    historical_df = st.session_state.imported_sim_data_gs_df_gnn
                     
-                    predictions, uncertainty = predict_gnn(active_model, historical_data_np, active_scalers, active_config, active_device, uncertainty_passes=num_passes_sim)
+                    # Recupera la configurazione delle feature
+                    node_columns_sim = active_config['node_order']
+                    feature_mapping_sim = active_config['node_feature_mapping']
+                    num_features_sim = active_config['num_features']
+                    input_steps_sim = active_config['input_window_steps']
+                    
+                    # Costruisci l'array di input multi-feature
+                    input_array = np.zeros((input_steps_sim, len(node_columns_sim), num_features_sim), dtype=np.float32)
+                    
+                    for t in range(input_steps_sim):
+                        for node_idx, node_name in enumerate(node_columns_sim):
+                            input_array[t, node_idx, 0] = historical_df[node_name].iloc[t]
+                            
+                            additional_features = feature_mapping_sim.get(node_name, [])
+                            for feat_idx, feat_col in enumerate(additional_features):
+                                input_array[t, node_idx, 1 + feat_idx] = historical_df[feat_col].iloc[t]
+
+                    # Chiama la funzione di predizione con il nuovo array
+                    predictions, uncertainty = predict_gnn(active_model, input_array, active_scalers, active_config, active_device, uncertainty_passes=num_passes_sim)
+                    
                     start_pred_time = st.session_state.imported_sim_start_time_gs_gnn
                     
                 if predictions is not None:
@@ -2656,8 +2704,25 @@ elif page == 'Test Modello su Storico':
                 else:
                     predictions_period, _ = predict_seq2seq(active_model, past_input_np, future_input_np, active_scalers, active_config, active_device)
             elif active_model_type == "SpatioTemporalGNN":
-                input_data_np = input_df[node_columns_model_test].values
-                predictions_period, uncertainty_period = predict_gnn(active_model, input_data_np, active_scalers, active_config, active_device, uncertainty_passes=num_passes_test)
+                node_columns_test = active_config['node_order']
+                feature_mapping_test = active_config['node_feature_mapping']
+                num_features_test = active_config['num_features']
+                input_steps_test = active_config['input_window_steps']
+
+                input_array = np.zeros((input_steps_test, len(node_columns_test), num_features_test), dtype=np.float32)
+                
+                for t in range(input_steps_test):
+                    for node_idx, node_name in enumerate(node_columns_test):
+                        input_array[t, node_idx, 0] = input_df[node_name].iloc[t]
+                        
+                        additional_features = feature_mapping_test.get(node_name, [])
+                        for feat_idx, feat_col in enumerate(additional_features):
+                            if feat_col in input_df.columns:
+                                input_array[t, node_idx, 1 + feat_idx] = input_df[feat_col].iloc[t]
+                            else:
+                                input_array[t, node_idx, 1 + feat_idx] = 0.0
+
+                predictions_period, uncertainty_period = predict_gnn(active_model, input_array, active_scalers, active_config, active_device, uncertainty_passes=num_passes_test)
             else: # LSTM
                 input_np = input_df[feature_columns_model_test].values
                 if num_passes_test > 1 and not is_quantile_model_test:
@@ -2922,17 +2987,47 @@ elif page == 'Allenamento Modello':
 
     elif train_model_type == "Spatio-Temporal GNN":
         st.markdown(f"**1. Definizione del Grafo e Selezione Feature ({train_model_type})**")
+
+        # --- SELEZIONE NODI IDROMETRICI ---
         all_level_sensors = [f for f in df_current_csv.columns if 'livello' in f.lower() or '[m]' in f.lower()]
-        
-        node_order = st.multiselect("Nodi del Grafo (l'ordine è importante!):", options=all_level_sensors, default=all_level_sensors, key="train_gnn_nodes")
-        st.caption("Definisci le connessioni del grafo. Ogni riga è `sorgente,destinazione,peso`. Il peso è numerico (es. distanza, tempo).")
+        node_order = st.multiselect("Nodi del Grafo (Idrometri - l'ordine è importante!):", options=all_level_sensors, default=all_level_sensors, key="train_gnn_nodes")
+
+        # --- NUOVA SEZIONE: MAPPATURA FEATURE DI PIOGGIA ---
+        st.markdown("**Associa Feature di Pioggia ai Nodi**")
+        st.caption("Per ogni nodo-idrometro, seleziona le colonne di dati (es. pluviometri) che lo influenzano. Queste verranno aggiunte come feature a quel nodo, oltre al suo stesso livello.")
+
+        all_other_features = [f for f in df_current_csv.columns if f not in all_level_sensors and f != date_col_name_csv]
+        node_feature_mapping = {} # Questo dizionario conterrà la nostra configurazione
+
+        if node_order:
+            for i, node_name in enumerate(node_order):
+                # Estrai un nome breve per suggerire le feature di default
+                short_name_match = re.search(r'\((.*?)\)', node_name)
+                short_name = short_name_match.group(1).split('/')[0].strip() if short_name_match else node_name
+                
+                default_rain_features = [f for f in all_other_features if short_name.lower() in f.lower()]
+                
+                selected_features_for_node = st.multiselect(
+                    f"Feature aggiuntive per il Nodo {i} ({short_name}):",
+                    options=all_other_features,
+                    default=default_rain_features,
+                    key=f"train_gnn_features_node_{i}"
+                )
+                # La mappatura contiene solo le feature aggiuntive
+                node_feature_mapping[node_name] = selected_features_for_node
+        else:
+            st.warning("Seleziona prima i Nodi del Grafo per poter associare le feature.")
+
+
+        # --- DEFINIZIONE ARCHI E TARGET (Logica quasi invariata) ---
+        st.caption("Definisci le connessioni del grafo. Ogni riga è `sorgente,destinazione,peso`.")
         node_mapping_help = {i: name for i, name in enumerate(node_order)}
         st.json(node_mapping_help, expanded=False)
 
         edge_list_str = st.text_area("Lista Archi (formato: 'sorgente,destinazione,peso')", "0,1,15.5\n1,2,8.2\n2,3,12.0", key="train_gnn_edges", height=100)
-        
+
         selected_targets_gnn = st.multiselect("Target Output (Nodi da predire):", options=node_order, default=node_order[-1:] if node_order else [], key="train_gnn_target")
-        
+
         edge_index, edge_weights = None, None
         try:
             s, t, w = [], [], []
@@ -2940,11 +3035,8 @@ elif page == 'Allenamento Modello':
                 if line.strip():
                     parts = [p.strip() for p in line.split(',')]
                     if len(parts) == 3: s.append(int(parts[0])); t.append(int(parts[1])); w.append(float(parts[2]))
-            if s:
-                edge_index, edge_weights = [s, t], w
-                st.success(f"Grafo definito con {len(node_order)} nodi e {len(s)} archi.")
-        except Exception as e:
-            st.error(f"Formato archi non valido: {e}.")
+            if s: edge_index, edge_weights = [s, t], w; st.success(f"Grafo definito con {len(node_order)} nodi e {len(s)} archi.")
+        except Exception as e: st.error(f"Formato archi non valido: {e}.")
 
         st.markdown(f"**2. Parametri Modello e Training**")
         with st.expander("Impostazioni Allenamento GNN", expanded=True):
@@ -2967,13 +3059,20 @@ elif page == 'Allenamento Modello':
             else:
                 st.info(f"Avvio addestramento GNN per '{save_name}'...")
                 with st.spinner("Preparazione dati GNN..."):
-                    X_scaled, y_scaled, sc_f, sc_t = prepare_training_data_gnn(df_current_csv.copy(), node_order, selected_targets_gnn, iw_steps, ow_steps)
+                    # MODIFICATO: Passiamo il feature_mapping e riceviamo num_features
+                    X_scaled, y_scaled, sc_f, sc_t, num_features_detected = prepare_training_data_gnn(
+                        df_current_csv.copy(), node_order, selected_targets_gnn, 
+                        node_feature_mapping, # <-- Passa la nuova mappatura
+                        iw_steps, ow_steps
+                    )
                 
                 if X_scaled is not None:
                     num_q = len(quantiles_list) if training_mode == "Quantile Regression" else 1
+                    
+                    # MODIFICATO: Usiamo il numero di feature rilevato dinamicamente
                     model = SpatioTemporalGNN(
                         num_nodes=len(node_order), 
-                        num_features=X_scaled.shape[-1], 
+                        num_features=num_features_detected, # <-- Usa il valore corretto
                         hidden_dim=hs, 
                         num_layers=nl, 
                         output_window=ow_steps, 
@@ -2990,13 +3089,16 @@ elif page == 'Allenamento Modello':
                     
                     if trained_model:
                         st.success("Addestramento GNN completato!")
+                        # MODIFICATO: Aggiungi la mappatura e il num_features alla config
                         config = {
                             "model_type": "SpatioTemporalGNN", "display_name": save_name, 
                             "node_order": node_order, "edge_index": edge_index, "edge_weights": edge_weights, 
                             "target_columns": selected_targets_gnn, "input_window_steps": iw_steps, 
                             "output_window_steps": ow_steps, "hidden_dim": hs, "num_layers": nl, 
                             "dropout": dr, "training_mode": training_mode.split()[0].lower(), 
-                            "loss_function": loss_choice
+                            "loss_function": loss_choice,
+                            "node_feature_mapping": node_feature_mapping, # <-- NUOVO: Salva la mappatura
+                            "num_features": num_features_detected       # <-- NUOVO: Salva il numero di feature
                         }
                         if config["training_mode"] == "quantile":
                             config["quantiles"] = quantiles_list
