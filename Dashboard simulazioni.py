@@ -907,7 +907,7 @@ def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping,
     print(f"Dati GNN pronti (OTTIMIZZATO): X_scaled shape={X_scaled.shape}, y_scaled shape={y_scaled.shape}")
     return X_scaled, y_scaled, scaler_features, scaler_targets, num_features
 
-def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weights, epochs=50, batch_size=32, learning_rate=0.001, save_strategy='migliore', preferred_device='auto', n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None):
+def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weights, epochs=50, batch_size=32, learning_rate=0.001, save_strategy='migliore', preferred_device='auto', n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None, split_method="Temporale", validation_size=0.2):
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     model.to(device)
     edge_index_tensor = torch.tensor(edge_index, dtype=torch.long).to(device)
@@ -930,11 +930,27 @@ def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weight
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    tscv = TimeSeriesSplit(n_splits=n_splits_cv)
-    train_indices, val_indices = list(tscv.split(X_scaled_full))[-1]
-    
-    X_train, y_train = X_scaled_full[train_indices], y_scaled_full[train_indices]
-    X_val, y_val = X_scaled_full[val_indices], y_scaled_full[val_indices]
+    from sklearn.model_selection import TimeSeriesSplit, train_test_split
+    if "Temporale" in split_method:
+        # --- LOGICA ESISTENTE ---
+        tscv = TimeSeriesSplit(n_splits=n_splits_cv)
+        train_indices, val_indices = list(tscv.split(X_scaled_full))[-1]
+        
+        X_train, y_train = X_scaled_full[train_indices], y_scaled_full[train_indices]
+        X_val, y_val = X_scaled_full[val_indices], y_scaled_full[val_indices]
+    else: # Logica Casuale
+        # --- NUOVA LOGICA ---
+        st.info(f"Suddivisione casuale con {validation_size*100:.0f}% dei dati per la validazione.")
+        # Assicurati che non ci sia cross-validation in questo caso, non ha senso
+        
+        # Usiamo train_test_split, che mescola i dati di default
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_scaled_full, 
+            y_scaled_full, 
+            test_size=validation_size, 
+            shuffle=True, # Shuffle è fondamentale per la logica casuale
+            random_state=42 # Per riproducibilità
+        )
 
     train_loader = DataLoader(TimeSeriesDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size) if len(X_val) > 0 else None
@@ -1718,7 +1734,8 @@ def train_model(X_scaled_full, y_scaled_full,
                 save_strategy='migliore', preferred_device='auto', 
                 n_splits_cv=3, loss_function_name="MSELoss",
                 training_mode='standard', quantiles=None,
-                _model_to_continue_train=None):
+                _model_to_continue_train=None,
+                split_method="Temporale", validation_size=0.2):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM (mode={training_mode}, n_splits={n_splits_cv}, loss={loss_function_name})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
@@ -1739,10 +1756,27 @@ def train_model(X_scaled_full, y_scaled_full,
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    tscv = TimeSeriesSplit(n_splits=n_splits_cv)
-    train_indices, val_indices = list(tscv.split(X_scaled_full))[-1]
-    X_train, y_train = X_scaled_full[train_indices], y_scaled_full[train_indices]
-    X_val, y_val = X_scaled_full[val_indices], y_scaled_full[val_indices]
+    from sklearn.model_selection import TimeSeriesSplit, train_test_split
+    if "Temporale" in split_method:
+        # --- LOGICA ESISTENTE ---
+        tscv = TimeSeriesSplit(n_splits=n_splits_cv)
+        train_indices, val_indices = list(tscv.split(X_scaled_full))[-1]
+        
+        X_train, y_train = X_scaled_full[train_indices], y_scaled_full[train_indices]
+        X_val, y_val = X_scaled_full[val_indices], y_scaled_full[val_indices]
+    else: # Logica Casuale
+        # --- NUOVA LOGICA ---
+        st.info(f"Suddivisione casuale con {validation_size*100:.0f}% dei dati per la validazione.")
+        # Assicurati che non ci sia cross-validation in questo caso, non ha senso
+        
+        # Usiamo train_test_split, che mescola i dati di default
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_scaled_full, 
+            y_scaled_full, 
+            test_size=validation_size, 
+            shuffle=True, # Shuffle è fondamentale per la logica casuale
+            random_state=42 # Per riproducibilità
+        )
 
     train_loader = DataLoader(TimeSeriesDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size) if len(X_val) > 0 else None
@@ -1815,7 +1849,8 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                         output_window_steps, epochs=50, batch_size=32, learning_rate=0.001,
                         save_strategy='migliore', preferred_device='auto', teacher_forcing_ratio_schedule=None,
                         n_splits_cv=3, loss_function_name="MSELoss",
-                        training_mode='standard', quantiles=None):
+                        training_mode='standard', quantiles=None,
+                        split_method="Temporale", validation_size=0.2):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq (mode={training_mode}, n_splits={n_splits_cv}, loss={loss_function_name})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
@@ -1831,11 +1866,27 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    tscv = TimeSeriesSplit(n_splits=n_splits_cv)
-    train_indices, val_indices = list(tscv.split(X_enc_scaled_full))[-1]
-    
-    X_enc_train, X_dec_train, y_tar_train = X_enc_scaled_full[train_indices], X_dec_scaled_full[train_indices], y_tar_scaled_full[train_indices]
-    X_enc_val, X_dec_val, y_tar_val = X_enc_scaled_full[val_indices], X_dec_scaled_full[val_indices], y_tar_scaled_full[val_indices]
+    from sklearn.model_selection import TimeSeriesSplit, train_test_split
+    if "Temporale" in split_method:
+        # --- LOGICA ESISTENTE ---
+        tscv = TimeSeriesSplit(n_splits=n_splits_cv)
+        train_indices, val_indices = list(tscv.split(X_enc_scaled_full))[-1]
+        
+        X_enc_train, X_dec_train, y_tar_train = X_enc_scaled_full[train_indices], X_dec_scaled_full[train_indices], y_tar_scaled_full[train_indices]
+        X_enc_val, X_dec_val, y_tar_val = X_enc_scaled_full[val_indices], X_dec_scaled_full[val_indices], y_tar_scaled_full[val_indices]
+    else: # Logica Casuale
+        # --- NUOVA LOGICA ---
+        st.info(f"Suddivisione casuale con {validation_size*100:.0f}% dei dati per la validazione.")
+        
+        # train_test_split può gestire multipli array, mantenendo l'allineamento
+        X_enc_train, X_enc_val, X_dec_train, X_dec_val, y_tar_train, y_tar_val = train_test_split(
+            X_enc_scaled_full,
+            X_dec_scaled_full,
+            y_tar_scaled_full,
+            test_size=validation_size,
+            shuffle=True,
+            random_state=42
+        )
 
     train_loader = DataLoader(TimeSeriesDataset(X_enc_train, X_dec_train, y_tar_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_enc_val, X_dec_val, y_tar_val), batch_size=batch_size) if len(X_enc_val) > 0 else None
@@ -2852,6 +2903,35 @@ elif page == 'Allenamento Modello':
         model_options = ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"]
     train_model_type = st.radio("Tipo di Modello da Allenare:", model_options, key="train_select_type", horizontal=True)
 
+    st.markdown("**3. Metodo di Suddivisione Dati**")
+
+    split_method = st.radio(
+        "Scegli come dividere i dati in Training e Validation Set:",
+        options=["Temporale (Consigliato per Serie Storiche)", "Casuale per Percentuale"],
+        index=0, # Il default deve essere 'Temporale'
+        key="split_method_selection",
+        help="Temporale: usa i dati più vecchi per training e i più recenti per validazione (corretto per serie storiche). Casuale: mescola tutti i dati e ne prende una % per la validazione (introduce data leakage, sconsigliato)."
+    )
+
+    validation_percentage = 0.2 # Valore di default
+
+    if split_method == "Casuale per Percentuale":
+        st.warning(
+            "⚠️ **Attenzione:** La suddivisione casuale non è appropriata per le serie storiche. "
+            "Introduce 'data leakage' (informazioni dal futuro trapelano nel training set), "
+            "portando a stime delle performance irrealisticamente ottimistiche. "
+            "Usa questa opzione solo per scopi sperimentali e di confronto."
+        )
+        validation_percentage = st.slider(
+            "Percentuale Dati per il Validation Set:",
+            min_value=10,
+            max_value=50,
+            value=20,
+            step=5,
+            format="%d%%",
+            key="validation_split_percentage"
+        ) / 100.0
+
     st.markdown("**Modalità di Training e Funzione di Loss**")
     col_mode, col_loss = st.columns(2)
     with col_mode:
@@ -2914,7 +2994,17 @@ elif page == 'Allenamento Modello':
             with st.spinner("Preparazione dati LSTM..."):
                 X_scaled, y_scaled, sc_f, sc_t = prepare_training_data(df_current_csv.copy(), selected_features, selected_targets, iw_hours, int(ow_steps / 2.0))
             if X_scaled is not None and y_scaled is not None:
-                trained_model, _, _ = train_model(X_scaled, y_scaled, X_scaled.shape[2], len(selected_targets), ow_steps, hs, nl, ep, bs, lr, dr, 'migliore' if 'Migliore' in save_choice else 'finale', 'auto' if 'Auto' in device_option else 'cpu', n_splits_cv=n_splits, loss_function_name=loss_choice, training_mode=training_mode.split()[0].lower(), quantiles=quantiles_list if training_mode == "Quantile Regression" else None)
+                trained_model, _, _ = train_model(
+                    X_scaled, y_scaled, X_scaled.shape[2], len(selected_targets), ow_steps, hs, nl, ep, bs, lr, dr, 
+                    'migliore' if 'Migliore' in save_choice else 'finale', 
+                    'auto' if 'Auto' in device_option else 'cpu', 
+                    n_splits_cv=n_splits, 
+                    loss_function_name=loss_choice, 
+                    training_mode=training_mode.split()[0].lower(), 
+                    quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
+                    split_method=split_method,
+                    validation_size=validation_percentage
+                )
                 if trained_model:
                     st.success("Addestramento LSTM completato!")
                     config_save = {"model_type": "LSTM", "input_window": X_scaled.shape[1], "output_window": ow_steps, "hidden_size": hs, "num_layers": nl, "dropout": dr, "feature_columns": selected_features, "target_columns": selected_targets, "training_date": datetime.now(italy_tz).isoformat(), "display_name": save_name, "training_mode": training_mode.split()[0].lower(), "loss_function": loss_choice}
@@ -3004,7 +3094,9 @@ elif page == 'Allenamento Modello':
                     n_splits_cv=n_splits_cv,
                     loss_function_name=loss_choice,
                     training_mode=training_mode.split()[0].lower(),
-                    quantiles=quantiles_list if training_mode == "Quantile Regression" else None
+                    quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
+                    split_method=split_method,
+                    validation_size=validation_percentage
                 )
 
                 if trained_model:
@@ -3152,7 +3244,9 @@ elif page == 'Allenamento Modello':
                     trained_model, _, _ = train_model_gnn(
                         X_scaled, y_scaled, model, edge_index, edge_weights, ep, bs, lr, 
                         training_mode=training_mode.split()[0].lower(), 
-                        quantiles=quantiles_list if training_mode == "Quantile Regression" else None
+                        quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
+                        split_method=split_method,
+                        validation_size=validation_percentage
                     )
                     
                     if trained_model:
