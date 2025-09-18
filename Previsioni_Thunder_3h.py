@@ -196,18 +196,25 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_values = forecast_ws.get_all_values()
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
+
+    # --- INIZIO BLOCCO MODIFICATO: Rinomina dinamica e robusta ---
+    # Sostituisce la mappatura manuale con una logica programmatica
+    # che rimuove "Giornaliera" da tutti i nomi di colonna pertinenti.
+    print("Rinomina dinamica delle colonne 'Cumulata Giornaliera'...")
     
-    # --- INIZIO BLOCCO MODIFICATO ---
-    # Aggiunto "Giornaliera" ai nomi delle colonne di origine per far corrispondere i nomi del Google Sheet.
-    column_mapping = {
-        "Cumulata Giornaliera Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
-        "Cumulata Giornaliera Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
-        "Cumulata Giornaliera Sensore 2858 (Barbara)_cumulata_30min": "Cumulata Sensore 2858 (Barbara)",  
-        "Cumulata Giornaliera Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
-    }
-    df_historical_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
-    df_forecast_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
+    # Crea una mappatura solo per le colonne che necessitano di essere rinominate
+    historical_rename_map = {col: col.replace('Cumulata Giornaliera Sensore', 'Cumulata Sensore') 
+                             for col in df_historical_raw.columns if 'Cumulata Giornaliera Sensore' in col}
+    forecast_rename_map = {col: col.replace('Cumulata Giornaliera Sensore', 'Cumulata Sensore') 
+                           for col in df_forecast_raw.columns if 'Cumulata Giornaliera Sensore' in col}
+
+    df_historical_raw.rename(columns=historical_rename_map, inplace=True)
+    df_forecast_raw.rename(columns=forecast_rename_map, inplace=True)
     # --- FINE BLOCCO MODIFICATO ---
+
+    print("--- DEBUG: Colonne disponibili dopo la rinomina ---")
+    print(df_historical_raw.columns.tolist())
+    print("-" * 50)
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
@@ -220,8 +227,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     for col in past_feature_columns:
         if col not in df_historical.columns:
-            # Corretto l'errore di battitura nella f-string
-            raise ValueError(f"Colonna storica '{col}' non trovata.")
+            raise ValueError(f"Colonna storica '{col}' non trovata. Controllare la mappatura e il foglio di input.")
         df_historical[col] = pd.to_numeric(df_historical[col], errors='coerce')
 
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
