@@ -811,9 +811,12 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
             scaler_past_features, scaler_forecast_features, scaler_targets)
 
 
-# SOSTITUISCI la vecchia funzione prepare_training_data_gnn con questa versione OTTIMIZZATA
+# SOSTITUISCI la funzione prepare_training_data_gnn con questa versione CORRETTA E OTTIMIZZATA
 
-def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping, input_window_steps, output_window_steps):
+def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping, input_window_steps, output_window_steps, progress_bar=None):
+    if progress_bar:
+        progress_bar.progress(0.0, text="Avvio preparazione dati GNN ottimizzata...")
+    
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati GNN (versione OTTIMIZZATA)...")
     
     num_nodes = len(node_columns)
@@ -823,41 +826,58 @@ def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping,
         return None, None, None, None, -1
     num_features = num_features_per_node[0] if num_features_per_node else 1
     
-    # 1. Costruisci una matrice che contiene TUTTE le feature necessarie
+    # FASE 1: Estrazione e riorganizzazione dati
+    if progress_bar:
+        progress_bar.progress(0.1, text="Fase 1/5: Estrazione dati da DataFrame...")
+    
     all_feature_columns = []
     for node_name in node_columns:
-        # La prima feature è sempre il livello del nodo stesso
         all_feature_columns.append(node_name)
-        # Le altre sono le feature aggiuntive
         all_feature_columns.extend(feature_mapping.get(node_name, []))
         
-    # Estrai i dati in un'unica operazione da Pandas a NumPy
     feature_data_np = df[all_feature_columns].values.astype(np.float32)
-    # Riorganizza i dati nella forma (n_samples, n_nodes, n_features)
-    full_feature_matrix = feature_data_np.reshape(len(df), num_nodes, num_features)
+    # IMPORTANTE: L'ordine qui è 'C' (row-major) per compatibilità con reshape
+    full_feature_matrix = feature_data_np.reshape(len(df), num_nodes, num_features, order='C')
     
-    # 2. Usa sliding_window_view per creare TUTTE le sequenze di input (X) in un colpo solo
+    # FASE 2: Creazione finestre di input (X)
+    if progress_bar:
+        progress_bar.progress(0.3, text="Fase 2/5: Creazione sequenze di input (X)...")
+    
     total_len = len(df)
     required_len = input_window_steps + output_window_steps
     if total_len < required_len:
-        st.error(f"Dati insufficienti ({total_len} righe) per creare anche una sola sequenza (richieste {required_len} righe).")
+        st.error(f"Dati insufficienti ({total_len} righe) per creare sequenze (richieste {required_len} righe).")
         return None, None, None, None, -1
     
-    # Crea una "vista" scorrevole senza copiare dati, è estremamente veloce
-    X_windows = sliding_window_view(full_feature_matrix, (input_window_steps, num_nodes, num_features), axis=0)
-    X = X_windows.reshape(-1, input_window_steps, num_nodes, num_features)
-    
-    # 3. Crea le sequenze di target (y) in modo simile
-    target_data_np = df[target_columns].values.astype(np.float32)
-    y_windows = sliding_window_view(target_data_np, (output_window_steps, len(target_columns)), axis=0)
-    y = y_windows.reshape(-1, output_window_steps, len(target_columns))
-
-    # Allinea X e y: per ogni finestra di input X, il target y corrispondente inizia dopo la fine di X
     num_samples = total_len - required_len + 1
-    X = X[:num_samples]
-    y = y[input_window_steps:input_window_steps + num_samples]
 
-    # 4. Rimuovi i campioni che contengono valori NaN in modo efficiente
+    # --- CORREZIONE DEL BUG ---
+    # Usiamo un approccio di indicizzazione e striding più robusto invece di sliding_window_view
+    # che può essere problematico con forme complesse.
+    shape = (num_samples, input_window_steps, num_nodes, num_features)
+    strides = (full_feature_matrix.strides[0],) + full_feature_matrix.strides
+    X = np.lib.stride_tricks.as_strided(full_feature_matrix, shape=shape, strides=strides)
+    # --- FINE CORREZIONE ---
+
+    # FASE 3: Creazione finestre di target (y)
+    if progress_bar:
+        progress_bar.progress(0.5, text="Fase 3/5: Creazione sequenze di target (y)...")
+        
+    target_data_np = df[target_columns].values.astype(np.float32)
+    
+    shape_y = (num_samples, output_window_steps, len(target_columns))
+    # Il target per X[i] inizia a i + input_window_steps
+    strides_y = (target_data_np.strides[0],) + target_data_np.strides
+    y = np.lib.stride_tricks.as_strided(target_data_np[input_window_steps:], shape=shape_y, strides=strides_y)
+
+    # FASE 4: Rimozione campioni con NaN
+    if progress_bar:
+        progress_bar.progress(0.7, text="Fase 4/5: Filtraggio campioni non validi (NaN)...")
+        
+    # Copiamo i dati per sicurezza, dato che as_strided crea una vista
+    X = np.copy(X)
+    y = np.copy(y)
+
     nan_mask_X = np.isnan(X).any(axis=(1, 2, 3))
     nan_mask_y = np.isnan(y).any(axis=(1, 2))
     valid_mask = ~ (nan_mask_X | nan_mask_y)
@@ -866,14 +886,22 @@ def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping,
     y = y[valid_mask]
 
     if X.shape[0] == 0:
-        st.error("Nessun campione valido trovato dopo la rimozione dei NaN. Controlla la presenza di buchi nei dati.")
+        st.error("Nessun campione valido trovato dopo la rimozione dei NaN.")
+        if progress_bar: progress_bar.empty()
         return None, None, None, None, -1
 
-    # 5. Esegui lo scaling
+    # FASE 5: Scaling finale
+    if progress_bar:
+        progress_bar.progress(0.9, text="Fase 5/5: Scaling dei dati...")
+        
     scaler_features = MinMaxScaler()
     scaler_targets = MinMaxScaler()
     X_scaled = scaler_features.fit_transform(X.reshape(-1, num_features)).reshape(X.shape)
     y_scaled = scaler_targets.fit_transform(y.reshape(-1, y.shape[-1])).reshape(y.shape)
+    
+    if progress_bar:
+        progress_bar.progress(1.0, text="Preparazione dati completata!")
+        pytime.sleep(1)
     
     st.success(f"Preparazione dati GNN ottimizzata completata. Creati {X.shape[0]} campioni validi.")
     print(f"Dati GNN pronti (OTTIMIZZATO): X_scaled shape={X_scaled.shape}, y_scaled shape={y_scaled.shape}")
