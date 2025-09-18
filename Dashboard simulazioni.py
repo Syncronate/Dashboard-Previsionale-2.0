@@ -2180,10 +2180,18 @@ with st.sidebar:
 
     active_config_sess = st.session_state.get('active_config'); active_model_sess = st.session_state.get('active_model'); active_model_name_sess = st.session_state.get('active_model_name', MODEL_CHOICE_NONE)
     if active_model_sess and active_config_sess:
-        cfg = active_config_sess; model_type_sess = cfg.get('model_type', 'LSTM'); display_feedback_name = cfg.get("display_name", active_model_name_sess)
+        cfg = active_config_sess
+        model_type_sess = cfg.get('model_type', 'LSTM')
+        display_feedback_name = cfg.get("display_name", active_model_name_sess)
         st.success(f"Modello Attivo: **{display_feedback_name}** ({model_type_sess})")
+        
+        # Gestisce i modelli che usano le chiavi con "_steps"
         if model_type_sess in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
-            st.caption(f"Input: {cfg['input_window_steps']}s | Forecast: {cfg['forecast_window_steps']}s | Output: {cfg['output_window_steps']}s")
+            st.caption(f"Input: {cfg['input_window_steps']}s | Forecast: {cfg.get('forecast_window_steps', 'N/A')}s | Output: {cfg['output_window_steps']}s")
+        elif model_type_sess == "SpatioTemporalGNN":
+            # Caso specifico per GNN che usa le chiavi corrette
+            st.caption(f"Input: {cfg['input_window_steps']}s | Output: {cfg['output_window_steps']}s")
+        # Gestisce il modello LSTM standard che usa chiavi diverse
         else:
             st.caption(f"Input: {cfg['input_window']}s | Output: {cfg['output_window']}s")
     elif load_error_sidebar and active_model_name_sess not in [MODEL_CHOICE_NONE]: st.error(f"Caricamento modello '{active_model_name_sess}' fallito.")
