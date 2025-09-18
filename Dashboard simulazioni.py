@@ -2988,44 +2988,69 @@ elif page == 'Allenamento Modello':
     elif train_model_type == "Spatio-Temporal GNN":
         st.markdown(f"**1. Definizione del Grafo e Selezione Feature ({train_model_type})**")
 
-        # --- SELEZIONE NODI IDROMETRICI ---
+        # --- SELEZIONE NODI IDROMETRICI (INVARIATO) ---
         all_level_sensors = [f for f in df_current_csv.columns if 'livello' in f.lower() or '[m]' in f.lower()]
         node_order = st.multiselect("Nodi del Grafo (Idrometri - l'ordine è importante!):", options=all_level_sensors, default=all_level_sensors, key="train_gnn_nodes")
 
-        # --- NUOVA SEZIONE: MAPPATURA FEATURE DI PIOGGIA ---
-        st.markdown("**Associa Feature di Pioggia ai Nodi**")
-        st.caption("Per ogni nodo-idrometro, seleziona le colonne di dati (es. pluviometri) che lo influenzano. Queste verranno aggiunte come feature a quel nodo, oltre al suo stesso livello.")
+        # --- NUOVA SEZIONE: MAPPATURA FEATURE CON LOGICA DI DEFAULT AVANZATA ---
+        st.markdown("**Associa Feature Aggiuntive ai Nodi**")
+        st.caption("Per ogni nodo, seleziona le colonne che lo influenzano. I default sono pre-impostati secondo una logica idrologica.")
 
         all_other_features = [f for f in df_current_csv.columns if f not in all_level_sensors and f != date_col_name_csv]
-        node_feature_mapping = {} # Questo dizionario conterrà la nostra configurazione
+        node_feature_mapping = {}
 
         if node_order:
+            # --- NUOVA LOGICA: Definizione delle feature globali e della mappatura specifica ---
+            global_feature_keywords = ['progressivo', 'dummy', 'seasonality_sin', 'seasonality_cos', 'umidita', 'soil moisture']
+            
+            specific_node_feature_map = {
+                'serra dei conti': '1295',
+                'bettolelle': '2637',
+                'pianello': '2858',
+                'corinaldo/nevola': '2964'
+            }
+            # --- FINE NUOVA LOGICA ---
+
             for i, node_name in enumerate(node_order):
-                # Estrai un nome breve per suggerire le feature di default
+                default_features_for_node = []
+                
+                # 1. Aggiungi le feature globali
+                for keyword in global_feature_keywords:
+                    for feature in all_other_features:
+                        if keyword in feature.lower():
+                            default_features_for_node.append(feature)
+                
+                # 2. Aggiungi le feature specifiche del pluviometro in base al nome del nodo
+                node_name_lower = node_name.lower()
+                for hydro_keyword, rain_keyword in specific_node_feature_map.items():
+                    if hydro_keyword in node_name_lower:
+                        rain_features = [f for f in all_other_features if rain_keyword in f and 'cumulata' in f.lower()]
+                        default_features_for_node.extend(rain_features)
+
+                # Rimuovi eventuali duplicati mantenendo l'ordine
+                default_features_for_node = sorted(list(set(default_features_for_node)))
+
+                # Estrai un nome breve per l'etichetta del widget
                 short_name_match = re.search(r'\((.*?)\)', node_name)
-                short_name = short_name_match.group(1).split('/')[0].strip() if short_name_match else node_name
-                
-                default_rain_features = [f for f in all_other_features if short_name.lower() in f.lower()]
-                
+                short_name = short_name_match.group(1).strip() if short_name_match else node_name
+
                 selected_features_for_node = st.multiselect(
                     f"Feature aggiuntive per il Nodo {i} ({short_name}):",
                     options=all_other_features,
-                    default=default_rain_features,
+                    default=default_features_for_node, # <-- Applica i default calcolati
                     key=f"train_gnn_features_node_{i}"
                 )
-                # La mappatura contiene solo le feature aggiuntive
                 node_feature_mapping[node_name] = selected_features_for_node
         else:
             st.warning("Seleziona prima i Nodi del Grafo per poter associare le feature.")
 
 
-        # --- DEFINIZIONE ARCHI E TARGET (Logica quasi invariata) ---
+        # --- DEFINIZIONE ARCHI E TARGET (Logica invariata) ---
         st.caption("Definisci le connessioni del grafo. Ogni riga è `sorgente,destinazione,peso`.")
         node_mapping_help = {i: name for i, name in enumerate(node_order)}
         st.json(node_mapping_help, expanded=False)
 
         edge_list_str = st.text_area("Lista Archi (formato: 'sorgente,destinazione,peso')", "0,1,15.5\n1,2,8.2\n2,3,12.0", key="train_gnn_edges", height=100)
-
         selected_targets_gnn = st.multiselect("Target Output (Nodi da predire):", options=node_order, default=node_order[-1:] if node_order else [], key="train_gnn_target")
 
         edge_index, edge_weights = None, None
