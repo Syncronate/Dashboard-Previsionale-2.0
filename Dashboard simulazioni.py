@@ -26,6 +26,7 @@ import pytz # Per gestione timezone
 import math # Per calcoli matematici (potenza)
 from sklearn.model_selection import TimeSeriesSplit # NEW: For Time-Series Cross-Validation
 from dilate_loss_src import dilate_loss
+from numpy.lib.stride_tricks import sliding_window_view
 
 # Aggiungi all'inizio del file, con gli altri import
 try:
@@ -810,66 +811,72 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
             scaler_past_features, scaler_forecast_features, scaler_targets)
 
 
-# SOSTITUISCI la vecchia funzione `prepare_training_data_gnn` con questa:
+# SOSTITUISCI la vecchia funzione prepare_training_data_gnn con questa versione OTTIMIZZATA
 
 def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping, input_window_steps, output_window_steps):
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati GNN con feature arricchite...")
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati GNN (versione OTTIMIZZATA)...")
     
     num_nodes = len(node_columns)
-    
-    # Calcola il numero di feature dinamicamente.
-    # Ogni nodo avrà 1 feature (il suo livello) + N feature aggiuntive.
-    # Assicuriamoci che tutti i nodi abbiano lo stesso numero totale di feature.
     num_features_per_node = [1 + len(feature_mapping.get(node, [])) for node in node_columns]
     if len(set(num_features_per_node)) > 1:
-        st.error("Errore di configurazione: Tutti i nodi devono avere lo stesso numero totale di feature. Rendi uniformi le selezioni di feature aggiuntive per ciascun nodo.")
-        return None, None, None, None, -1 # Ritorna un valore di errore
+        st.error("Errore di configurazione: Tutti i nodi devono avere lo stesso numero totale di feature. Rendi uniformi le selezioni.")
+        return None, None, None, None, -1
     num_features = num_features_per_node[0] if num_features_per_node else 1
     
-    if num_features == 0:
-        st.error("Nessuna feature definita per i nodi.")
-        return None, None, None, None, -1
+    # 1. Costruisci una matrice che contiene TUTTE le feature necessarie
+    all_feature_columns = []
+    for node_name in node_columns:
+        # La prima feature è sempre il livello del nodo stesso
+        all_feature_columns.append(node_name)
+        # Le altre sono le feature aggiuntive
+        all_feature_columns.extend(feature_mapping.get(node_name, []))
         
-    print(f"Ogni nodo del grafo avrà {num_features} feature.")
-
-    X, y = [], []
+    # Estrai i dati in un'unica operazione da Pandas a NumPy
+    feature_data_np = df[all_feature_columns].values.astype(np.float32)
+    # Riorganizza i dati nella forma (n_samples, n_nodes, n_features)
+    full_feature_matrix = feature_data_np.reshape(len(df), num_nodes, num_features)
+    
+    # 2. Usa sliding_window_view per creare TUTTE le sequenze di input (X) in un colpo solo
     total_len = len(df)
     required_len = input_window_steps + output_window_steps
-
-    for i in range(total_len - required_len + 1):
-        feature_window = np.zeros((input_window_steps, num_nodes, num_features), dtype=np.float32)
-        
-        for t in range(input_window_steps):
-            for node_idx, node_name in enumerate(node_columns):
-                # Feature 0: il livello del nodo stesso
-                feature_window[t, node_idx, 0] = df[node_name].iloc[i + t]
-                
-                # Feature 1...N: le feature aggiuntive mappate
-                additional_features = feature_mapping.get(node_name, [])
-                for feature_idx, feature_col in enumerate(additional_features):
-                    feature_window[t, node_idx, 1 + feature_idx] = df[feature_col].iloc[i + t]
-        
-        target_window = df[target_columns].iloc[i + input_window_steps : i + required_len].values
-        
-        if np.isnan(feature_window).any() or np.isnan(target_window).any():
-            continue
-            
-        X.append(feature_window)
-        y.append(target_window)
-
-    if not X:
-        st.error("Errore durante la creazione delle sequenze X/y per il GNN. Controlla i dati di input.")
+    if total_len < required_len:
+        st.error(f"Dati insufficienti ({total_len} righe) per creare anche una sola sequenza (richieste {required_len} righe).")
         return None, None, None, None, -1
-        
-    X, y = np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
+    
+    # Crea una "vista" scorrevole senza copiare dati, è estremamente veloce
+    X_windows = sliding_window_view(full_feature_matrix, (input_window_steps, num_nodes, num_features), axis=0)
+    X = X_windows.reshape(-1, input_window_steps, num_nodes, num_features)
+    
+    # 3. Crea le sequenze di target (y) in modo simile
+    target_data_np = df[target_columns].values.astype(np.float32)
+    y_windows = sliding_window_view(target_data_np, (output_window_steps, len(target_columns)), axis=0)
+    y = y_windows.reshape(-1, output_window_steps, len(target_columns))
 
+    # Allinea X e y: per ogni finestra di input X, il target y corrispondente inizia dopo la fine di X
+    num_samples = total_len - required_len + 1
+    X = X[:num_samples]
+    y = y[input_window_steps:input_window_steps + num_samples]
+
+    # 4. Rimuovi i campioni che contengono valori NaN in modo efficiente
+    nan_mask_X = np.isnan(X).any(axis=(1, 2, 3))
+    nan_mask_y = np.isnan(y).any(axis=(1, 2))
+    valid_mask = ~ (nan_mask_X | nan_mask_y)
+    
+    X = X[valid_mask]
+    y = y[valid_mask]
+
+    if X.shape[0] == 0:
+        st.error("Nessun campione valido trovato dopo la rimozione dei NaN. Controlla la presenza di buchi nei dati.")
+        return None, None, None, None, -1
+
+    # 5. Esegui lo scaling
     scaler_features = MinMaxScaler()
     scaler_targets = MinMaxScaler()
-    
     X_scaled = scaler_features.fit_transform(X.reshape(-1, num_features)).reshape(X.shape)
     y_scaled = scaler_targets.fit_transform(y.reshape(-1, y.shape[-1])).reshape(y.shape)
     
-    print(f"Dati GNN pronti: X_scaled shape={X_scaled.shape}, y_scaled shape={y_scaled.shape}")
+    st.success(f"Preparazione dati GNN ottimizzata completata. Creati {X.shape[0]} campioni validi.")
+    print(f"Dati GNN pronti (OTTIMIZZATO): X_scaled shape={X_scaled.shape}, y_scaled shape={y_scaled.shape}")
     return X_scaled, y_scaled, scaler_features, scaler_targets, num_features
 
 def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weights, epochs=50, batch_size=32, learning_rate=0.001, save_strategy='migliore', preferred_device='auto', n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None):
