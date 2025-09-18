@@ -2643,8 +2643,30 @@ elif page == 'Post-Training Modello':
 
                 if fine_tuned_model:
                     st.success("Post-Training LSTM completato!")
-                    # Salva il modello affinato
-                    # ... (logica di salvataggio)
+                    with st.spinner(f"Salvataggio del modello affinato '{save_name_pt}'..."):
+                        base_path_pt = os.path.join(MODELS_DIR, save_name_pt)
+                        
+                        # 1. Salva lo stato del modello affinato
+                        torch.save(fine_tuned_model.state_dict(), f"{base_path_pt}.pth")
+                        
+                        # 2. Copia gli scaler originali, poiché non vengono ri-addestrati
+                        joblib.dump(original_scalers[0], f"{base_path_pt}_features.joblib")
+                        joblib.dump(original_scalers[1], f"{base_path_pt}_targets.joblib")
+                        
+                        # 3. Crea e salva la nuova configurazione aggiornata
+                        new_config_pt = original_config.copy()
+                        new_config_pt['display_name'] = save_name_pt
+                        new_config_pt['training_date'] = datetime.now(italy_tz).isoformat()
+                        new_config_pt['post_trained_from'] = original_config.get('display_name', 'sconosciuto')
+                        new_config_pt['post_training_epochs_added'] = ep_pt
+                        new_config_pt['post_training_lr'] = lr_pt
+                        
+                        with open(f"{base_path_pt}.json", 'w', encoding='utf-8') as f:
+                            json.dump(new_config_pt, f, indent=4)
+                            
+                    st.success(f"Modello affinato '{save_name_pt}' salvato correttamente.")
+                    # Svuota la cache per far apparire subito il nuovo modello nella lista
+                    find_available_models.clear()
         
         elif active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
             with st.spinner(f"Preparazione nuovi dati per post-training {active_model_type}..."):
@@ -2660,10 +2682,10 @@ elif page == 'Post-Training Modello':
                     model_instance = HydroTransformer(X_enc_new.shape[2], X_dec_new.shape[2], len(original_config["target_columns"]), **original_config, num_quantiles=num_q_pt)
                 else:
                     encoder = EncoderLSTM(X_enc_new.shape[2], original_config['hidden_size'], original_config['num_layers'], original_config['dropout'])
-                    if active_model_type == "Seq2Seq con Attenzione":
+                    if active_model_type == "Seq2SeqAttention":  # <-- CONDIZIONE CORRETTA
                         decoder = DecoderLSTMWithAttention(X_dec_new.shape[2], original_config['hidden_size'], len(original_config["target_columns"]), original_config['num_layers'], original_config['dropout'], num_quantiles=num_q_pt)
                         model_instance = Seq2SeqWithAttention(encoder, decoder, original_config["output_window_steps"])
-                    else:
+                    else: # Gestisce il caso "Seq2Seq" standard
                         decoder = DecoderLSTM(X_dec_new.shape[2], original_config['hidden_size'], len(original_config["target_columns"]), original_config['num_layers'], original_config['dropout'], num_quantiles=num_q_pt)
                         model_instance = Seq2SeqHydro(encoder, decoder, original_config["output_window_steps"])
 
@@ -2673,8 +2695,31 @@ elif page == 'Post-Training Modello':
 
                 if fine_tuned_model:
                     st.success(f"Post-Training {active_model_type} completato!")
-                    # Salva il modello affinato
-                    # ... (logica di salvataggio)
+                    with st.spinner(f"Salvataggio del modello affinato '{save_name_pt}'..."):
+                        base_path_pt = os.path.join(MODELS_DIR, save_name_pt)
+
+                        # 1. Salva lo stato del modello affinato
+                        torch.save(fine_tuned_model.state_dict(), f"{base_path_pt}.pth")
+
+                        # 2. Copia gli scaler originali (per Seq2Seq/Transformer sono un dizionario)
+                        joblib.dump(original_scalers['past'], f"{base_path_pt}_past_features.joblib")
+                        joblib.dump(original_scalers['forecast'], f"{base_path_pt}_forecast_features.joblib")
+                        joblib.dump(original_scalers['targets'], f"{base_path_pt}_targets.joblib")
+
+                        # 3. Crea e salva la nuova configurazione aggiornata
+                        new_config_pt = original_config.copy()
+                        new_config_pt['display_name'] = save_name_pt
+                        new_config_pt['training_date'] = datetime.now(italy_tz).isoformat()
+                        new_config_pt['post_trained_from'] = original_config.get('display_name', 'sconosciuto')
+                        new_config_pt['post_training_epochs_added'] = ep_pt
+                        new_config_pt['post_training_lr'] = lr_pt
+                        
+                        with open(f"{base_path_pt}.json", 'w', encoding='utf-8') as f:
+                            json.dump(new_config_pt, f, indent=4)
+                            
+                    st.success(f"Modello affinato '{save_name_pt}' salvato correttamente.")
+                    # Svuota la cache per far apparire subito il nuovo modello nella lista
+                    find_available_models.clear()
         else:
             st.error(f"Tipo modello '{active_model_type}' non supportato per il post-training.")
             st.stop()
