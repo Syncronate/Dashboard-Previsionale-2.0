@@ -515,18 +515,47 @@ class QuantileLoss(nn.Module):
             return loss.sum()
         return loss
 
+# SOSTITUISCI QUESTA CLASSE
 class DynamicWeightedMSELoss(nn.Module):
-    def __init__(self, exponent=2.0, reduction='mean'):
+    # NUOVI ARGOMENTI: threshold e scaler_targets per lavorare con i valori reali
+    def __init__(self, threshold=0.0, exponent=2.0, reduction='mean', use_unscaled_targets=False):
         super().__init__()
+        self.threshold = threshold
         self.exponent = exponent
         self.reduction = reduction
-        self.mse = nn.MSELoss(reduction='none')
+        self.use_unscaled_targets = use_unscaled_targets
+        self.mse = nn.MSELoss(reduction='none') # Fondamentale che sia 'none'
 
-    def forward(self, y_pred, y_true):
+    def forward(self, y_pred, y_true, scaler_targets=None):
+        # Calcola la loss MSE base per ogni elemento
         per_element_loss = self.mse(y_pred, y_true)
+        
+        # Calcola i pesi dinamicamente, senza tracciare i gradienti per questa parte
         with torch.no_grad():
-            weights = 1.0 + torch.pow(torch.clamp(y_true, min=0), self.exponent)
+            # Decide se usare i target scalati (più semplice) o quelli reali (più preciso)
+            base_targets = y_true
+            if self.use_unscaled_targets and scaler_targets is not None:
+                # Converte temporaneamente i target in numpy, li de-scala e li riporta a tensor
+                y_true_unscaled_np = scaler_targets.inverse_transform(y_true.cpu().numpy().reshape(-1, y_true.shape[-1]))
+                y_true_unscaled = torch.from_numpy(y_true_unscaled_np.reshape(y_true.shape)).to(y_pred.device)
+                base_targets = y_true_unscaled
+
+            # Calcola l'eccesso sopra la soglia, assicurandosi che non sia mai negativo
+            excess = torch.clamp(base_targets - self.threshold, min=0)
+            
+            # Calcola il peso: 1.0 (peso base) + l'eccesso elevato all'esponente
+            # Esempio: soglia=2, esponente=1. Valore=3 -> eccesso=1 -> peso=1+1^1=2
+            # Esempio: soglia=2, esponente=1. Valore=4 -> eccesso=2 -> peso=1+2^1=3
+            weights = 1.0 + torch.pow(excess, self.exponent)
+
+        # Applica i pesi alla loss di ogni elemento
+        # Se la loss ha più dimensioni (es. per step temporale), assicuriamoci che i pesi facciano broadcasting corretto
+        if per_element_loss.ndim > weights.ndim:
+             weights = weights.unsqueeze(-1).expand_as(per_element_loss)
+             
         weighted_loss = per_element_loss * weights
+        
+        # Applica la riduzione finale (mean, sum, or none)
         if self.reduction == 'mean':
             return weighted_loss.mean()
         elif self.reduction == 'sum':
@@ -962,7 +991,8 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, ed
                     epochs=50, batch_size=32, learning_rate=0.001,
                     save_strategy='migliore', preferred_device='auto',
                     n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None,
-                    split_method="Temporale", validation_size=0.2, use_weighted_loss=False):
+                    split_method="Temporale", validation_size=0.2, use_weighted_loss=False, 
+                    use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     model.to(device)
     edge_index_tensor = torch.tensor(edge_index, dtype=torch.long).to(device)
@@ -970,14 +1000,20 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, ed
 
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training GNN (Weighted: {use_weighted_loss}, loss={loss_function_name})...")
     
-    reduction_strategy = 'none' if use_weighted_loss else 'mean'
+    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) else 'mean'
     criterion = None
     if training_mode == 'quantile':
         criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
     elif loss_function_name == "HuberLoss":
         criterion = nn.HuberLoss(reduction=reduction_strategy)
     elif loss_function_name == "DynamicWeightedMSE":
-        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction=reduction_strategy)
+        st.info(f"Loss Dinamica attivata con Soglia (scalata): {target_threshold}, Esponente: {weight_exponent}")
+        criterion = DynamicWeightedMSELoss(
+            threshold=target_threshold, 
+            exponent=weight_exponent, 
+            reduction=reduction_strategy,
+            use_unscaled_targets=False 
+        )
     elif loss_function_name == "DilateLoss":
         criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device, reduction='none')
     else:
@@ -1810,7 +1846,7 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
                 training_mode='standard', quantiles=None,
                 _model_to_continue_train=None,
                 split_method="Temporale", validation_size=0.2,
-                use_weighted_loss=False): # NUOVO ARGOMENTO
+                use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0): # NUOVO ARGOMENTO
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM (Weighted Loss: {use_weighted_loss})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
@@ -1818,16 +1854,21 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
 
     # --- INIZIO NUOVA LOGICA PER CRITERION ---
     # Per la loss pesata, dobbiamo calcolare la loss per ogni campione, quindi 'reduction' deve essere 'none'.
-    reduction_strategy = 'none' if use_weighted_loss else 'mean'
+    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) else 'mean'
 
     criterion = None
     if training_mode == 'quantile': 
         criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
     elif loss_function_name == "HuberLoss": 
         criterion = nn.HuberLoss(reduction=reduction_strategy)
-    elif loss_function_name == "DynamicWeightedMSE": 
-        # Questa loss ha già una sua pesatura, ma possiamo combinarle
-        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction=reduction_strategy)
+    elif loss_function_name == "DynamicWeightedMSE":
+        st.info(f"Loss Dinamica attivata con Soglia (scalata): {target_threshold}, Esponente: {weight_exponent}")
+        criterion = DynamicWeightedMSELoss(
+            threshold=target_threshold, 
+            exponent=weight_exponent, 
+            reduction=reduction_strategy,
+            use_unscaled_targets=False 
+        )
     elif loss_function_name == "DilateLoss":
         # DilateLoss è speciale e restituisce già la loss per campione del batch, quindi reduction='none' è implicito
         criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device, reduction='none')
@@ -1973,20 +2014,26 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                         n_splits_cv=3, loss_function_name="MSELoss",
                         training_mode='standard', quantiles=None,
                         split_method="Temporale", validation_size=0.2,
-                        use_weighted_loss=False):
+                        use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq (Weighted: {use_weighted_loss}, loss={loss_function_name})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     model.to(device)
 
-    reduction_strategy = 'none' if use_weighted_loss else 'mean'
+    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) else 'mean'
     criterion = None
     if training_mode == 'quantile': 
         criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
     elif loss_function_name == "HuberLoss": 
         criterion = nn.HuberLoss(reduction=reduction_strategy)
-    elif loss_function_name == "DynamicWeightedMSE": 
-        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction=reduction_strategy)
+    elif loss_function_name == "DynamicWeightedMSE":
+        st.info(f"Loss Dinamica attivata con Soglia (scalata): {target_threshold}, Esponente: {weight_exponent}")
+        criterion = DynamicWeightedMSELoss(
+            threshold=target_threshold, 
+            exponent=weight_exponent, 
+            reduction=reduction_strategy,
+            use_unscaled_targets=False 
+        )
     elif loss_function_name == "DilateLoss":
         criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device, reduction='none')
     else: 
@@ -3097,6 +3144,38 @@ elif page == 'Allenamento Modello':
         with col_weight:
             post_mod_weight = st.number_input("Peso per dati post-modifica (>= 1.0):", 1.0, value=5.0, step=0.5, key="post_mod_weight_input")
 
+
+# --- INSERISCI QUESTO NUOVO BLOCCO QUI ---
+st.markdown("**Opzione: Loss Pesata su Valori di Piena (Target)**")
+use_magnitude_loss = st.checkbox(
+    "Usa Loss Pesata per eventi di piena",
+    value=True, # Attiviamolo di default
+    key="use_magnitude_loss_checkbox",
+    help="Se attivato, il modello verrà penalizzato di più per errori su valori del target che superano una certa soglia (es. livelli di piena)."
+)
+
+target_threshold_scaled = 0.5 # Valore di default sulla scala 0-1
+weight_exponent = 1.0 # Valore di default
+
+if use_magnitude_loss:
+    col_thresh, col_exp = st.columns(2)
+    with col_thresh:
+        target_threshold_scaled = st.slider(
+            "Soglia di attivazione (su scala 0-1):",
+            min_value=0.0, max_value=1.0,
+            value=0.5, step=0.05,
+            key="target_threshold_slider",
+            help="Il peso inizia ad aumentare per i valori del target sopra questa soglia normalizzata. 0.5 corrisponde circa alla metà del massimo valore di piena mai registrato."
+        )
+    with col_exp:
+        weight_exponent = st.number_input(
+            "Esponente di crescita del peso:",
+            min_value=0.1, value=1.0, step=0.1,
+            key="weight_exponent_input",
+            help="Controlla quanto velocemente aumenta il peso. 1.0 = crescita lineare; 2.0 = crescita quadratica (molto più aggressiva per valori alti)."
+        )
+# --- FINE DEL NUOVO BLOCCO ---
+
     default_save_name = f"modello_{train_model_type.split()[0].lower().replace('-','_')}_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
     save_name_input = st.text_input("Nome base per salvare il modello:", default_save_name, key="train_save_filename")
     save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_') or "modello_default"
@@ -3161,7 +3240,11 @@ elif page == 'Allenamento Modello':
                     quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
                     split_method=split_method,
                     validation_size=validation_percentage,
-                    use_weighted_loss=use_weighted_loss
+                    use_weighted_loss=use_weighted_loss,
+                    # <<< AGGIUNGI QUESTI PARAMETRI >>>
+                    use_magnitude_loss=use_magnitude_loss if loss_choice == "DynamicWeightedMSE" else False,
+                    target_threshold=target_threshold_scaled,
+                    weight_exponent=weight_exponent
                 )
                 if trained_model:
                     st.success("Addestramento LSTM completato!")
@@ -3263,7 +3346,10 @@ elif page == 'Allenamento Modello':
                     quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
                     split_method=split_method,
                     validation_size=validation_percentage,
-                    use_weighted_loss=use_weighted_loss
+                    use_weighted_loss=use_weighted_loss,
+                    use_magnitude_loss=use_magnitude_loss if loss_choice == "DynamicWeightedMSE" else False,
+                    target_threshold=target_threshold_scaled,
+                    weight_exponent=weight_exponent
                 )
 
                 if trained_model:
@@ -3380,7 +3466,10 @@ elif page == 'Allenamento Modello':
                         quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
                         split_method=split_method,
                         validation_size=validation_percentage,
-                        use_weighted_loss=use_weighted_loss
+                        use_weighted_loss=use_weighted_loss,
+                        use_magnitude_loss=use_magnitude_loss if loss_choice == "DynamicWeightedMSE" else False,
+                        target_threshold=target_threshold_scaled,
+                        weight_exponent=weight_exponent
                     )
                     
                     if trained_model:
