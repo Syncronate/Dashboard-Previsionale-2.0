@@ -183,9 +183,11 @@ calculate_discharge_vectorized = np.vectorize(calculate_discharge, otypes=[float
 
 # --- Definizioni Classi Modello (Dataset, LSTM, Encoder, Decoder, Seq2Seq) ---
 class TimeSeriesDataset(Dataset):
+    # La tua classe è già scritta in modo generico, ma assicuriamoci di gestire il caso in cui i pesi non ci sono
     def __init__(self, *tensors):
-        assert all(tensors[0].shape[0] == tensor.shape[0] for tensor in tensors), "Size mismatch between tensors"
-        self.tensors = tuple(torch.tensor(t, dtype=torch.float32) for t in tensors)
+        # Filtra via eventuali tensori None (come i pesi quando la loss pesata è disattivata)
+        self.tensors = tuple(torch.tensor(t, dtype=torch.float32) for t in tensors if t is not None)
+        assert all(self.tensors[0].shape[0] == tensor.shape[0] for tensor in self.tensors), "Size mismatch between tensors"
 
     def __len__(self):
         return self.tensors[0].shape[0]
@@ -560,9 +562,12 @@ class DilateLoss(nn.Module):
         return final_loss
 
 # --- Funzioni Utilità Modello/Dati ---
+# MODIFICATA: Aggiunti argomenti e logica per i pesi
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window,
-                          lag_config=None, cumulative_config=None): 
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati LSTM Standard (full scaled data)...")
+                          lag_config=None, cumulative_config=None,
+                          use_weighted_loss=False, dummy_col_name='Variabile Dummy', post_modification_weight=1.0): # NUOVI ARGOMENTI
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati LSTM Standard...")
+    # ... (tutta la logica di feature engineering rimane invariata) ...
     original_feature_columns = list(feature_columns)
     engineered_feature_names = []
 
@@ -592,9 +597,18 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
 
     current_feature_columns = original_feature_columns + engineered_feature_names
     
+    # NUOVA LOGICA: Assicurati che la colonna dummy sia presente se necessario
+    if use_weighted_loss:
+        if dummy_col_name not in df.columns:
+            st.error(f"Loss pesata attivata, ma la colonna dummy '{dummy_col_name}' non è stata trovata nel DataFrame.")
+            return None, None, None, None, None
+        # Aggiungiamo temporaneamente la colonna dummy per la creazione delle sequenze, se non è già una feature
+        cols_for_sequencing = list(set(current_feature_columns + target_columns + [dummy_col_name]))
+    else:
+        cols_for_sequencing = list(set(current_feature_columns + target_columns))
+        
     if engineered_feature_names:
-        cols_to_fill_na = current_feature_columns + target_columns
-        cols_present_in_df_to_fill = [c for c in cols_to_fill_na if c in df.columns]
+        cols_present_in_df_to_fill = [c for c in cols_for_sequencing if c in df.columns]
         
         nan_count_before_bfill = df[cols_present_in_df_to_fill].isnull().sum().sum()
         if nan_count_before_bfill > 0:
@@ -607,18 +621,19 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
         missing_targets = [col for col in target_columns if col not in df.columns]
         if missing_features:
             st.error(f"Errore: Feature columns mancanti: {missing_features}")
-            return None, None, None, None, None, None
+            return None, None, None, None, None
         if missing_targets:
             st.error(f"Errore: Target columns mancanti: {missing_targets}")
-            return None, None, None, None, None, None
+            return None, None, None, None, None
         
-        if df[current_feature_columns + target_columns].isnull().any().any():
+        if df[cols_for_sequencing].isnull().any().any():
              st.warning("NaN trovati nelle colonne rilevanti PRIMA della creazione sequenze LSTM.")
     except Exception as e:
         st.error(f"Errore controllo colonne in prepare_training_data: {e}")
-        return None, None, None, None, None, None
+        return None, None, None, None, None
 
     X, y = [], []
+    sample_weights = [] # NUOVO: Lista per i pesi
     total_len = len(df)
     input_steps = input_window * 2
     output_steps = output_window * 2
@@ -626,7 +641,7 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
 
     if total_len < required_len:
          st.error(f"Dati LSTM insufficienti ({total_len} righe) per creare sequenze (richieste {required_len} righe).")
-         return None, None, None, None, None, None
+         return None, None, None, None, None
 
     for i in range(total_len - required_len + 1):
         feature_window_data = df.iloc[i : i + input_steps][current_feature_columns]
@@ -637,13 +652,25 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
             
         X.append(feature_window_data.values)
         y.append(target_window_data.values)
+        
+        # --- INIZIO NUOVA LOGICA PER I PESI ---
+        if use_weighted_loss:
+            # Usiamo il valore della dummy all'inizio del periodo di target
+            dummy_value = df.iloc[i + input_steps][dummy_col_name]
+            if dummy_value == 1:
+                sample_weights.append(post_modification_weight)
+            else:
+                sample_weights.append(1.0)
+        # --- FINE NUOVA LOGICA ---
 
     if not X or not y:
-        st.error("Errore creazione sequenze X/y LSTM."); return None, None, None, None, None, None
+        st.error("Errore creazione sequenze X/y LSTM."); return None, None, None, None, None
+        
     X = np.array(X, dtype=np.float32); y = np.array(y, dtype=np.float32)
+    sample_weights = np.array(sample_weights, dtype=np.float32) if use_weighted_loss else None # NUOVO: Converti in array
 
     if X.size == 0 or y.size == 0:
-        st.error("Dati X o y vuoti prima di scaling LSTM."); return None, None, None, None, None, None
+        st.error("Dati X o y vuoti prima di scaling LSTM."); return None, None, None, None, None
 
     scaler_features = MinMaxScaler(); scaler_targets = MinMaxScaler()
     num_sequences, seq_len_in, num_features_X = X.shape
@@ -651,11 +678,11 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
     
     if num_features_X != len(current_feature_columns):
         st.error(f"Errore numero feature in X ({num_features_X}) vs colonne attese ({len(current_feature_columns)}).")
-        return None, None, None, None, None, None
+        return None, None, None, None, None
 
     if seq_len_in != input_steps or seq_len_out != output_steps:
         st.error(f"Errore shape sequenze LSTM: In={seq_len_in} (atteso {input_steps}), Out={seq_len_out} (atteso {output_steps})")
-        return None, None, None, None, None, None
+        return None, None, None, None, None
 
     X_flat = X.reshape(-1, num_features_X); y_flat = y.reshape(-1, num_targets_y)
     try:
@@ -666,21 +693,23 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
              st.error(f"Errore scaling LSTM: Input contiene NaN. Dettagli: {ve_scale}")
         else:
              st.error(f"Errore scaling LSTM: {ve_scale}")
-        return None, None, None, None, None, None
+        return None, None, None, None, None
     except Exception as e_scale:
-        st.error(f"Errore scaling LSTM generico: {e_scale}"); return None, None, None, None, None, None
+        st.error(f"Errore scaling LSTM generico: {e_scale}"); return None, None, None, None, None
 
     X_scaled = X_scaled_flat.reshape(num_sequences, seq_len_in, num_features_X)
     y_scaled = y_scaled_flat.reshape(num_sequences_y, seq_len_out, num_targets_y)
 
-    print(f"Dati LSTM pronti: X_scaled shape={X_scaled.shape}, y_scaled shape={y_scaled.shape}. Features utilizzate: {len(current_feature_columns)}")
-    return X_scaled, y_scaled, scaler_features, scaler_targets
+    print(f"Dati LSTM pronti: X_scaled shape={X_scaled.shape}, y_scaled shape={y_scaled.shape}.")
+    # MODIFICATO: Restituisce anche i pesi
+    return X_scaled, y_scaled, sample_weights, scaler_features, scaler_targets
 
 
 def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, target_cols,
                                  input_window_steps, forecast_window_steps, output_window_steps,
-                                 lag_config_past=None, cumulative_config_past=None): 
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati Seq2Seq (full scaled data)...")
+                                 lag_config_past=None, cumulative_config_past=None,
+                                 use_weighted_loss=False, dummy_col_name='Variabile Dummy', post_modification_weight=1.0):
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati Seq2Seq...")
     print(f"Input Steps: {input_window_steps}, Forecast Steps: {forecast_window_steps}, Output Steps: {output_window_steps}")
 
     original_past_feature_cols = list(past_feature_cols)
@@ -712,13 +741,20 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
 
     current_past_feature_cols = original_past_feature_cols + engineered_past_feature_names
     
-    all_needed_cols = list(set(current_past_feature_cols + forecast_feature_cols + target_cols))
+    # NUOVA LOGICA: Gestione colonna dummy
+    if use_weighted_loss:
+        if dummy_col_name not in df.columns:
+            st.error(f"Loss pesata attivata, ma la colonna dummy '{dummy_col_name}' non è stata trovata.")
+            return None, None, None, None, None, None, None
+        all_needed_cols = list(set(current_past_feature_cols + forecast_feature_cols + target_cols + [dummy_col_name]))
+    else:
+        all_needed_cols = list(set(current_past_feature_cols + forecast_feature_cols + target_cols))
+
     try:
         for col in all_needed_cols:
             if col not in df.columns: raise ValueError(f"Colonna '{col}' richiesta per Seq2Seq non trovata.")
         
-        cols_for_fillna_seq2seq = list(set(current_past_feature_cols + forecast_feature_cols + target_cols))
-        cols_present_for_fillna_s2s = [c for c in cols_for_fillna_seq2seq if c in df.columns]
+        cols_present_for_fillna_s2s = [c for c in all_needed_cols if c in df.columns]
 
         nan_sum_before_fill = df[cols_present_for_fillna_s2s].isnull().sum().sum()
         if nan_sum_before_fill > 0:
@@ -727,20 +763,21 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
             nan_sum_after_fill = df[cols_present_for_fillna_s2s].isnull().sum().sum()
             if nan_sum_after_fill > 0:
                  st.error(f"NaN RESIDUI ({nan_sum_after_fill}) dopo bfill/ffill.")
-                 return None, None, None, None, None, None, None, None, None
+                 return None, None, None, None, None, None, None
         df_to_use = df
             
     except ValueError as e:
         st.error(f"Errore colonne in prepare_seq2seq: {e}")
-        return None, None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
     X_encoder, X_decoder, y_target = [], [], []
+    sample_weights = [] # NUOVO
     total_len = len(df_to_use)
     required_len = input_window_steps + max(forecast_window_steps, output_window_steps)
 
     if total_len < required_len:
         st.error(f"Dati Seq2Seq insufficienti ({total_len} righe) per creare sequenze (richieste {required_len} righe).")
-        return None, None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
     print(f"Creazione sequenze Seq2Seq: {total_len - required_len + 1} possibili...")
     for i in range(total_len - required_len + 1):
@@ -763,22 +800,28 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
         X_decoder.append(forecast_feature_window_data.values)
         y_target.append(target_window_data.values)
 
+        # NUOVA LOGICA PESI
+        if use_weighted_loss:
+            dummy_value = df_to_use.iloc[dec_start][dummy_col_name]
+            sample_weights.append(post_modification_weight if dummy_value == 1 else 1.0)
+
 
     if not X_encoder or not X_decoder or not y_target:
         st.error("Errore creazione sequenze X_enc/X_dec/Y_target Seq2Seq.")
-        return None, None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
     X_encoder = np.array(X_encoder, dtype=np.float32)
     X_decoder = np.array(X_decoder, dtype=np.float32)
     y_target = np.array(y_target, dtype=np.float32)
+    sample_weights = np.array(sample_weights, dtype=np.float32) if use_weighted_loss else None # NUOVO
     print(f"Shapes NumPy: Encoder={X_encoder.shape}, Decoder={X_decoder.shape}, Target={y_target.shape}")
 
     if X_encoder.shape[1] != input_window_steps or X_decoder.shape[1] != forecast_window_steps or y_target.shape[1] != output_window_steps:
          st.error("Errore shape sequenze Seq2Seq dopo creazione.")
-         return None, None, None, None, None, None, None, None, None
+         return None, None, None, None, None, None, None
     if X_encoder.shape[2] != len(current_past_feature_cols) or X_decoder.shape[2] != len(forecast_feature_cols) or y_target.shape[2] != len(target_cols):
          st.error(f"Errore numero feature/target Seq2Seq. Encoder: {X_encoder.shape[2]} (atteso {len(current_past_feature_cols)}), Decoder: {X_decoder.shape[2]} (atteso {len(forecast_feature_cols)}), Target: {y_target.shape[2]} (atteso {len(target_cols)})")
-         return None, None, None, None, None, None, None, None, None
+         return None, None, None, None, None, None, None
 
     scaler_past_features = MinMaxScaler()
     scaler_forecast_features = MinMaxScaler()
@@ -797,36 +840,37 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
              st.error(f"Errore scaling Seq2Seq: Input contiene NaN. Dettagli: {ve_scale_s2s}")
         else:
              st.error(f"Errore scaling Seq2Seq: {ve_scale_s2s}")
-        return None, None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None
     except Exception as e_scale:
         st.error(f"Errore scaling Seq2Seq generico: {e_scale}")
-        return None, None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
     X_enc_scaled = X_enc_scaled_flat.reshape(num_sequences, input_window_steps, len(current_past_feature_cols))
     X_dec_scaled = X_dec_scaled_flat.reshape(num_sequences, forecast_window_steps, len(forecast_feature_cols))
     y_tar_scaled = y_tar_scaled_flat.reshape(num_sequences, output_window_steps, len(target_cols))
 
     print(f"Dati Seq2Seq pronti: X_enc_scaled={X_enc_scaled.shape}, X_dec_scaled={X_dec_scaled.shape}, y_tar_scaled={y_tar_scaled.shape}. Past features utilizzate: {len(current_past_feature_cols)}")
-    return (X_enc_scaled, X_dec_scaled, y_tar_scaled,
+    return (X_enc_scaled, X_dec_scaled, y_tar_scaled, sample_weights,
             scaler_past_features, scaler_forecast_features, scaler_targets)
 
 
 # SOSTITUISCI la funzione prepare_training_data_gnn con questa versione CORRETTA E OTTIMIZZATA
 
-def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping, input_window_steps, output_window_steps, progress_bar=None):
+def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping,
+                              input_window_steps, output_window_steps, progress_bar=None,
+                              use_weighted_loss=False, dummy_col_name='Variabile Dummy', post_modification_weight=1.0):
     if progress_bar:
         progress_bar.progress(0.0, text="Avvio preparazione dati GNN ottimizzata...")
     
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati GNN (versione OTTIMIZZATA)...")
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati GNN...")
     
     num_nodes = len(node_columns)
     num_features_per_node = [1 + len(feature_mapping.get(node, [])) for node in node_columns]
     if len(set(num_features_per_node)) > 1:
-        st.error("Errore di configurazione: Tutti i nodi devono avere lo stesso numero totale di feature. Rendi uniformi le selezioni.")
-        return None, None, None, None, -1
+        st.error("Errore di configurazione: Tutti i nodi devono avere lo stesso numero totale di feature.")
+        return None, None, None, None, None, -1
     num_features = num_features_per_node[0] if num_features_per_node else 1
     
-    # FASE 1: Estrazione e riorganizzazione dati
     if progress_bar:
         progress_bar.progress(0.1, text="Fase 1/5: Estrazione dati da DataFrame...")
     
@@ -834,12 +878,26 @@ def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping,
     for node_name in node_columns:
         all_feature_columns.append(node_name)
         all_feature_columns.extend(feature_mapping.get(node_name, []))
-        
-    feature_data_np = df[all_feature_columns].values.astype(np.float32)
-    # IMPORTANTE: L'ordine qui è 'C' (row-major) per compatibilità con reshape
+    
+    if use_weighted_loss:
+        if dummy_col_name not in df.columns:
+            st.error(f"Loss pesata attivata, ma la colonna dummy '{dummy_col_name}' non è stata trovata.")
+            return None, None, None, None, None, -1
+        if dummy_col_name not in all_feature_columns:
+             # Aggiungiamo la colonna dummy al df per l'estrazione, ma non alle feature del modello
+             all_needed_cols = list(set(all_feature_columns + target_columns + [dummy_col_name]))
+        else:
+             all_needed_cols = list(set(all_feature_columns + target_columns))
+    else:
+        all_needed_cols = list(set(all_feature_columns + target_columns))
+
+    # Estrazione di tutte le colonne necessarie in una volta
+    data_np = df[all_needed_cols].values.astype(np.float32)
+    df_temp = pd.DataFrame(data_np, columns=all_needed_cols) # DF temporaneo per slicing facile
+
+    feature_data_np = df_temp[all_feature_columns].values
     full_feature_matrix = feature_data_np.reshape(len(df), num_nodes, num_features, order='C')
     
-    # FASE 2: Creazione finestre di input (X)
     if progress_bar:
         progress_bar.progress(0.3, text="Fase 2/5: Creazione sequenze di input (X)...")
     
@@ -847,55 +905,48 @@ def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping,
     required_len = input_window_steps + output_window_steps
     if total_len < required_len:
         st.error(f"Dati insufficienti ({total_len} righe) per creare sequenze (richieste {required_len} righe).")
-        return None, None, None, None, -1
+        return None, None, None, None, None, -1
     
     num_samples = total_len - required_len + 1
 
-    # --- CORREZIONE DEL BUG ---
-    # Usiamo un approccio di indicizzazione e striding più robusto invece di sliding_window_view
-    # che può essere problematico con forme complesse.
     shape = (num_samples, input_window_steps, num_nodes, num_features)
     strides = (full_feature_matrix.strides[0],) + full_feature_matrix.strides
     X = np.lib.stride_tricks.as_strided(full_feature_matrix, shape=shape, strides=strides)
-    # --- FINE CORREZIONE ---
 
-    # FASE 3: Creazione finestre di target (y)
     if progress_bar:
-        progress_bar.progress(0.5, text="Fase 3/5: Creazione sequenze di target (y)...")
+        progress_bar.progress(0.5, text="Fase 3/5: Creazione sequenze di target (y) e pesi...")
         
-    target_data_np = df[target_columns].values.astype(np.float32)
-    
+    target_data_np = df_temp[target_columns].values
     shape_y = (num_samples, output_window_steps, len(target_columns))
-    # Il target per X[i] inizia a i + input_window_steps
     strides_y = (target_data_np.strides[0],) + target_data_np.strides
     y = np.lib.stride_tricks.as_strided(target_data_np[input_window_steps:], shape=shape_y, strides=strides_y)
+    
+    sample_weights = None
+    if use_weighted_loss:
+        dummy_data_np = df_temp[dummy_col_name].values
+        dummy_values_at_target_start = dummy_data_np[input_window_steps : input_window_steps + num_samples]
+        sample_weights = np.where(dummy_values_at_target_start == 1, post_modification_weight, 1.0).astype(np.float32)
 
-    # FASE 4: Rimozione campioni con NaN
     if progress_bar:
         progress_bar.progress(0.7, text="Fase 4/5: Filtraggio campioni non validi (NaN)...")
         
-    # Copiamo i dati per sicurezza, dato che as_strided crea una vista
-    X = np.copy(X)
-    y = np.copy(y)
-
+    X, y = np.copy(X), np.copy(y)
     nan_mask_X = np.isnan(X).any(axis=(1, 2, 3))
     nan_mask_y = np.isnan(y).any(axis=(1, 2))
     valid_mask = ~ (nan_mask_X | nan_mask_y)
     
-    X = X[valid_mask]
-    y = y[valid_mask]
+    X = X[valid_mask]; y = y[valid_mask]
+    if use_weighted_loss: sample_weights = sample_weights[valid_mask]
 
     if X.shape[0] == 0:
         st.error("Nessun campione valido trovato dopo la rimozione dei NaN.")
         if progress_bar: progress_bar.empty()
-        return None, None, None, None, -1
+        return None, None, None, None, None, -1
 
-    # FASE 5: Scaling finale
     if progress_bar:
         progress_bar.progress(0.9, text="Fase 5/5: Scaling dei dati...")
         
-    scaler_features = MinMaxScaler()
-    scaler_targets = MinMaxScaler()
+    scaler_features = MinMaxScaler(); scaler_targets = MinMaxScaler()
     X_scaled = scaler_features.fit_transform(X.reshape(-1, num_features)).reshape(X.shape)
     y_scaled = scaler_targets.fit_transform(y.reshape(-1, y.shape[-1])).reshape(y.shape)
     
@@ -903,56 +954,62 @@ def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping,
         progress_bar.progress(1.0, text="Preparazione dati completata!")
         pytime.sleep(1)
     
-    st.success(f"Preparazione dati GNN ottimizzata completata. Creati {X.shape[0]} campioni validi.")
-    print(f"Dati GNN pronti (OTTIMIZZATO): X_scaled shape={X_scaled.shape}, y_scaled shape={y_scaled.shape}")
-    return X_scaled, y_scaled, scaler_features, scaler_targets, num_features
+    st.success(f"Preparazione dati GNN completata. Creati {X.shape[0]} campioni validi.")
+    print(f"Dati GNN pronti: X_scaled={X_scaled.shape}, y_scaled={y_scaled.shape}, Weights={sample_weights.shape if sample_weights is not None else 'None'}")
+    return X_scaled, y_scaled, sample_weights, scaler_features, scaler_targets, num_features
 
-def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weights, epochs=50, batch_size=32, learning_rate=0.001, save_strategy='migliore', preferred_device='auto', n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None, split_method="Temporale", validation_size=0.2):
+def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, edge_index, edge_weights,
+                    epochs=50, batch_size=32, learning_rate=0.001,
+                    save_strategy='migliore', preferred_device='auto',
+                    n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None,
+                    split_method="Temporale", validation_size=0.2, use_weighted_loss=False):
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     model.to(device)
     edge_index_tensor = torch.tensor(edge_index, dtype=torch.long).to(device)
     edge_weights_tensor = torch.tensor(edge_weights, dtype=torch.float32).to(device) if edge_weights is not None else None
 
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training GNN (mode={training_mode}, n_splits={n_splits_cv}, loss={loss_function_name})...")
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training GNN (Weighted: {use_weighted_loss}, loss={loss_function_name})...")
     
+    reduction_strategy = 'none' if use_weighted_loss else 'mean'
     criterion = None
     if training_mode == 'quantile':
-        criterion = QuantileLoss(quantiles=quantiles)
+        criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
     elif loss_function_name == "HuberLoss":
-        criterion = nn.HuberLoss()
+        criterion = nn.HuberLoss(reduction=reduction_strategy)
     elif loss_function_name == "DynamicWeightedMSE":
-        criterion = DynamicWeightedMSELoss(exponent=2.0)
+        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction=reduction_strategy)
     elif loss_function_name == "DilateLoss":
-        criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device)
+        criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device, reduction='none')
     else:
-        criterion = nn.MSELoss()
+        criterion = nn.MSELoss(reduction=reduction_strategy)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     from sklearn.model_selection import TimeSeriesSplit, train_test_split
+    weights_train, weights_val = None, None
     if "Temporale" in split_method:
-        # --- LOGICA ESISTENTE ---
         tscv = TimeSeriesSplit(n_splits=n_splits_cv)
         train_indices, val_indices = list(tscv.split(X_scaled_full))[-1]
         
         X_train, y_train = X_scaled_full[train_indices], y_scaled_full[train_indices]
         X_val, y_val = X_scaled_full[val_indices], y_scaled_full[val_indices]
+        if use_weighted_loss and sample_weights_full is not None:
+            weights_train = sample_weights_full[train_indices]
+            weights_val = sample_weights_full[val_indices]
     else: # Logica Casuale
-        # --- NUOVA LOGICA ---
         st.info(f"Suddivisione casuale con {validation_size*100:.0f}% dei dati per la validazione.")
-        # Assicurati che non ci sia cross-validation in questo caso, non ha senso
-        
-        # Usiamo train_test_split, che mescola i dati di default
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_scaled_full, 
-            y_scaled_full, 
-            test_size=validation_size, 
-            shuffle=True, # Shuffle è fondamentale per la logica casuale
-            random_state=42 # Per riproducibilità
-        )
+        arrays_to_split = (X_scaled_full, y_scaled_full)
+        if use_weighted_loss and sample_weights_full is not None:
+            arrays_to_split += (sample_weights_full,)
 
-    train_loader = DataLoader(TimeSeriesDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+        split_results = train_test_split(*arrays_to_split, test_size=validation_size, shuffle=True, random_state=42)
+        
+        X_train, X_val, y_train, y_val = split_results[0], split_results[1], split_results[2], split_results[3]
+        if use_weighted_loss and sample_weights_full is not None:
+            weights_train, weights_val = split_results[4], split_results[5]
+
+    train_loader = DataLoader(TimeSeriesDataset(X_train, y_train, weights_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size) if len(X_val) > 0 else None
 
     train_losses, val_losses = [], []
@@ -976,11 +1033,25 @@ def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weight
         model.train()
         epoch_train_loss = 0.0
         
-        for X_batch, y_batch in train_loader:
+        for batch in train_loader:
+            if use_weighted_loss:
+                X_batch, y_batch, weights_batch = batch
+                weights_batch = weights_batch.to(device)
+            else:
+                X_batch, y_batch = batch
+            
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
             outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
-            loss = criterion(outputs, y_batch)
+            loss_per_sample = criterion(outputs, y_batch)
+
+            if use_weighted_loss:
+                if loss_per_sample.ndim > 1:
+                    loss_per_sample = loss_per_sample.mean(dim=tuple(range(1, loss_per_sample.ndim)))
+                loss = (loss_per_sample * weights_batch).mean()
+            else:
+                loss = loss_per_sample
+
             loss.backward()
             optimizer.step()
             epoch_train_loss += loss.item() * X_batch.size(0)
@@ -995,8 +1066,10 @@ def train_model_gnn(X_scaled_full, y_scaled_full, model, edge_index, edge_weight
                 for X_batch, y_batch in val_loader:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                     outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
-                    loss = criterion(outputs, y_batch)
-                    epoch_val_loss_sum += loss.item() * X_batch.size(0)
+                    val_loss_unweighted = criterion(outputs, y_batch)
+                    if use_weighted_loss:
+                        val_loss_unweighted = val_loss_unweighted.mean()
+                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0)
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
             scheduler.step(epoch_val_loss)
@@ -1728,25 +1801,39 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
     except Exception as e_sim_fetch: st.error(traceback.format_exc()); return None, f"Errore imprevisto importazione GSheet per simulazione: {type(e_sim_fetch).__name__} - {e_sim_fetch}", None
 
 # --- Funzioni Allenamento (Standard e Seq2Seq) --- MODIFICATE ---
-def train_model(X_scaled_full, y_scaled_full,
+# MODIFICATA: per accettare i pesi e calcolare la loss pesata
+def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOMENTO
                 input_size, output_size, output_window_steps,
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
                 save_strategy='migliore', preferred_device='auto', 
                 n_splits_cv=3, loss_function_name="MSELoss",
                 training_mode='standard', quantiles=None,
                 _model_to_continue_train=None,
-                split_method="Temporale", validation_size=0.2):
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM (mode={training_mode}, n_splits={n_splits_cv}, loss={loss_function_name})...")
+                split_method="Temporale", validation_size=0.2,
+                use_weighted_loss=False): # NUOVO ARGOMENTO
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM (Weighted Loss: {use_weighted_loss})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     print(f"Training LSTM userà: {device}")
 
+    # --- INIZIO NUOVA LOGICA PER CRITERION ---
+    # Per la loss pesata, dobbiamo calcolare la loss per ogni campione, quindi 'reduction' deve essere 'none'.
+    reduction_strategy = 'none' if use_weighted_loss else 'mean'
+
     criterion = None
-    if training_mode == 'quantile': criterion = QuantileLoss(quantiles=quantiles)
-    elif loss_function_name == "HuberLoss": criterion = nn.HuberLoss()
-    elif loss_function_name == "DynamicWeightedMSE": criterion = DynamicWeightedMSELoss(exponent=2.0)
-    elif loss_function_name == "DilateLoss": criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device)
-    else: criterion = nn.MSELoss()
+    if training_mode == 'quantile': 
+        criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
+    elif loss_function_name == "HuberLoss": 
+        criterion = nn.HuberLoss(reduction=reduction_strategy)
+    elif loss_function_name == "DynamicWeightedMSE": 
+        # Questa loss ha già una sua pesatura, ma possiamo combinarle
+        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction=reduction_strategy)
+    elif loss_function_name == "DilateLoss":
+        # DilateLoss è speciale e restituisce già la loss per campione del batch, quindi reduction='none' è implicito
+        criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device, reduction='none')
+    else: 
+        criterion = nn.MSELoss(reduction=reduction_strategy)
+    # --- FINE NUOVA LOGICA PER CRITERION ---
     
     if _model_to_continue_train is not None: model = _model_to_continue_train.to(device)
     else:
@@ -1757,28 +1844,38 @@ def train_model(X_scaled_full, y_scaled_full,
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     from sklearn.model_selection import TimeSeriesSplit, train_test_split
+    weights_train, weights_val = None, None # NUOVO
     if "Temporale" in split_method:
-        # --- LOGICA ESISTENTE ---
         tscv = TimeSeriesSplit(n_splits=n_splits_cv)
         train_indices, val_indices = list(tscv.split(X_scaled_full))[-1]
         
         X_train, y_train = X_scaled_full[train_indices], y_scaled_full[train_indices]
         X_val, y_val = X_scaled_full[val_indices], y_scaled_full[val_indices]
+        if use_weighted_loss and sample_weights_full is not None: # NUOVO
+            weights_train = sample_weights_full[train_indices]
+            weights_val = sample_weights_full[val_indices]
     else: # Logica Casuale
-        # --- NUOVA LOGICA ---
         st.info(f"Suddivisione casuale con {validation_size*100:.0f}% dei dati per la validazione.")
-        # Assicurati che non ci sia cross-validation in questo caso, non ha senso
         
-        # Usiamo train_test_split, che mescola i dati di default
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_scaled_full, 
-            y_scaled_full, 
-            test_size=validation_size, 
-            shuffle=True, # Shuffle è fondamentale per la logica casuale
-            random_state=42 # Per riproducibilità
-        )
+        # NUOVO: Aggiungi i pesi allo split se necessario
+        arrays_to_split = (X_scaled_full, y_scaled_full)
+        if use_weighted_loss and sample_weights_full is not None:
+            arrays_to_split += (sample_weights_full,)
 
-    train_loader = DataLoader(TimeSeriesDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+        split_results = train_test_split(
+            *arrays_to_split,
+            test_size=validation_size, 
+            shuffle=True, 
+            random_state=42
+        )
+        
+        X_train, X_val, y_train, y_val = split_results[0], split_results[1], split_results[2], split_results[3]
+        if use_weighted_loss and sample_weights_full is not None:
+             weights_train, weights_val = split_results[4], split_results[5]
+
+    # MODIFICATO: Passa i pesi al DataLoader
+    train_loader = DataLoader(TimeSeriesDataset(X_train, y_train, weights_train), batch_size=batch_size, shuffle=True)
+    # La validazione non richiede i pesi perché non facciamo backpropagation, ma potremmo usarli per un report più accurato
     val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size) if len(X_val) > 0 else None
 
     train_losses, val_losses = [], []
@@ -1800,11 +1897,35 @@ def train_model(X_scaled_full, y_scaled_full,
     for epoch in range(epochs):
         model.train()
         epoch_train_loss = 0.0
-        for X_batch, y_batch in train_loader:
+        
+        # MODIFICATO: Unpack del batch
+        batch_items = train_loader
+        for batch in batch_items:
+            # Gestisce entrambi i casi (con e senza pesi)
+            if use_weighted_loss:
+                X_batch, y_batch, weights_batch = batch
+                weights_batch = weights_batch.to(device)
+            else:
+                X_batch, y_batch = batch
+            
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            
             optimizer.zero_grad()
             outputs = model(X_batch)
-            loss = criterion(outputs, y_batch)
+            loss_per_sample = criterion(outputs, y_batch)
+
+            # --- INIZIO NUOVA LOGICA DI CALCOLO LOSS ---
+            if use_weighted_loss:
+                # Se la loss ha più dimensioni (es. per step temporale), mediamo su quelle dimensioni
+                if loss_per_sample.ndim > 1:
+                    loss_per_sample = loss_per_sample.mean(dim=tuple(range(1, loss_per_sample.ndim)))
+                # Applica i pesi e calcola la media pesata
+                loss = (loss_per_sample * weights_batch).mean()
+            else:
+                # Comportamento standard
+                loss = loss_per_sample
+            # --- FINE NUOVA LOGICA DI CALCOLO LOSS ---
+
             loss.backward()
             optimizer.step()
             epoch_train_loss += loss.item() * X_batch.size(0)
@@ -1818,8 +1939,11 @@ def train_model(X_scaled_full, y_scaled_full,
                 for X_batch, y_batch in val_loader:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                     outputs = model(X_batch)
-                    loss = criterion(outputs, y_batch)
-                    epoch_val_loss_sum += loss.item() * X_batch.size(0)
+                    # La loss di validazione è sempre non pesata per un confronto equo
+                    val_loss_unweighted = criterion(outputs, y_batch)
+                    if use_weighted_loss: # Se era 'none', ora prendiamo la media
+                        val_loss_unweighted = val_loss_unweighted.mean()
+                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0)
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
             scheduler.step(epoch_val_loss)
@@ -1829,10 +1953,8 @@ def train_model(X_scaled_full, y_scaled_full,
         else:
              val_losses.append(None)
 
-        # --- CORREZIONE QUI ---
         val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
         status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
-        # --- FINE CORREZIONE ---
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -1844,51 +1966,61 @@ def train_model(X_scaled_full, y_scaled_full,
     return model, (train_losses, []), (val_losses, [])
 
 
-def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
+def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full, sample_weights_full,
                         model,
                         output_window_steps, epochs=50, batch_size=32, learning_rate=0.001,
                         save_strategy='migliore', preferred_device='auto', teacher_forcing_ratio_schedule=None,
                         n_splits_cv=3, loss_function_name="MSELoss",
                         training_mode='standard', quantiles=None,
-                        split_method="Temporale", validation_size=0.2):
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq (mode={training_mode}, n_splits={n_splits_cv}, loss={loss_function_name})...")
+                        split_method="Temporale", validation_size=0.2,
+                        use_weighted_loss=False):
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq (Weighted: {use_weighted_loss}, loss={loss_function_name})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     model.to(device)
 
+    reduction_strategy = 'none' if use_weighted_loss else 'mean'
     criterion = None
-    if training_mode == 'quantile': criterion = QuantileLoss(quantiles=quantiles)
-    elif loss_function_name == "HuberLoss": criterion = nn.HuberLoss()
-    elif loss_function_name == "DynamicWeightedMSE": criterion = DynamicWeightedMSELoss(exponent=2.0)
-    elif loss_function_name == "DilateLoss": criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device)
-    else: criterion = nn.MSELoss()
+    if training_mode == 'quantile': 
+        criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
+    elif loss_function_name == "HuberLoss": 
+        criterion = nn.HuberLoss(reduction=reduction_strategy)
+    elif loss_function_name == "DynamicWeightedMSE": 
+        criterion = DynamicWeightedMSELoss(exponent=2.0, reduction=reduction_strategy)
+    elif loss_function_name == "DilateLoss":
+        criterion = DilateLoss(alpha=0.5, gamma=0.1, device=device, reduction='none')
+    else: 
+        criterion = nn.MSELoss(reduction=reduction_strategy)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     from sklearn.model_selection import TimeSeriesSplit, train_test_split
+    weights_train, weights_val = None, None
     if "Temporale" in split_method:
-        # --- LOGICA ESISTENTE ---
         tscv = TimeSeriesSplit(n_splits=n_splits_cv)
         train_indices, val_indices = list(tscv.split(X_enc_scaled_full))[-1]
         
         X_enc_train, X_dec_train, y_tar_train = X_enc_scaled_full[train_indices], X_dec_scaled_full[train_indices], y_tar_scaled_full[train_indices]
         X_enc_val, X_dec_val, y_tar_val = X_enc_scaled_full[val_indices], X_dec_scaled_full[val_indices], y_tar_scaled_full[val_indices]
-    else: # Logica Casuale
-        # --- NUOVA LOGICA ---
+        if use_weighted_loss and sample_weights_full is not None:
+            weights_train = sample_weights_full[train_indices]
+            weights_val = sample_weights_full[val_indices]
+    else: 
         st.info(f"Suddivisione casuale con {validation_size*100:.0f}% dei dati per la validazione.")
-        
-        # train_test_split può gestire multipli array, mantenendo l'allineamento
-        X_enc_train, X_enc_val, X_dec_train, X_dec_val, y_tar_train, y_tar_val = train_test_split(
-            X_enc_scaled_full,
-            X_dec_scaled_full,
-            y_tar_scaled_full,
-            test_size=validation_size,
-            shuffle=True,
-            random_state=42
-        )
+        arrays_to_split = (X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full)
+        if use_weighted_loss and sample_weights_full is not None:
+            arrays_to_split += (sample_weights_full,)
 
-    train_loader = DataLoader(TimeSeriesDataset(X_enc_train, X_dec_train, y_tar_train), batch_size=batch_size, shuffle=True)
+        split_results = train_test_split(*arrays_to_split, test_size=validation_size, shuffle=True, random_state=42)
+        
+        X_enc_train, X_enc_val = split_results[0], split_results[1]
+        X_dec_train, X_dec_val = split_results[2], split_results[3]
+        y_tar_train, y_tar_val = split_results[4], split_results[5]
+        if use_weighted_loss and sample_weights_full is not None:
+            weights_train, weights_val = split_results[6], split_results[7]
+
+    train_loader = DataLoader(TimeSeriesDataset(X_enc_train, X_dec_train, y_tar_train, weights_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_enc_val, X_dec_val, y_tar_val), batch_size=batch_size) if len(X_enc_val) > 0 else None
 
     train_losses, val_losses = [], []
@@ -1915,11 +2047,26 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             start_tf, end_tf = teacher_forcing_ratio_schedule
             current_tf_ratio = max(end_tf, start_tf - (start_tf - end_tf) * epoch / (epochs -1 if epochs > 1 else 1))
         
-        for x_enc, x_dec, y_tar in train_loader:
+        for batch in train_loader:
+            if use_weighted_loss:
+                x_enc, x_dec, y_tar, weights_batch = batch
+                weights_batch = weights_batch.to(device)
+            else:
+                x_enc, x_dec, y_tar = batch
+
             x_enc, x_dec, y_tar = x_enc.to(device), x_dec.to(device), y_tar.to(device)
+            
             optimizer.zero_grad()
             outputs, _ = model(x_enc, x_dec, teacher_forcing_ratio=current_tf_ratio)
-            loss = criterion(outputs, y_tar)
+            loss_per_sample = criterion(outputs, y_tar)
+
+            if use_weighted_loss:
+                if loss_per_sample.ndim > 1:
+                    loss_per_sample = loss_per_sample.mean(dim=tuple(range(1, loss_per_sample.ndim)))
+                loss = (loss_per_sample * weights_batch).mean()
+            else:
+                loss = loss_per_sample
+
             loss.backward()
             optimizer.step()
             epoch_train_loss += loss.item() * x_enc.size(0)
@@ -1934,8 +2081,10 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                 for x_enc, x_dec, y_tar in val_loader:
                     x_enc, x_dec, y_tar = x_enc.to(device), x_dec.to(device), y_tar.to(device)
                     outputs, _ = model(x_enc, x_dec, teacher_forcing_ratio=0.0)
-                    loss = criterion(outputs, y_tar)
-                    epoch_val_loss_sum += loss.item() * x_enc.size(0)
+                    val_loss_unweighted = criterion(outputs, y_tar)
+                    if use_weighted_loss:
+                        val_loss_unweighted = val_loss_unweighted.mean()
+                    epoch_val_loss_sum += val_loss_unweighted.item() * x_enc.size(0)
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
             scheduler.step(epoch_val_loss)
@@ -1945,10 +2094,8 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         else:
             val_losses.append(None)
 
-        # --- CORREZIONE QUI ---
         val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
         status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
-        # --- FINE CORREZIONE ---
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -2874,10 +3021,12 @@ elif page == 'Analisi Dati Storici':
 
 # --- INIZIA A SOSTITUIRE DA QUI ---
 
+# SOSTITUISCI L'INTERO BLOCCO NELLA TUA APP CON QUESTO
 elif page == 'Allenamento Modello':
     st.header('Allenamento Nuovo Modello')
 
     def parse_hour_periods(periods_str, context=""):
+        # ... (Questa funzione helper interna rimane invariata) ...
         if not periods_str.strip(): return []
         try:
             periods = [int(p.strip()) for p in periods_str.split(',') if p.strip()]
@@ -2896,63 +3045,57 @@ elif page == 'Allenamento Modello':
     st.success(f"Dati CSV disponibili per l'allenamento: {len(df_current_csv)} righe.")
     st.subheader('Configurazione Addestramento')
 
-    # 1. Modifica il selettore del tipo di modello
     if PYG_AVAILABLE:
         model_options = ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer", "Spatio-Temporal GNN"]
     else:
         model_options = ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"]
     train_model_type = st.radio("Tipo di Modello da Allenare:", model_options, key="train_select_type", horizontal=True)
 
-    st.markdown("**3. Metodo di Suddivisione Dati**")
-
+    st.markdown("**Metodo di Suddivisione Dati**")
     split_method = st.radio(
         "Scegli come dividere i dati in Training e Validation Set:",
         options=["Temporale (Consigliato per Serie Storiche)", "Casuale per Percentuale"],
-        index=0, # Il default deve essere 'Temporale'
-        key="split_method_selection",
-        help="Temporale: usa i dati più vecchi per training e i più recenti per validazione (corretto per serie storiche). Casuale: mescola tutti i dati e ne prende una % per la validazione (introduce data leakage, sconsigliato)."
+        index=0, key="split_method_selection",
+        help="Temporale: usa i dati più vecchi per training e i più recenti per validazione. Casuale: mescola tutti i dati (sconsigliato per serie storiche)."
     )
-
-    validation_percentage = 0.2 # Valore di default
-
+    validation_percentage = 0.2
     if split_method == "Casuale per Percentuale":
-        st.warning(
-            "⚠️ **Attenzione:** La suddivisione casuale non è appropriata per le serie storiche. "
-            "Introduce 'data leakage' (informazioni dal futuro trapelano nel training set), "
-            "portando a stime delle performance irrealisticamente ottimistiche. "
-            "Usa questa opzione solo per scopi sperimentali e di confronto."
-        )
+        st.warning("⚠️ **Attenzione:** La suddivisione casuale può portare a stime delle performance irrealisticamente ottimistiche per le serie storiche.")
         validation_percentage = st.slider(
-            "Percentuale Dati per il Validation Set:",
-            min_value=10,
-            max_value=50,
-            value=20,
-            step=5,
-            format="%d%%",
-            key="validation_split_percentage"
+            "Percentuale Dati per il Validation Set:", 10, 50, 20, 5, format="%d%%", key="validation_split_percentage"
         ) / 100.0
 
     st.markdown("**Modalità di Training e Funzione di Loss**")
     col_mode, col_loss = st.columns(2)
     with col_mode:
-        training_mode = st.radio("Modalità di Training:", options=["Standard (Puntuale)", "Quantile Regression"], key="training_mode_select", horizontal=True)
+        training_mode = st.radio("Modalità di Training:", ["Standard (Puntuale)", "Quantile Regression"], key="training_mode_select", horizontal=True)
         quantiles_list = [0.1, 0.5, 0.9]
         if training_mode == "Quantile Regression":
-            quantiles_str = st.text_input("Quantili da predire (es. 0.1, 0.5, 0.9):", "0.1, 0.5, 0.9", key="quantiles_input")
+            quantiles_str = st.text_input("Quantili (es. 0.1, 0.5, 0.9):", "0.1, 0.5, 0.9", key="quantiles_input")
             try:
                 quantiles_list = sorted([float(q.strip()) for q in quantiles_str.split(',')])
-                if len(quantiles_list) != 3:
-                    st.error("Inserire esattamente 3 quantili.")
-                    st.stop()
-            except ValueError:
-                st.error("Formato quantili non valido.")
-                st.stop()
+                if len(quantiles_list) != 3: st.error("Inserire esattamente 3 quantili."); st.stop()
+            except ValueError: st.error("Formato quantili non valido."); st.stop()
     with col_loss:
         if training_mode == "Quantile Regression":
             loss_choice = "QuantileLoss"
             st.info(f"**Funzione di Loss:** `QuantileLoss` (obbligatoria)")
         else:
             loss_choice = st.selectbox("Funzione di Loss (Standard):", ["MSELoss", "HuberLoss", "DynamicWeightedMSE", "DilateLoss"], key="standard_loss_choice")
+
+    st.markdown("**Opzione: Loss Pesata per Dati Recenti**")
+    use_weighted_loss = st.checkbox(
+        "Usa Loss Pesata per dati post-modifica", value=False, key="use_weighted_loss_checkbox",
+        help="Penalizza di più gli errori sui dati marcati come 'post-modifica' dalla colonna dummy."
+    )
+    dummy_col_name = "Variabile Dummy"
+    post_mod_weight = 5.0
+    if use_weighted_loss:
+        col_dummy, col_weight = st.columns(2)
+        with col_dummy:
+            dummy_col_name = st.text_input("Nome colonna Dummy:", "Variabile Dummy", key="dummy_col_name_input")
+        with col_weight:
+            post_mod_weight = st.number_input("Peso per dati post-modifica (>= 1.0):", 1.0, value=5.0, step=0.5, key="post_mod_weight_input")
 
     default_save_name = f"modello_{train_model_type.split()[0].lower().replace('-','_')}_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
     save_name_input = st.text_input("Nome base per salvare il modello:", default_save_name, key="train_save_filename")
@@ -2962,6 +3105,7 @@ elif page == 'Allenamento Modello':
 
     if train_model_type == "LSTM Standard":
         st.markdown("**1. Seleziona Feature e Target (LSTM)**")
+        # ... (UI per LSTM invariata) ...
         all_features = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist()
         default_features = [f for f in st.session_state.feature_columns if f in all_features]
         selected_features = st.multiselect("Feature Input LSTM:", options=all_features, default=default_features, key="train_lstm_feat")
@@ -2992,10 +3136,23 @@ elif page == 'Allenamento Modello':
         if st.button("Avvia Addestramento LSTM", type="primary", disabled=not ready_to_train, key="train_run_lstm"):
             st.info(f"Avvio addestramento LSTM Standard per '{save_name}'...")
             with st.spinner("Preparazione dati LSTM..."):
-                X_scaled, y_scaled, sc_f, sc_t = prepare_training_data(df_current_csv.copy(), selected_features, selected_targets, iw_hours, int(ow_steps / 2.0))
+                # <<< MODIFICA 1: Passaggio parametri e unpacking corretto
+                data_tuple = prepare_training_data(
+                    df_current_csv.copy(), selected_features, selected_targets, iw_hours, int(ow_steps / 2.0),
+                    use_weighted_loss=use_weighted_loss,
+                    dummy_col_name=dummy_col_name,
+                    post_modification_weight=post_mod_weight
+                )
+                if data_tuple:
+                    X_scaled, y_scaled, sample_weights, sc_f, sc_t = data_tuple
+                else:
+                    X_scaled, y_scaled = None, None
+            
             if X_scaled is not None and y_scaled is not None:
+                # <<< MODIFICA 2: Passaggio sample_weights e use_weighted_loss al trainer
                 trained_model, _, _ = train_model(
-                    X_scaled, y_scaled, X_scaled.shape[2], len(selected_targets), ow_steps, hs, nl, ep, bs, lr, dr, 
+                    X_scaled, y_scaled, sample_weights,
+                    X_scaled.shape[2], len(selected_targets), ow_steps, hs, nl, ep, bs, lr, dr, 
                     'migliore' if 'Migliore' in save_choice else 'finale', 
                     'auto' if 'Auto' in device_option else 'cpu', 
                     n_splits_cv=n_splits, 
@@ -3003,7 +3160,8 @@ elif page == 'Allenamento Modello':
                     training_mode=training_mode.split()[0].lower(), 
                     quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
                     split_method=split_method,
-                    validation_size=validation_percentage
+                    validation_size=validation_percentage,
+                    use_weighted_loss=use_weighted_loss
                 )
                 if trained_model:
                     st.success("Addestramento LSTM completato!")
@@ -3020,18 +3178,18 @@ elif page == 'Allenamento Modello':
 
     elif train_model_type in ["Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"]:
         st.markdown(f"**1. Seleziona Feature ({train_model_type})**")
+        # ... (UI per Seq2Seq/Transformer invariata) ...
         all_features = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist()
         default_past = [f for f in st.session_state.feature_columns if f in all_features]
         selected_past_features = st.multiselect("Feature Storiche (Input Encoder):", all_features, default=default_past, key="train_s2s_past_feat")
-        
         default_forecast = [f for f in selected_past_features if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]
         selected_forecast_features = st.multiselect("Feature Forecast (Input Decoder):", options=selected_past_features, default=default_forecast, key="train_s2s_forecast_feat")
         level_options = [f for f in selected_past_features if 'livello' in f.lower() or '[m]' in f.lower()]
-        
         selected_targets = st.multiselect("Target Output (Livelli):", options=level_options, default=level_options[:1], key="train_s2s_target_feat")
 
         st.markdown(f"**2. Parametri Modello e Training ({train_model_type})**")
         with st.expander(f"Impostazioni Allenamento {train_model_type}", expanded=True):
+            # ... (UI per parametri S2S/Transformer invariata) ...
             c1, c2, c3 = st.columns(3)
             with c1:
                 iw_steps = st.number_input("Input Storico (steps 30min)", 2, value=48, step=2, key="t_s2s_in")
@@ -3063,13 +3221,21 @@ elif page == 'Allenamento Modello':
         if st.button(f"Avvia Addestramento {train_model_type}", type="primary", disabled=not ready_to_train, key="train_run_s2s_trans"):
             st.info(f"Avvio addestramento {train_model_type} per '{save_name}'...")
             with st.spinner(f"Preparazione dati {train_model_type}..."):
-                data_tuple = prepare_training_data_seq2seq(df_current_csv.copy(), selected_past_features, selected_forecast_features, selected_targets, iw_steps, fw_steps, ow_steps)
+                # <<< MODIFICA 3: Passaggio parametri
+                data_tuple = prepare_training_data_seq2seq(
+                    df_current_csv.copy(), selected_past_features, selected_forecast_features, selected_targets, 
+                    iw_steps, fw_steps, ow_steps,
+                    use_weighted_loss=use_weighted_loss,
+                    dummy_col_name=dummy_col_name,
+                    post_modification_weight=post_mod_weight
+                )
             
             if data_tuple:
-                (X_enc_scaled, X_dec_scaled, y_tar_scaled, sc_past, sc_fore, sc_tar) = data_tuple
+                # <<< MODIFICA 4: Unpacking corretto
+                (X_enc_scaled, X_dec_scaled, y_tar_scaled, sample_weights, sc_past, sc_fore, sc_tar) = data_tuple
                 num_quantiles_train = len(quantiles_list) if training_mode == "Quantile Regression" else 1
                 
-                model_instance = None
+                model_instance = None # ... (logica di creazione modello invariata)
                 if train_model_type == "Transformer":
                     model_instance = HydroTransformer(
                         input_dim_encoder=X_enc_scaled.shape[2], input_dim_decoder=X_dec_scaled.shape[2],
@@ -3085,21 +3251,23 @@ elif page == 'Allenamento Modello':
                         decoder = DecoderLSTM(X_dec_scaled.shape[2], hs, len(selected_targets), nl, dr, num_quantiles=num_quantiles_train)
                         model_instance = Seq2SeqHydro(encoder, decoder, ow_steps)
                 
+                # <<< MODIFICA 5: Passaggio parametri al trainer
                 trained_model, _, _ = train_model_seq2seq(
-                    X_enc_scaled, X_dec_scaled, y_tar_scaled, model_instance,
-                    ow_steps, ep, bs, lr, 
+                    X_enc_scaled, X_dec_scaled, y_tar_scaled, sample_weights,
+                    model_instance, ow_steps, ep, bs, lr, 
                     'migliore' if 'Migliore' in save_choice else 'finale',
                     'auto' if 'Auto' in device_option else 'cpu',
-                    teacher_forcing_ratio_schedule=[0.6, 0.1],
-                    n_splits_cv=n_splits_cv,
+                    teacher_forcing_ratio_schedule=[0.6, 0.1], n_splits_cv=n_splits_cv,
                     loss_function_name=loss_choice,
                     training_mode=training_mode.split()[0].lower(),
                     quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
                     split_method=split_method,
-                    validation_size=validation_percentage
+                    validation_size=validation_percentage,
+                    use_weighted_loss=use_weighted_loss
                 )
 
                 if trained_model:
+                    # ... (logica di salvataggio invariata)
                     st.success(f"Addestramento {train_model_type} completato!")
                     base_path = os.path.join(MODELS_DIR, save_name)
                     torch.save(trained_model.state_dict(), f"{base_path}.pth")
@@ -3122,84 +3290,48 @@ elif page == 'Allenamento Modello':
 
     elif train_model_type == "Spatio-Temporal GNN":
         st.markdown(f"**1. Definizione del Grafo e Selezione Feature ({train_model_type})**")
-
-        # --- SELEZIONE NODI IDROMETRICI (INVARIATO) ---
+        # ... (UI per GNN invariata) ...
         all_level_sensors = [f for f in df_current_csv.columns if 'livello' in f.lower() or '[m]' in f.lower()]
         node_order = st.multiselect("Nodi del Grafo (Idrometri - l'ordine è importante!):", options=all_level_sensors, default=all_level_sensors, key="train_gnn_nodes")
-
-        # --- NUOVA SEZIONE: MAPPATURA FEATURE CON LOGICA DI DEFAULT AVANZATA ---
         st.markdown("**Associa Feature Aggiuntive ai Nodi**")
-        st.caption("Per ogni nodo, seleziona le colonne che lo influenzano. I default sono pre-impostati secondo una logica idrologica.")
-
         all_other_features = [f for f in df_current_csv.columns if f not in all_level_sensors and f != date_col_name_csv]
         node_feature_mapping = {}
-
         if node_order:
-            # --- NUOVA LOGICA: Definizione delle feature globali e della mappatura specifica ---
             global_feature_keywords = ['progressivo', 'dummy', 'seasonality_sin', 'seasonality_cos', 'umidita', 'soil moisture']
-            
-            specific_node_feature_map = {
-                'serra dei conti': '1295',
-                'bettolelle': '2637',
-                'pianello': '2858',
-                'corinaldo/nevola': '2964'
-            }
-            # --- FINE NUOVA LOGICA ---
-
+            specific_node_feature_map = {'serra dei conti': '1295', 'bettolelle': '2637', 'pianello': '2858', 'corinaldo/nevola': '2964'}
             for i, node_name in enumerate(node_order):
                 default_features_for_node = []
-                
-                # 1. Aggiungi le feature globali
                 for keyword in global_feature_keywords:
                     for feature in all_other_features:
                         if keyword in feature.lower():
                             default_features_for_node.append(feature)
-                
-                # 2. Aggiungi le feature specifiche del pluviometro in base al nome del nodo
                 node_name_lower = node_name.lower()
                 for hydro_keyword, rain_keyword in specific_node_feature_map.items():
                     if hydro_keyword in node_name_lower:
                         rain_features = [f for f in all_other_features if rain_keyword in f and 'cumulata' in f.lower()]
                         default_features_for_node.extend(rain_features)
-
-                # Rimuovi eventuali duplicati mantenendo l'ordine
                 default_features_for_node = sorted(list(set(default_features_for_node)))
-
-                # Estrai un nome breve per l'etichetta del widget
                 short_name_match = re.search(r'\((.*?)\)', node_name)
                 short_name = short_name_match.group(1).strip() if short_name_match else node_name
-
-                selected_features_for_node = st.multiselect(
-                    f"Feature aggiuntive per il Nodo {i} ({short_name}):",
-                    options=all_other_features,
-                    default=default_features_for_node, # <-- Applica i default calcolati
-                    key=f"train_gnn_features_node_{i}"
-                )
+                selected_features_for_node = st.multiselect(f"Feature aggiuntive per Nodo {i} ({short_name}):", options=all_other_features, default=default_features_for_node, key=f"train_gnn_features_node_{i}")
                 node_feature_mapping[node_name] = selected_features_for_node
-        else:
-            st.warning("Seleziona prima i Nodi del Grafo per poter associare le feature.")
-
-
-        # --- DEFINIZIONE ARCHI E TARGET (Logica invariata) ---
         st.caption("Definisci le connessioni del grafo. Ogni riga è `sorgente,destinazione,peso`.")
         node_mapping_help = {i: name for i, name in enumerate(node_order)}
         st.json(node_mapping_help, expanded=False)
-
         edge_list_str = st.text_area("Lista Archi (formato: 'sorgente,destinazione,peso')", "0,1,15.5\n1,2,8.2\n2,3,12.0", key="train_gnn_edges", height=100)
         selected_targets_gnn = st.multiselect("Target Output (Nodi da predire):", options=node_order, default=node_order[-1:] if node_order else [], key="train_gnn_target")
-
         edge_index, edge_weights = None, None
         try:
             s, t, w = [], [], []
             for line in edge_list_str.split('\n'):
                 if line.strip():
-                    parts = [p.strip() for p in line.split(',')]
-                    if len(parts) == 3: s.append(int(parts[0])); t.append(int(parts[1])); w.append(float(parts[2]))
+                    parts = [p.strip() for p in line.split(',')]; s.append(int(parts[0])); t.append(int(parts[1])); w.append(float(parts[2]))
             if s: edge_index, edge_weights = [s, t], w; st.success(f"Grafo definito con {len(node_order)} nodi e {len(s)} archi.")
-        except Exception as e: st.error(f"Formato archi non valido: {e}.")
+        except Exception: st.error("Formato archi non valido.")
 
         st.markdown(f"**2. Parametri Modello e Training**")
         with st.expander("Impostazioni Allenamento GNN", expanded=True):
+            # ... (UI per parametri GNN invariata) ...
             c1, c2, c3 = st.columns(3)
             with c1:
                 iw_steps = st.number_input("Input Window (steps)", min_value=2, value=48, key="t_gnn_in")
@@ -3212,65 +3344,61 @@ elif page == 'Allenamento Modello':
             with c3:
                 bs = st.select_slider("Batch Size", [8,16,32,64], 32, key="t_gnn_bs")
                 ep = st.number_input("Numero Epoche", min_value=1, value=50, key="t_gnn_ep")
-        
+
         if st.button("Avvia Addestramento GNN", type="primary", key="train_run_gnn"):
             if not all([save_name, node_order, selected_targets_gnn, edge_index, edge_weights]):
-                st.error("Completa tutti i campi per l'addestramento GNN: nome, nodi, target e archi validi.")
+                st.error("Completa tutti i campi per l'addestramento GNN.")
             else:
                 st.info(f"Avvio addestramento GNN per '{save_name}'...")
                 with st.spinner("Preparazione dati GNN..."):
-                    # MODIFICATO: Passiamo il feature_mapping e riceviamo num_features
-                    X_scaled, y_scaled, sc_f, sc_t, num_features_detected = prepare_training_data_gnn(
-                        df_current_csv.copy(), node_order, selected_targets_gnn, 
-                        node_feature_mapping, # <-- Passa la nuova mappatura
-                        iw_steps, ow_steps
+                    # <<< MODIFICA 6: Passaggio parametri e unpacking corretto
+                    data_tuple = prepare_training_data_gnn(
+                        df_current_csv.copy(), node_order, selected_targets_gnn, node_feature_mapping,
+                        iw_steps, ow_steps,
+                        use_weighted_loss=use_weighted_loss,
+                        dummy_col_name=dummy_col_name,
+                        post_modification_weight=post_mod_weight
                     )
+                    if data_tuple:
+                        X_scaled, y_scaled, sample_weights, sc_f, sc_t, num_features_detected = data_tuple
+                    else:
+                        X_scaled = None
                 
                 if X_scaled is not None:
                     num_q = len(quantiles_list) if training_mode == "Quantile Regression" else 1
-                    
-                    # MODIFICATO: Usiamo il numero di feature rilevato dinamicamente
                     model = SpatioTemporalGNN(
-                        num_nodes=len(node_order), 
-                        num_features=num_features_detected, # <-- Usa il valore corretto
-                        hidden_dim=hs, 
-                        num_layers=nl, 
-                        output_window=ow_steps, 
-                        output_dim=len(selected_targets_gnn), 
-                        num_quantiles=num_q, 
-                        dropout=dr
+                        num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs, 
+                        num_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn), 
+                        num_quantiles=num_q, dropout=dr
                     )
                     
+                    # <<< MODIFICA 7: Passaggio parametri al trainer
                     trained_model, _, _ = train_model_gnn(
-                        X_scaled, y_scaled, model, edge_index, edge_weights, ep, bs, lr, 
-                        training_mode=training_mode.split()[0].lower(), 
+                        X_scaled, y_scaled, sample_weights,
+                        model, edge_index, edge_weights, ep, bs, lr,
+                        training_mode=training_mode.split()[0].lower(),
                         quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
                         split_method=split_method,
-                        validation_size=validation_percentage
+                        validation_size=validation_percentage,
+                        use_weighted_loss=use_weighted_loss
                     )
                     
                     if trained_model:
                         st.success("Addestramento GNN completato!")
-                        # MODIFICATO: Aggiungi la mappatura e il num_features alla config
                         config = {
-                            "model_type": "SpatioTemporalGNN", "display_name": save_name, 
-                            "node_order": node_order, "edge_index": edge_index, "edge_weights": edge_weights, 
-                            "target_columns": selected_targets_gnn, "input_window_steps": iw_steps, 
-                            "output_window_steps": ow_steps, "hidden_dim": hs, "num_layers": nl, 
-                            "dropout": dr, "training_mode": training_mode.split()[0].lower(), 
-                            "loss_function": loss_choice,
-                            "node_feature_mapping": node_feature_mapping, # <-- NUOVO: Salva la mappatura
-                            "num_features": num_features_detected       # <-- NUOVO: Salva il numero di feature
+                            "model_type": "SpatioTemporalGNN", "display_name": save_name, "node_order": node_order,
+                            "edge_index": edge_index, "edge_weights": edge_weights, "target_columns": selected_targets_gnn,
+                            "input_window_steps": iw_steps, "output_window_steps": ow_steps, "hidden_dim": hs,
+                            "num_layers": nl, "dropout": dr, "training_mode": training_mode.split()[0].lower(),
+                            "loss_function": loss_choice, "node_feature_mapping": node_feature_mapping,
+                            "num_features": num_features_detected
                         }
-                        if config["training_mode"] == "quantile":
-                            config["quantiles"] = quantiles_list
-                        
+                        if config["training_mode"] == "quantile": config["quantiles"] = quantiles_list
                         base_path = os.path.join(MODELS_DIR, save_name)
                         torch.save(trained_model.state_dict(), f"{base_path}.pth")
                         joblib.dump(sc_f, f"{base_path}_features.joblib")
                         joblib.dump(sc_t, f"{base_path}_targets.joblib")
                         with open(f"{base_path}.json", 'w') as f: json.dump(config, f, indent=4)
-                        
                         st.success(f"Modello GNN '{save_name}' salvato.")
                         find_available_models.clear()
                 else:
