@@ -1143,10 +1143,19 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, ed
                 for X_batch, y_batch in val_loader:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                     outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
-                    val_loss_unweighted = criterion(outputs, y_batch)
-                    if use_weighted_loss:
-                        val_loss_unweighted = val_loss_unweighted.mean()
-                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0)
+                    # --- INIZIO BLOCCO DI VALIDAZIONE CORRETTO (DA SOSTITUIRE) ---
+
+                    # Calcola la loss per campione (sarà un tensore se reduction='none')
+                    loss_per_sample_val = criterion(outputs, y_batch) # Usa y_tar per seq2seq
+
+                    # Indipendentemente da tutto, dobbiamo ridurre la loss di validazione a uno scalare
+                    # facendo la media. La validazione non usa MAI pesi.
+                    val_loss_unweighted = loss_per_sample_val.mean()
+
+                    # Ora val_loss_unweighted è garantito essere uno scalare.
+                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0) # Usa x_enc.size(0) per seq2seq
+
+                    # --- FINE BLOCCO DI VALIDAZIONE CORRETTO ---
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
             scheduler.step(epoch_val_loss)
@@ -2037,11 +2046,19 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
                 for X_batch, y_batch in val_loader:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                     outputs = model(X_batch)
-                    # La loss di validazione è sempre non pesata per un confronto equo
-                    val_loss_unweighted = criterion(outputs, y_batch)
-                    if use_weighted_loss: # Se era 'none', ora prendiamo la media
-                        val_loss_unweighted = val_loss_unweighted.mean()
-                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0)
+                    # --- INIZIO BLOCCO DI VALIDAZIONE CORRETTO (DA SOSTITUIRE) ---
+
+                    # Calcola la loss per campione (sarà un tensore se reduction='none')
+                    loss_per_sample_val = criterion(outputs, y_batch) # Usa y_tar per seq2seq
+
+                    # Indipendentemente da tutto, dobbiamo ridurre la loss di validazione a uno scalare
+                    # facendo la media. La validazione non usa MAI pesi.
+                    val_loss_unweighted = loss_per_sample_val.mean()
+
+                    # Ora val_loss_unweighted è garantito essere uno scalare.
+                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0) # Usa x_enc.size(0) per seq2seq
+
+                    # --- FINE BLOCCO DI VALIDAZIONE CORRETTO ---
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
             scheduler.step(epoch_val_loss)
@@ -2206,10 +2223,19 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                 for x_enc, x_dec, y_tar in val_loader:
                     x_enc, x_dec, y_tar = x_enc.to(device), x_dec.to(device), y_tar.to(device)
                     outputs, _ = model(x_enc, x_dec, teacher_forcing_ratio=0.0)
-                    val_loss_unweighted = criterion(outputs, y_tar)
-                    if use_weighted_loss:
-                        val_loss_unweighted = val_loss_unweighted.mean()
-                    epoch_val_loss_sum += val_loss_unweighted.item() * x_enc.size(0)
+                    # --- INIZIO BLOCCO DI VALIDAZIONE CORRETTO (DA SOSTITUIRE) ---
+
+                    # Calcola la loss per campione (sarà un tensore se reduction='none')
+                    loss_per_sample_val = criterion(outputs, y_tar) # Usa y_tar per seq2seq
+
+                    # Indipendentemente da tutto, dobbiamo ridurre la loss di validazione a uno scalare
+                    # facendo la media. La validazione non usa MAI pesi.
+                    val_loss_unweighted = loss_per_sample_val.mean()
+
+                    # Ora val_loss_unweighted è garantito essere uno scalare.
+                    epoch_val_loss_sum += val_loss_unweighted.item() * x_enc.size(0) # Usa x_enc.size(0) per seq2seq
+
+                    # --- FINE BLOCCO DI VALIDAZIONE CORRETTO ---
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
             scheduler.step(epoch_val_loss)
