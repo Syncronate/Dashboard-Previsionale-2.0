@@ -1107,14 +1107,27 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, ed
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
             outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
+            # --- INIZIO DEL NUOVO BLOCCO DI CALCOLO LOSS (DA SOSTITUIRE) ---
+
+            # `criterion` calcola la loss per campione (pesata per magnitudo se attivata).
             loss_per_sample = criterion(outputs, y_batch)
 
-            if use_weighted_loss:
+            # Se la pesatura temporale (dummy) è attiva, la applichiamo.
+            if use_weighted_loss and 'weights_batch' in locals() and weights_batch is not None:
+                # Assicuriamoci che le dimensioni siano compatibili prima della moltiplicazione.
+                # Se la loss ha più dimensioni (es. per step temporale/quantili), facciamo la media su quelle.
                 if loss_per_sample.ndim > 1:
                     loss_per_sample = loss_per_sample.mean(dim=tuple(range(1, loss_per_sample.ndim)))
-                loss = (loss_per_sample * weights_batch).mean()
+                
+                # Moltiplica la loss (già pesata per magnitudo) per il peso temporale.
+                final_loss_per_sample = loss_per_sample * weights_batch
+                loss = final_loss_per_sample.mean() # Calcola la media finale per ottenere uno scalare.
             else:
-                loss = loss_per_sample
+                # Se NON c'è pesatura temporale, dobbiamo comunque ridurre la loss per campione a uno scalare.
+                # Semplicemente calcoliamo la media.
+                loss = loss_per_sample.mean()
+
+            # --- FINE DEL NUOVO BLOCCO DI CALCOLO LOSS ---
 
             loss.backward()
             optimizer.step()
@@ -1989,19 +2002,27 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
             
             optimizer.zero_grad()
             outputs = model(X_batch)
+            # --- INIZIO DEL NUOVO BLOCCO DI CALCOLO LOSS (DA SOSTITUIRE) ---
+
+            # `criterion` calcola la loss per campione (pesata per magnitudo se attivata).
             loss_per_sample = criterion(outputs, y_batch)
 
-            # --- INIZIO NUOVA LOGICA DI CALCOLO LOSS ---
-            if use_weighted_loss:
-                # Se la loss ha più dimensioni (es. per step temporale), mediamo su quelle dimensioni
+            # Se la pesatura temporale (dummy) è attiva, la applichiamo.
+            if use_weighted_loss and 'weights_batch' in locals() and weights_batch is not None:
+                # Assicuriamoci che le dimensioni siano compatibili prima della moltiplicazione.
+                # Se la loss ha più dimensioni (es. per step temporale/quantili), facciamo la media su quelle.
                 if loss_per_sample.ndim > 1:
                     loss_per_sample = loss_per_sample.mean(dim=tuple(range(1, loss_per_sample.ndim)))
-                # Applica i pesi e calcola la media pesata
-                loss = (loss_per_sample * weights_batch).mean()
+                
+                # Moltiplica la loss (già pesata per magnitudo) per il peso temporale.
+                final_loss_per_sample = loss_per_sample * weights_batch
+                loss = final_loss_per_sample.mean() # Calcola la media finale per ottenere uno scalare.
             else:
-                # Comportamento standard
-                loss = loss_per_sample
-            # --- FINE NUOVA LOGICA DI CALCOLO LOSS ---
+                # Se NON c'è pesatura temporale, dobbiamo comunque ridurre la loss per campione a uno scalare.
+                # Semplicemente calcoliamo la media.
+                loss = loss_per_sample.mean()
+
+            # --- FINE DEL NUOVO BLOCCO DI CALCOLO LOSS ---
 
             loss.backward()
             optimizer.step()
@@ -2149,14 +2170,27 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             
             optimizer.zero_grad()
             outputs, _ = model(x_enc, x_dec, teacher_forcing_ratio=current_tf_ratio)
+            # --- INIZIO DEL NUOVO BLOCCO DI CALCOLO LOSS (DA SOSTITUIRE) ---
+
+            # `criterion` calcola la loss per campione (pesata per magnitudo se attivata).
             loss_per_sample = criterion(outputs, y_tar)
 
-            if use_weighted_loss:
+            # Se la pesatura temporale (dummy) è attiva, la applichiamo.
+            if use_weighted_loss and 'weights_batch' in locals() and weights_batch is not None:
+                # Assicuriamoci che le dimensioni siano compatibili prima della moltiplicazione.
+                # Se la loss ha più dimensioni (es. per step temporale/quantili), facciamo la media su quelle.
                 if loss_per_sample.ndim > 1:
                     loss_per_sample = loss_per_sample.mean(dim=tuple(range(1, loss_per_sample.ndim)))
-                loss = (loss_per_sample * weights_batch).mean()
+                
+                # Moltiplica la loss (già pesata per magnitudo) per il peso temporale.
+                final_loss_per_sample = loss_per_sample * weights_batch
+                loss = final_loss_per_sample.mean() # Calcola la media finale per ottenere uno scalare.
             else:
-                loss = loss_per_sample
+                # Se NON c'è pesatura temporale, dobbiamo comunque ridurre la loss per campione a uno scalare.
+                # Semplicemente calcoliamo la media.
+                loss = loss_per_sample.mean()
+
+            # --- FINE DEL NUOVO BLOCCO DI CALCOLO LOSS ---
 
             loss.backward()
             optimizer.step()
