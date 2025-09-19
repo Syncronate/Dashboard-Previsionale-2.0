@@ -590,6 +590,26 @@ class DilateLoss(nn.Module):
             return torch.tensor(1e6, device=self.device, requires_grad=True)
         return final_loss
 
+# AGGIUNGI QUESTA NUOVA CLASSE NELLA SEZIONE "Loss Functions"
+
+class WeightedQuantileLoss(nn.Module):
+    def __init__(self, quantiles, threshold=0.0, exponent=1.0):
+        super().__init__()
+        self.quantiles = quantiles
+        self.threshold = threshold
+        self.exponent = exponent
+        self.base_quantile_loss = QuantileLoss(quantiles, reduction='none')
+
+    def forward(self, y_pred, y_true):
+        per_element_loss = self.base_quantile_loss(y_pred, y_true)
+        with torch.no_grad():
+            excess = torch.clamp(y_true - self.threshold, min=0)
+            weights = 1.0 + torch.pow(excess, self.exponent)
+        weights_expanded = weights.unsqueeze(-1).expand_as(per_element_loss)
+        weighted_loss = per_element_loss * weights_expanded
+        # IMPORTANTE: Restituiamo la loss per campione, non la media!
+        return weighted_loss
+
 # --- Funzioni Utilità Modello/Dati ---
 # MODIFICATA: Aggiunti argomenti e logica per i pesi
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window,
@@ -1000,10 +1020,18 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, ed
 
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training GNN (Weighted: {use_weighted_loss}, loss={loss_function_name})...")
     
-    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) else 'mean'
+    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) or (training_mode == 'quantile' and use_magnitude_loss) else 'mean'
     criterion = None
     if training_mode == 'quantile':
-        criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
+        if use_magnitude_loss:
+            st.info(f"Loss Quantile Pesata per Magnitudo attivata con Soglia: {target_threshold}, Esponente: {weight_exponent}")
+            criterion = WeightedQuantileLoss(
+                quantiles=quantiles, 
+                threshold=target_threshold, 
+                exponent=weight_exponent
+            )
+        else:
+            criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
     elif loss_function_name == "HuberLoss":
         criterion = nn.HuberLoss(reduction=reduction_strategy)
     elif loss_function_name == "DynamicWeightedMSE":
@@ -1846,7 +1874,7 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
                 training_mode='standard', quantiles=None,
                 _model_to_continue_train=None,
                 split_method="Temporale", validation_size=0.2,
-                use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0): # NUOVO ARGOMENTO
+                use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM (Weighted Loss: {use_weighted_loss})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
@@ -1854,11 +1882,19 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
 
     # --- INIZIO NUOVA LOGICA PER CRITERION ---
     # Per la loss pesata, dobbiamo calcolare la loss per ogni campione, quindi 'reduction' deve essere 'none'.
-    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) else 'mean'
+    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) or (training_mode == 'quantile' and use_magnitude_loss) else 'mean'
 
     criterion = None
-    if training_mode == 'quantile': 
-        criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
+    if training_mode == 'quantile':
+        if use_magnitude_loss:
+            st.info(f"Loss Quantile Pesata per Magnitudo attivata con Soglia: {target_threshold}, Esponente: {weight_exponent}")
+            criterion = WeightedQuantileLoss(
+                quantiles=quantiles, 
+                threshold=target_threshold, 
+                exponent=weight_exponent
+            )
+        else:
+            criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
     elif loss_function_name == "HuberLoss": 
         criterion = nn.HuberLoss(reduction=reduction_strategy)
     elif loss_function_name == "DynamicWeightedMSE":
@@ -2020,10 +2056,18 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     model.to(device)
 
-    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) else 'mean'
+    reduction_strategy = 'none' if use_weighted_loss or (loss_function_name == "DynamicWeightedMSE" and use_magnitude_loss) or (training_mode == 'quantile' and use_magnitude_loss) else 'mean'
     criterion = None
-    if training_mode == 'quantile': 
-        criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
+    if training_mode == 'quantile':
+        if use_magnitude_loss:
+            st.info(f"Loss Quantile Pesata per Magnitudo attivata con Soglia: {target_threshold}, Esponente: {weight_exponent}")
+            criterion = WeightedQuantileLoss(
+                quantiles=quantiles, 
+                threshold=target_threshold, 
+                exponent=weight_exponent
+            )
+        else:
+            criterion = QuantileLoss(quantiles=quantiles, reduction=reduction_strategy)
     elif loss_function_name == "HuberLoss": 
         criterion = nn.HuberLoss(reduction=reduction_strategy)
     elif loss_function_name == "DynamicWeightedMSE":
@@ -3242,7 +3286,7 @@ if use_magnitude_loss:
                     validation_size=validation_percentage,
                     use_weighted_loss=use_weighted_loss,
                     # <<< AGGIUNGI QUESTI PARAMETRI >>>
-                    use_magnitude_loss=use_magnitude_loss if loss_choice == "DynamicWeightedMSE" else False,
+                    use_magnitude_loss=use_magnitude_loss,
                     target_threshold=target_threshold_scaled,
                     weight_exponent=weight_exponent
                 )
@@ -3347,7 +3391,7 @@ if use_magnitude_loss:
                     split_method=split_method,
                     validation_size=validation_percentage,
                     use_weighted_loss=use_weighted_loss,
-                    use_magnitude_loss=use_magnitude_loss if loss_choice == "DynamicWeightedMSE" else False,
+                    use_magnitude_loss=use_magnitude_loss,
                     target_threshold=target_threshold_scaled,
                     weight_exponent=weight_exponent
                 )
@@ -3467,7 +3511,7 @@ if use_magnitude_loss:
                         split_method=split_method,
                         validation_size=validation_percentage,
                         use_weighted_loss=use_weighted_loss,
-                        use_magnitude_loss=use_magnitude_loss if loss_choice == "DynamicWeightedMSE" else False,
+                        use_magnitude_loss=use_magnitude_loss,
                         target_threshold=target_threshold_scaled,
                         weight_exponent=weight_exponent
                     )
