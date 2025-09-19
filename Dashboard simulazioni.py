@@ -3105,17 +3105,15 @@ elif page == 'Test Modello su Storico':
             avg_mse_data = {get_station_label(k): np.mean(v) for k, v in all_period_mses.items() if v}
             st.dataframe(pd.DataFrame.from_dict(avg_mse_data, orient='index', columns=['MSE Medio']).round(5))
 
-# --- PAGINA ANALISI DATI STORICI ---
 elif page == 'Analisi Dati Storici':
     st.header('Analisi Dati Storici (da file CSV)')
     # ... (Pagina invariata) ...
 
-# --- INIZIA A SOSTITUIRE DA QUI ---
-
-# SOSTITUISCI L'INTERO BLOCCO NELLA TUA APP CON QUESTO
 elif page == 'Allenamento Modello':
+    # CORRETTO: TUTTO IL CODICE DELL'ALLENAMENTO È SPOSTATO QUI DENTRO E INDENTATO
+    
     st.header('Allenamento Nuovo Modello')
-
+    
     def parse_hour_periods(periods_str, context=""):
         # ... (Questa funzione helper interna rimane invariata) ...
         if not periods_str.strip(): return []
@@ -3135,7 +3133,8 @@ elif page == 'Allenamento Modello':
 
     st.success(f"Dati CSV disponibili per l'allenamento: {len(df_current_csv)} righe.")
     st.subheader('Configurazione Addestramento')
-
+    
+    # La definizione del tipo di modello
     if PYG_AVAILABLE:
         model_options = ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer", "Spatio-Temporal GNN"]
     else:
@@ -3188,38 +3187,36 @@ elif page == 'Allenamento Modello':
         with col_weight:
             post_mod_weight = st.number_input("Peso per dati post-modifica (>= 1.0):", 1.0, value=5.0, step=0.5, key="post_mod_weight_input")
 
+    st.markdown("**Opzione: Loss Pesata su Valori di Piena (Target)**")
+    use_magnitude_loss = st.checkbox(
+        "Usa Loss Pesata per eventi di piena",
+        value=True, # Attiviamolo di default
+        key="use_magnitude_loss_checkbox",
+        help="Se attivato, il modello verrà penalizzato di più per errori su valori del target che superano una certa soglia (es. livelli di piena)."
+    )
 
-# --- INSERISCI QUESTO NUOVO BLOCCO QUI ---
-st.markdown("**Opzione: Loss Pesata su Valori di Piena (Target)**")
-use_magnitude_loss = st.checkbox(
-    "Usa Loss Pesata per eventi di piena",
-    value=True, # Attiviamolo di default
-    key="use_magnitude_loss_checkbox",
-    help="Se attivato, il modello verrà penalizzato di più per errori su valori del target che superano una certa soglia (es. livelli di piena)."
-)
+    target_threshold_scaled = 0.5 # Valore di default sulla scala 0-1
+    weight_exponent = 1.0 # Valore di default
 
-target_threshold_scaled = 0.5 # Valore di default sulla scala 0-1
-weight_exponent = 1.0 # Valore di default
-
-if use_magnitude_loss:
-    col_thresh, col_exp = st.columns(2)
-    with col_thresh:
-        target_threshold_scaled = st.slider(
-            "Soglia di attivazione (su scala 0-1):",
-            min_value=0.0, max_value=1.0,
-            value=0.5, step=0.05,
-            key="target_threshold_slider",
-            help="Il peso inizia ad aumentare per i valori del target sopra questa soglia normalizzata. 0.5 corrisponde circa alla metà del massimo valore di piena mai registrato."
-        )
-    with col_exp:
-        weight_exponent = st.number_input(
-            "Esponente di crescita del peso:",
-            min_value=0.1, value=1.0, step=0.1,
-            key="weight_exponent_input",
-            help="Controlla quanto velocemente aumenta il peso. 1.0 = crescita lineare; 2.0 = crescita quadratica (molto più aggressiva per valori alti)."
-        )
-# --- FINE DEL NUOVO BLOCCO ---
-
+    if use_magnitude_loss:
+        col_thresh, col_exp = st.columns(2)
+        with col_thresh:
+            target_threshold_scaled = st.slider(
+                "Soglia di attivazione (su scala 0-1):",
+                min_value=0.0, max_value=1.0,
+                value=0.5, step=0.05,
+                key="target_threshold_slider",
+                help="Il peso inizia ad aumentare per i valori del target sopra questa soglia normalizzata. 0.5 corrisponde circa alla metà del massimo valore di piena mai registrato."
+            )
+        with col_exp:
+            weight_exponent = st.number_input(
+                "Esponente di crescita del peso:",
+                min_value=0.1, value=1.0, step=0.1,
+                key="weight_exponent_input",
+                help="Controlla quanto velocemente aumenta il peso. 1.0 = crescita lineare; 2.0 = crescita quadratica (molto più aggressiva per valori alti)."
+            )
+    
+    # Ora questa riga viene eseguita solo quando sei sulla pagina giusta
     default_save_name = f"modello_{train_model_type.split()[0].lower().replace('-','_')}_{datetime.now(italy_tz).strftime('%Y%m%d_%H%M')}"
     save_name_input = st.text_input("Nome base per salvare il modello:", default_save_name, key="train_save_filename")
     save_name = re.sub(r'[^\w-]', '_', save_name_input).strip('_') or "modello_default"
@@ -3285,7 +3282,6 @@ if use_magnitude_loss:
                     split_method=split_method,
                     validation_size=validation_percentage,
                     use_weighted_loss=use_weighted_loss,
-                    # <<< AGGIUNGI QUESTI PARAMETRI >>>
                     use_magnitude_loss=use_magnitude_loss,
                     target_threshold=target_threshold_scaled,
                     weight_exponent=weight_exponent
@@ -3537,8 +3533,6 @@ if use_magnitude_loss:
                 else:
                     st.error("Preparazione dati GNN fallita.")
 
-# --- FINISCE IL BLOCCO DA SOSTITUIRE ---
-    
 # --- PAGINA POST-TRAINING MODELLO ---
 elif page == 'Post-Training Modello':
     st.header('Post-Training Modello Esistente')
