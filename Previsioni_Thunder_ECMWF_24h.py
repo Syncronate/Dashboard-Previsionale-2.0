@@ -87,7 +87,7 @@ class Seq2SeqWithAttention(nn.Module):
 
 # --- Costanti Aggiornate ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20250801_1433" # Nome modello specifico
+MODEL_BASE_NAME = "modello_seq2seq_20250919_1714" # Nome modello specifico
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ECMWF"
@@ -221,7 +221,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     # Aggiunto controllo di validità sui dati
     min_val, max_val = input_data_historical.min(), input_data_historical.max()
     print(f"Statistiche dati storici (finali): Min={min_val:.2f}, Max={max_val:.2f}, Mean={input_data_historical.mean():.2f}")
-    min_ragionevole, max_ragionevole = -1000, 100000
+    min_ragionevole, max_ragionevole = -1000, 200000
     if min_val < min_ragionevole or max_val > max_ragionevole:
         raise ValueError(f"Valori anomali rilevati. Min: {min_val}, Max: {max_val}. Controllare i dati sorgente.")
     else:
