@@ -10,15 +10,16 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import traceback
-import io  # Importato per la gestione dei dati in memoria
-import csv # Importato per la conversione in formato CSV
+import io
+import csv
 
-# Imposta seed per riproducibilità (buona pratica)
+# Imposta seed per riproducibilità
 torch.manual_seed(42)
 np.random.seed(42)
 
-# --- Classi del modello (invariate, necessarie per il funzionamento) ---
+# --- Classi del modello (invariate) ---
 class EncoderLSTM(nn.Module):
+    # ... (codice invariato) ...
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
         super().__init__()
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
@@ -29,6 +30,7 @@ class EncoderLSTM(nn.Module):
         return outputs, hidden, cell
 
 class Attention(nn.Module):
+    # ... (codice invariato) ...
     def __init__(self, hidden_size):
         super(Attention, self).__init__()
         self.attn = nn.Linear(hidden_size * 2, hidden_size)
@@ -42,7 +44,9 @@ class Attention(nn.Module):
         scores = torch.bmm(v_exp, energy).squeeze(1)
         return torch.softmax(scores, dim=1)
 
+
 class DecoderLSTMWithAttention(nn.Module):
+    # ... (codice invariato) ...
     def __init__(self, forecast_input_size, hidden_size, output_size, num_layers=2, dropout=0.2):
         super().__init__()
         self.hidden_size = hidden_size
@@ -63,6 +67,7 @@ class DecoderLSTMWithAttention(nn.Module):
         return prediction, hidden, cell, attn_weights
 
 class Seq2SeqWithAttention(nn.Module):
+    # ... (codice invariato) ...
     def __init__(self, encoder, decoder, output_window_steps):
         super().__init__()
         self.encoder = encoder
@@ -85,13 +90,13 @@ class Seq2SeqWithAttention(nn.Module):
                 decoder_input_step = x_future_forecast[:, t+1:t+2, :]
         return outputs, attn_weights
 
-# --- Costanti Aggiornate ---
+# --- Costanti e Funzioni Helper (invariate) ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20250919_1714" # Nome modello specifico
+MODEL_BASE_NAME = "modello_seq2seq_20250919_1714"
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ECMWF"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ECMWF 24h" # Nome foglio output specifico
+GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ECMWF 24h"
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
@@ -101,6 +106,7 @@ GSHEET_FORECAST_DATE_FORMAT = '%d/%m/%Y %H:%M'
 italy_tz = pytz.timezone('Europe/Rome')
 
 def log_environment_info():
+    # ... (codice invariato) ...
     """Log delle informazioni sull'ambiente di esecuzione"""
     print("=== INFORMAZIONI AMBIENTE ===")
     print(f"Python version: {os.sys.version}")
@@ -115,6 +121,9 @@ def log_environment_info():
     print(f"Device utilizzato: {'cuda' if torch.cuda.is_available() else 'cpu'}")
     print("=" * 30)
 
+# =========================================================================
+# MODIFICA 1: Calcolo corretto della dimensione di output nel caricamento
+# =========================================================================
 def load_model_and_scalers(model_base_name, models_dir):
     print(f"\n=== CARICAMENTO MODELLO E SCALER ===")
     config_path = os.path.join(models_dir, f"{model_base_name}.json")
@@ -138,7 +147,21 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     enc_input_size = len(config["all_past_feature_columns"])
     dec_input_size = len(config["forecast_input_columns"])
-    dec_output_size = len(config["target_columns"])
+    
+    # --- INIZIO CODICE MODIFICATO ---
+    # Calcola la dimensione dell'output dinamicamente
+    # Se è un modello quantilico, l'output è N_target * N_quantili
+    if config.get("training_mode") == "quantile" and "quantiles" in config:
+        num_quantiles = len(config["quantiles"])
+        num_targets = len(config["target_columns"])
+        dec_output_size = num_targets * num_quantiles
+        print(f"Rilevato modello quantilico. Dimensione output: {num_targets} (target) * {num_quantiles} (quantili) = {dec_output_size}")
+    else:
+        # Altrimenti, è semplicemente il numero di colonne target
+        dec_output_size = len(config["target_columns"])
+        print(f"Rilevato modello standard. Dimensione output: {dec_output_size}")
+    # --- FINE CODICE MODIFICATO ---
+
     hidden = config["hidden_size"]
     layers = config["num_layers"]
     drop = config["dropout"]
@@ -160,6 +183,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
 def fetch_and_prepare_data(gc, sheet_id, config):
+    # ... (codice invariato) ...
     print(f"\n=== CARICAMENTO E PREPARAZIONE DATI (Metodo robusto) ===")
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
@@ -168,14 +192,12 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     sh = gc.open_by_key(sheet_id)
     
-    # Funzione helper per convertire i dati grezzi in una stringa CSV
     def values_to_csv_string(data):
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerows(data)
         return output.getvalue()
 
-    # FIX: Uso di get_all_values() e pd.read_csv per maggiore robustezza
     print(f"Caricamento dati storici da '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'...")
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
     historical_values = historical_ws.get_all_values()
@@ -191,7 +213,6 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
     
-    # Mappatura nomi colonne (mantenuta perché è una buona pratica)
     column_mapping = {
         "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
         "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
@@ -218,7 +239,6 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
     
-    # Aggiunto controllo di validità sui dati
     min_val, max_val = input_data_historical.min(), input_data_historical.max()
     print(f"Statistiche dati storici (finali): Min={min_val:.2f}, Max={max_val:.2f}, Mean={input_data_historical.mean():.2f}")
     min_ragionevole, max_ragionevole = -1000, 200000
@@ -246,6 +266,9 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
+# =========================================================================
+# MODIFICA 2: Gestione della de-normalizzazione per output multipli
+# =========================================================================
 def make_prediction(model, scalers, config, data_inputs, device):
     print(f"\n=== GENERAZIONE PREVISIONI ===")
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
@@ -268,12 +291,33 @@ def make_prediction(model, scalers, config, data_inputs, device):
         predictions_normalized, _ = model(historical_tensor, forecast_tensor)
     
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
-    predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
     
+    # --- INIZIO CODICE MODIFICATO ---
+    # Lo scaler per i target è stato addestrato su una sola feature.
+    # L'output del modello quantile ha N features (una per quantile).
+    # Dobbiamo adattare la forma dei dati per la de-normalizzazione.
+    n_model_outputs = predictions_np.shape[1]
+    n_scaler_features = scaler_targets.n_features_in_
+    
+    if n_model_outputs != n_scaler_features:
+        # Questo caso si verifica con la regressione quantile
+        print(f"Adattamento della forma per de-normalizzazione: {predictions_np.shape} -> (-1, {n_scaler_features})")
+        original_shape = predictions_np.shape
+        predictions_reshaped = predictions_np.reshape(-1, n_scaler_features)
+        scaled_back_reshaped = scaler_targets.inverse_transform(predictions_reshaped)
+        predictions_scaled_back = scaled_back_reshaped.reshape(original_shape)
+    else:
+        # Caso standard
+        predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
+    # --- FINE CODICE MODIFICATO ---
+
     print(f"Previsioni finali stats: min={predictions_scaled_back.min():.4f}, max={predictions_scaled_back.max():.4f}")
     
     return predictions_scaled_back
 
+# =========================================================================
+# MODIFICA 3: Creazione di header dinamici per i quantili nel GSheet
+# =========================================================================
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
     print(f"\n=== SALVATAGGIO PREVISIONI ===")
     sh = gc.open_by_key(sheet_id_str)
@@ -282,10 +326,23 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
         worksheet.clear()
         print(f"Foglio '{predictions_sheet_name}' pulito.")
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=config["output_window_steps"] + 10, cols=len(config["target_columns"]) + 10)
+        cols_needed = predictions_np.shape[1] + 1
+        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=100, cols=cols_needed)
         print(f"Foglio '{predictions_sheet_name}' creato.")
     
-    header = ["Timestamp Previsione"] + [f"Previsto: {col}" for col in config["target_columns"]]
+    # --- INIZIO CODICE MODIFICATO ---
+    header_columns = []
+    if config.get("training_mode") == "quantile" and "quantiles" in config:
+        quantiles = config["quantiles"]
+        for col in config["target_columns"]:
+            for q in quantiles:
+                header_columns.append(f"Previsto {col} (q={q})")
+    else:
+        header_columns = [f"Previsto: {col}" for col in config["target_columns"]]
+
+    header = ["Timestamp Previsione"] + header_columns
+    # --- FINE CODICE MODIFICATO ---
+
     worksheet.append_row(header, value_input_option='USER_ENTERED')
     
     rows_to_append = []
@@ -301,6 +358,7 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
         print(f"Salvate {len(rows_to_append)} righe di previsione.")
 
 def main():
+    # ... (codice invariato) ...
     print(f"AVVIO SCRIPT - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print(f"Modello: {MODEL_BASE_NAME}")
     
