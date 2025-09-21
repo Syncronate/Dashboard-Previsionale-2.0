@@ -195,22 +195,31 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
     
-    # --- NUOVA LOGICA DI RINOMINA AUTOMATICA ---
-    # Crea un dizionario per rinominare solo le colonne che contengono "Cumulata Giornaliera"
-    # Sostituendo "Cumulata Giornaliera" con "Cumulata"
-    hist_rename_dict = {col: col.replace('Cumulata Giornaliera', 'Cumulata').replace('_cumulata_30min', '') 
-                        for col in df_historical_raw.columns if 'Cumulata Giornaliera' in col}
-    fcst_rename_dict = {col: col.replace('Cumulata Giornaliera', 'Cumulata').replace('_cumulata_30min', '') 
-                        for col in df_forecast_raw.columns if 'Cumulata Giornaliera' in col}
+    # --- LOGICA DI PULIZIA E RINOMINA ROBUSTA ---
+    
+    # Step 1: Rimuovi le colonne "Giornaliera" di base che causano conflitti di nome.
+    # Queste sono colonne come 'Cumulata Giornaliera Sensore 1295 (Arcevia)'
+    # senza un suffisso temporale come _30min, _1h, ecc.
+    cols_to_drop = [col for col in df_historical_raw.columns if 'Giornaliera' in col and '_cumulata_' not in col]
+    if cols_to_drop:
+        df_historical_raw.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+        df_forecast_raw.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+        print(f"✓ Rimosse {len(cols_to_drop)} colonne giornaliere di base per evitare conflitti.")
 
-    df_historical_raw.rename(columns=hist_rename_dict, inplace=True)
-    df_forecast_raw.rename(columns=fcst_rename_dict, inplace=True)
-    print("✓ Colonne 'Giornaliera' rinominate dinamicamente.")
-    # --- FINE NUOVA LOGICA ---
-
-    print("\n--- DEBUG: COLONNE DEL FOGLIO STORICO (DOPO LA RINOMINA FINALE) ---")
-    print(list(df_historical_raw.columns))
-    print("-------------------------------------------------------------------\n")
+    # Step 2: Rinomina tutte le colonne rimanenti per farle corrispondere a quelle attese dal modello.
+    # Questo rimuove "Giornaliera" e mappa la feature "_cumulata_30min" alla feature di base.
+    hist_rename_map = {
+        col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
+        for col in df_historical_raw.columns if 'Giornaliera' in col
+    }
+    fcst_rename_map = {
+        col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
+        for col in df_forecast_raw.columns if 'Giornaliera' in col
+    }
+    df_historical_raw.rename(columns=hist_rename_map, inplace=True)
+    df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
+    print("✓ Ridenominazione finale delle colonne completata.")
+    # --- FINE LOGICA DI PULIZIA ---
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
