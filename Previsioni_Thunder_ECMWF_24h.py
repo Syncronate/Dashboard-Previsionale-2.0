@@ -183,7 +183,6 @@ def load_model_and_scalers(model_base_name, models_dir):
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
 def fetch_and_prepare_data(gc, sheet_id, config):
-    # ... (codice invariato) ...
     print(f"\n=== CARICAMENTO E PREPARAZIONE DATI (Metodo robusto) ===")
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
@@ -192,12 +191,14 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     sh = gc.open_by_key(sheet_id)
     
+    # Funzione helper per convertire i dati grezzi in una stringa CSV
     def values_to_csv_string(data):
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerows(data)
         return output.getvalue()
 
+    # FIX: Uso di get_all_values() e pd.read_csv per maggiore robustezza
     print(f"Caricamento dati storici da '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'...")
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
     historical_values = historical_ws.get_all_values()
@@ -213,6 +214,8 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
     
+    # --- INIZIO BLOCCO DI CODICE RIPRISTINATO ---
+    # Mappatura nomi colonne per far corrispondere i dati del GSheet con quelli attesi dal modello.
     column_mapping = {
         "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
         "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
@@ -221,6 +224,8 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     }
     df_historical_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
     df_forecast_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
+    print("✓ Nomi delle colonne mappati con successo.")
+    # --- FINE BLOCCO DI CODICE RIPRISTINATO ---
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
@@ -231,6 +236,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     latest_valid_timestamp = df_historical[GSHEET_DATE_COL_INPUT].iloc[-1]
     print(f"Ultimo timestamp valido: {latest_valid_timestamp}")
     
+    # Questo ciclo ora dovrebbe trovare le colonne perché sono state rinominate
     for col in past_feature_columns:
         if col not in df_historical.columns:
             raise ValueError(f"Colonna storica '{col}' non trovata.")
