@@ -197,24 +197,36 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
 
-    # --- INIZIO BLOCCO MODIFICATO: Rinomina dinamica e robusta ---
-    # Sostituisce la mappatura manuale con una logica programmatica
-    # che rimuove "Giornaliera" da tutti i nomi di colonna pertinenti.
-    print("Rinomina dinamica delle colonne 'Cumulata Giornaliera'...")
-    
-    # Crea una mappatura solo per le colonne che necessitano di essere rinominate
-    historical_rename_map = {col: col.replace('Cumulata Giornaliera Sensore', 'Cumulata Sensore') 
-                             for col in df_historical_raw.columns if 'Cumulata Giornaliera Sensore' in col}
-    forecast_rename_map = {col: col.replace('Cumulata Giornaliera Sensore', 'Cumulata Sensore') 
-                           for col in df_forecast_raw.columns if 'Cumulata Giornaliera Sensore' in col}
+    # --- INIZIO BLOCCO AGGIORNATO: Rinomina aggressiva e gestione duplicati ---
+    print("Avvio rinomina aggressiva per standardizzare le colonne...")
 
-    df_historical_raw.rename(columns=historical_rename_map, inplace=True)
-    df_forecast_raw.rename(columns=forecast_rename_map, inplace=True)
-    # --- FINE BLOCCO MODIFICATO ---
+    # Rinomina in modo da standardizzare sia 'Giornaliera' che i suffissi come '_cumulata_30min'
+    hist_rename_map = {
+        col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
+        for col in df_historical_raw.columns
+        if 'Giornaliera ' in col or '_cumulata_30min' in col
+    }
 
-    print("--- DEBUG: Colonne disponibili dopo la rinomina ---")
-    print(df_historical_raw.columns.tolist())
-    print("-" * 50)
+    fcst_rename_map = {
+        col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
+        for col in df_forecast_raw.columns
+        if 'Giornaliera ' in col or '_cumulata_30min' in col
+    }
+
+    if hist_rename_map:
+        df_historical_raw.rename(columns=hist_rename_map, inplace=True)
+        print(f"Rinominate {len(hist_rename_map)} colonne nel set di dati storici.")
+
+    if fcst_rename_map:
+        df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
+        print(f"Rinominate {len(fcst_rename_map)} colonne nel set di dati previsionali.")
+
+    # Rimuove le colonne duplicate create dalla ridenominazione,
+    # mantenendo l'ULTIMA occorrenza (es. la colonna _cumulata_30min).
+    df_historical_raw = df_historical_raw.loc[:, ~df_historical_raw.columns.duplicated(keep='last')]
+    df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='last')]
+    print("✓ Eventuali colonne duplicate rimosse, mantenendo l'ultima occorrenza (keep='last').")
+    # --- FINE BLOCCO AGGIORNATO ---
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
