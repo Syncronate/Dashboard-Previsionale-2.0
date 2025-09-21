@@ -220,8 +220,8 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     # --- INIZIO BLOCCO CORRETTIVO ---
     # Rimuove le colonne duplicate che potrebbero essere state create dalla ridenominazione,
     # mantenendo solo la prima occorrenza di ogni nome di colonna.
-    df_historical_raw = df_historical_raw.loc[:, ~df_historical_raw.columns.duplicated(keep='first')]
-    df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='first')]
+    df_historical_raw = df_historical_raw.loc[:, ~df_historical_raw.columns.duplicated(keep='last')]
+    df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='last')]
     print("✓ Eventuali colonne duplicate rimosse.")
     # --- FINE BLOCCO CORRETTIVO ---
 
