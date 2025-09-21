@@ -196,29 +196,19 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
     
     # --- LOGICA DI PULIZIA E RINOMINA ROBUSTA ---
-    
-    # Step 1: Rimuovi le colonne "Giornaliera" di base che causano conflitti di nome.
-    # Queste sono colonne come 'Cumulata Giornaliera Sensore 1295 (Arcevia)'
-    # senza un suffisso temporale come _30min, _1h, ecc.
-    cols_to_drop = [col for col in df_historical_raw.columns if 'Giornaliera' in col and '_cumulata_' not in col]
-    if cols_to_drop:
-        df_historical_raw.drop(columns=cols_to_drop, inplace=True, errors='ignore')
-        df_forecast_raw.drop(columns=cols_to_drop, inplace=True, errors='ignore')
-        print(f"✓ Rimosse {len(cols_to_drop)} colonne giornaliere di base per evitare conflitti.")
-
-    # Step 2: Rinomina tutte le colonne rimanenti per farle corrispondere a quelle attese dal modello.
-    # Questo rimuove "Giornaliera" e mappa la feature "_cumulata_30min" alla feature di base.
+    # Step 1: Esegui una ridenominazione sicura per tutte le colonne
+    # Questo rimuove "Giornaliera " e mappa la feature "_cumulata_30min" alla feature di base.
     hist_rename_map = {
         col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
-        for col in df_historical_raw.columns if 'Giornaliera' in col
+        for col in df_historical_raw.columns
     }
     fcst_rename_map = {
         col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
-        for col in df_forecast_raw.columns if 'Giornaliera' in col
+        for col in df_forecast_raw.columns
     }
     df_historical_raw.rename(columns=hist_rename_map, inplace=True)
     df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
-    print("✓ Ridenominazione finale delle colonne completata.")
+    print("✓ Ridenominazione generale delle colonne completata.")
     # --- FINE LOGICA DI PULIZIA ---
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
@@ -232,7 +222,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     for col in past_feature_columns:
         if col not in df_historical.columns:
-            print(f"!!! ERRORE: La colonna '{col}' non è stata trovata nel DataFrame dopo la rinomina.")
+            print(f"!!! ERRORE: La colonna '{col}' non è stata trovata nel DataFrame.")
             raise ValueError(f"Colonna storica '{col}' non trovata.")
         df_historical[col] = pd.to_numeric(df_historical[col], errors='coerce')
 
