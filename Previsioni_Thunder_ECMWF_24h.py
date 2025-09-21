@@ -195,21 +195,36 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
     
-    # --- LOGICA DI PULIZIA E RINOMINA ROBUSTA ---
-    # Step 1: Esegui una ridenominazione sicura per tutte le colonne
-    # Questo rimuove "Giornaliera " e mappa la feature "_cumulata_30min" alla feature di base.
+    # --- INIZIO BLOCCO MODIFICATO: Logica di pulizia e rinomina robusta ---
+    # Implementa lo stile del secondo script per creare una mappa di ridenominazione
+    # solo per le colonne che effettivamente necessitano di essere modificate.
+    print("Avvio rinomina dinamica e condizionale delle colonne...")
+    
+    # Mappa per i dati storici
     hist_rename_map = {
         col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
         for col in df_historical_raw.columns
+        if 'Giornaliera ' in col or '_cumulata_30min' in col
     }
+    
+    # Mappa per i dati previsionali
     fcst_rename_map = {
         col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
         for col in df_forecast_raw.columns
+        if 'Giornaliera ' in col or '_cumulata_30min' in col
     }
-    df_historical_raw.rename(columns=hist_rename_map, inplace=True)
-    df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
-    print("✓ Ridenominazione generale delle colonne completata.")
-    # --- FINE LOGICA DI PULIZIA ---
+
+    # Applica la rinomina solo se ci sono colonne da modificare
+    if hist_rename_map:
+        df_historical_raw.rename(columns=hist_rename_map, inplace=True)
+        print(f"Rinominate {len(hist_rename_map)} colonne nel set di dati storici.")
+    
+    if fcst_rename_map:
+        df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
+        print(f"Rinominate {len(fcst_rename_map)} colonne nel set di dati previsionali.")
+
+    print("✓ Ridenominazione colonne completata.")
+    # --- FINE BLOCCO MODIFICATO ---
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
