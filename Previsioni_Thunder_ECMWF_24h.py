@@ -87,11 +87,11 @@ class Seq2SeqWithAttention(nn.Module):
 
 # --- Costanti Aggiornate ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20250919_1714" # Nome modello specifico
+MODEL_BASE_NAME = "modello_seq2seq_20250919_1714"
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ECMWF"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ECMWF 24h" # Nome foglio output specifico
+GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ECMWF 24h"
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
@@ -102,7 +102,7 @@ italy_tz = pytz.timezone('Europe/Rome')
 
 def log_environment_info():
     """Log delle informazioni sull'ambiente di esecuzione"""
-    print("=== INFORMAzioni AMBIENTE ===")
+    print("=== INFORMAZIONI AMBIENTE ===")
     print(f"Python version: {os.sys.version}")
     print(f"PyTorch version: {torch.__version__}")
     print(f"Pandas version: {pd.__version__}")
@@ -139,7 +139,6 @@ def load_model_and_scalers(model_base_name, models_dir):
     enc_input_size = len(config["all_past_feature_columns"])
     dec_input_size = len(config["forecast_input_columns"])
     
-    # Calcola la dimensione dell'output dinamicamente
     if config.get("training_mode") == "quantile" and "quantiles" in config:
         num_quantiles = len(config["quantiles"])
         num_targets = len(config["target_columns"])
@@ -178,7 +177,6 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     sh = gc.open_by_key(sheet_id)
     
-    # Funzione helper per convertire i dati grezzi in una stringa CSV
     def values_to_csv_string(data):
         output = io.StringIO()
         writer = csv.writer(output)
@@ -191,32 +189,28 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     historical_csv_string = values_to_csv_string(historical_values)
     df_historical_raw = pd.read_csv(io.StringIO(historical_csv_string), decimal=',')
     
-    # DEBUG AGGIUNTO: Stampa le colonne originali per verificare i nomi esatti
-    print("\n--- DEBUG: COLONNE DEL FOGLIO STORICO (PRIMA DELLA RINOMINA) ---")
-    print(list(df_historical_raw.columns))
-    print("----------------------------------------------------------------\n")
-
     print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     forecast_values = forecast_ws.get_all_values()
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
     
-    # Mappatura nomi colonne
-    column_mapping = {
-        "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
-        "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
-        "Cumulata Sensore 2858 (Barbara)_cumulata_30min": "Cumulata Sensore 2858 (Barbara)",  
-        "Cumulata Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
-    }
-    df_historical_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
-    df_forecast_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
-    print("✓ Tentativo di mappare i nomi delle colonne eseguito.")
+    # --- NUOVA LOGICA DI RINOMINA AUTOMATICA ---
+    # Crea un dizionario per rinominare solo le colonne che contengono "Cumulata Giornaliera"
+    # Sostituendo "Cumulata Giornaliera" con "Cumulata"
+    hist_rename_dict = {col: col.replace('Cumulata Giornaliera', 'Cumulata').replace('_cumulata_30min', '') 
+                        for col in df_historical_raw.columns if 'Cumulata Giornaliera' in col}
+    fcst_rename_dict = {col: col.replace('Cumulata Giornaliera', 'Cumulata').replace('_cumulata_30min', '') 
+                        for col in df_forecast_raw.columns if 'Cumulata Giornaliera' in col}
 
-    # DEBUG AGGIUNTO: Stampa le colonne dopo la rinomina per verificare il risultato
-    print("\n--- DEBUG: COLONNE DEL FOGLIO STORICO (DOPO LA RINOMINA) ---")
+    df_historical_raw.rename(columns=hist_rename_dict, inplace=True)
+    df_forecast_raw.rename(columns=fcst_rename_dict, inplace=True)
+    print("✓ Colonne 'Giornaliera' rinominate dinamicamente.")
+    # --- FINE NUOVA LOGICA ---
+
+    print("\n--- DEBUG: COLONNE DEL FOGLIO STORICO (DOPO LA RINOMINA FINALE) ---")
     print(list(df_historical_raw.columns))
-    print("--------------------------------------------------------------\n")
+    print("-------------------------------------------------------------------\n")
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
