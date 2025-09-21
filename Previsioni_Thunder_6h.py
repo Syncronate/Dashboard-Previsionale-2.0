@@ -10,14 +10,14 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import traceback
-import io  # Importato per la gestione dei dati in memoria
-import csv # Importato per la conversione in formato CSV
+import io
+import csv
 
-# Imposta seed per riproducibilità (buona pratica)
+# Imposta seed per riproducibilità
 torch.manual_seed(42)
 np.random.seed(42)
 
-# --- Classi del modello (invariate, necessarie per il funzionamento) ---
+# --- Classi del modello (invariate) ---
 class EncoderLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
         super().__init__()
@@ -85,14 +85,14 @@ class Seq2SeqWithAttention(nn.Module):
                 decoder_input_step = x_future_forecast[:, t+1:t+2, :]
         return outputs, attn_weights
 
-# --- Costanti Aggiornate per il NUOVO modello ---
+# --- Costanti ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20250804_1834" # Nome modello specifico
+MODEL_BASE_NAME = "modello_seq2seq_20250919_1641"
 
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Idro-Bettolelle 6h" # Nome foglio output specifico
+GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Idro-Bettolelle 6h"
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
@@ -123,7 +123,6 @@ def load_model_and_scalers(model_base_name, models_dir):
     scaler_forecast_features_path = os.path.join(models_dir, f"{model_base_name}_forecast_features.joblib")
     scaler_targets_path = os.path.join(models_dir, f"{model_base_name}_targets.joblib")
     
-    # FIX: Controllo esistenza file più robusto
     for p in [config_path, model_path, scaler_past_features_path, scaler_forecast_features_path, scaler_targets_path]:
         if not os.path.exists(p):
             raise FileNotFoundError(f"ERRORE CRITICO: File non trovato -> {p}")
@@ -139,7 +138,18 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     enc_input_size = len(config["all_past_feature_columns"])
     dec_input_size = len(config["forecast_input_columns"])
-    dec_output_size = len(config["target_columns"])
+    
+    quantiles = config.get("quantiles")
+    if quantiles and isinstance(quantiles, list):
+        num_quantiles = len(quantiles)
+        print(f"Rilevato modello a quantili. Quantili: {quantiles}")
+    else:
+        num_quantiles = 1
+        print("Rilevato modello con output singolo (non a quantili).")
+    
+    dec_output_size = len(config["target_columns"]) * num_quantiles
+    print(f"Dimensione output del decoder impostata a: {dec_output_size}")
+    
     hidden = config["hidden_size"]
     layers = config["num_layers"]
     drop = config["dropout"]
@@ -161,7 +171,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
 def fetch_and_prepare_data(gc, sheet_id, config):
-    print(f"\n=== CARICAMENTO E PREPARAZIONE DATI (Metodo robusto) ===")
+    print(f"\n=== CARICAMENTO E PREPARAZIONE DATI ===")
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     past_feature_columns = config["all_past_feature_columns"]
@@ -169,38 +179,42 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     sh = gc.open_by_key(sheet_id)
     
-    # FIX: Funzione helper per convertire i dati grezzi in una stringa CSV
     def values_to_csv_string(data):
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerows(data)
         return output.getvalue()
 
-    # FIX: Uso di get_all_values() e pd.read_csv per maggiore robustezza
     print(f"Caricamento dati storici da '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'...")
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
     historical_values = historical_ws.get_all_values()
     historical_csv_string = values_to_csv_string(historical_values)
     df_historical_raw = pd.read_csv(io.StringIO(historical_csv_string), decimal=',')
-    print("--- DEBUG: PRIME RIGHE DATAFRAME STORICO GREZZO ---")
-    print(df_historical_raw.head())
-    print("--------------------------------------------------")
-
+    
     print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     forecast_values = forecast_ws.get_all_values()
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
+
+    # --- INIZIO BLOCCO MODIFICATO: Rinomina dinamica e robusta ---
+    # Sostituisce la mappatura manuale con una logica programmatica
+    # che rimuove "Giornaliera" da tutti i nomi di colonna pertinenti.
+    print("Rinomina dinamica delle colonne 'Cumulata Giornaliera'...")
     
-    # Mappatura nomi colonne (mantenuta perché è una buona pratica)
-    column_mapping = {
-        "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
-        "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
-        "Cumulata Sensore 2858 (Barbara)_cumulata_30min": "Cumulata Sensore 2858 (Barbara)",  
-        "Cumulata Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
-    }
-    df_historical_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
-    df_forecast_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
+    # Crea una mappatura solo per le colonne che necessitano di essere rinominate
+    historical_rename_map = {col: col.replace('Cumulata Giornaliera Sensore', 'Cumulata Sensore') 
+                             for col in df_historical_raw.columns if 'Cumulata Giornaliera Sensore' in col}
+    forecast_rename_map = {col: col.replace('Cumulata Giornaliera Sensore', 'Cumulata Sensore') 
+                           for col in df_forecast_raw.columns if 'Cumulata Giornaliera Sensore' in col}
+
+    df_historical_raw.rename(columns=historical_rename_map, inplace=True)
+    df_forecast_raw.rename(columns=forecast_rename_map, inplace=True)
+    # --- FINE BLOCCO MODIFICATO ---
+
+    print("--- DEBUG: Colonne disponibili dopo la rinomina ---")
+    print(df_historical_raw.columns.tolist())
+    print("-" * 50)
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
@@ -213,18 +227,15 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     for col in past_feature_columns:
         if col not in df_historical.columns:
-            raise ValueError(f"Colonna storica '{col}' non trovata.")
-        # FIX: La conversione a numerico è già gestita da read_csv(decimal=','), ma riconvertire con 'coerce' è sicuro
+            raise ValueError(f"Colonna storica '{col}' non trovata. Controllare la mappatura e il foglio di input.")
         df_historical[col] = pd.to_numeric(df_historical[col], errors='coerce')
 
-    # FIX: Riempimento robusto dei valori mancanti
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
     
-    # FIX: Aggiunto controllo di validità sui dati
     min_val, max_val = input_data_historical.min(), input_data_historical.max()
     print(f"Statistiche dati storici (finali): Min={min_val:.2f}, Max={max_val:.2f}, Mean={input_data_historical.mean():.2f}")
-    min_ragionevole, max_ragionevole = -1000, 100000
+    min_ragionevole, max_ragionevole = -1000, 200000
     if min_val < min_ragionevole or max_val > max_ragionevole:
         raise ValueError(f"Valori anomali rilevati. Min: {min_val}, Max: {max_val}. Controllare i dati sorgente.")
     else:
@@ -260,21 +271,20 @@ def make_prediction(model, scalers, config, data_inputs, device):
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
     
-    # FIX: Aggiunto blocco di debug per i tensori di input
-    print("\n--- DEBUG TENSOR INPUT ---")
-    print(f"Shape tensore storico (normalizzato): {historical_tensor.shape}")
-    print(f"Min tensore storico:   {torch.min(historical_tensor).item():.8f}")
-    print(f"Max tensore storico:   {torch.max(historical_tensor).item():.8f}")
-    print(f"Mean tensore storico:  {torch.mean(historical_tensor).item():.8f}")
-    print("--------------------------\n")
-
     with torch.no_grad():
-        # L'output del modello è una tupla (predictions, attention_weights)
-        predictions_normalized, _ = model(historical_tensor, forecast_tensor)
+        predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
-    predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
     
+    original_shape = predictions_np.shape
+    if predictions_np.ndim > 1 and predictions_np.shape[1] > 1 and hasattr(scaler_targets, 'n_features_in_') and scaler_targets.n_features_in_ == 1:
+        print(f"Rilevato output multi-colonna ({original_shape[1]} colonne) per un singolo target. Appiattimento per lo scaling.")
+        predictions_np_flat = predictions_np.reshape(-1, 1)
+        predictions_scaled_back_flat = scaler_targets.inverse_transform(predictions_np_flat)
+        predictions_scaled_back = predictions_scaled_back_flat.reshape(original_shape)
+    else:
+        predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
+
     print(f"Previsioni finali stats: min={predictions_scaled_back.min():.4f}, max={predictions_scaled_back.max():.4f}")
     
     return predictions_scaled_back
@@ -287,17 +297,27 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
         worksheet.clear()
         print(f"Foglio '{predictions_sheet_name}' pulito.")
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=config["output_window_steps"] + 10, cols=len(config["target_columns"]) + 10)
+        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=100, cols=20)
         print(f"Foglio '{predictions_sheet_name}' creato.")
     
-    header = ["Timestamp Previsione"] + [f"Previsto: {col}" for col in config["target_columns"]]
+    quantiles = config.get("quantiles")
+    target_cols = config["target_columns"]
+    header = ["Timestamp Previsione"]
+
+    if quantiles and isinstance(quantiles, list) and len(quantiles) > 1:
+        for col in target_cols:
+            for q in quantiles:
+                header.append(f"Previsto: {col} (Q{int(q * 100)})")
+    else:
+        for col in target_cols:
+            header.append(f"Previsto: {col}")
+    
     worksheet.append_row(header, value_input_option='USER_ENTERED')
     
     rows_to_append = []
     prediction_start_time = config["_prediction_start_time"]
     for i in range(predictions_np.shape[0]):
         timestamp = prediction_start_time + timedelta(minutes=30 * (i + 1))
-        # Formattazione robusta per data e numeri con virgola
         row = [timestamp.strftime('%d/%m/%Y %H:%M')]
         row.extend([f"{val:.3f}".replace('.', ',') for val in predictions_np[i, :]])
         rows_to_append.append(row)
@@ -311,7 +331,6 @@ def main():
     print(f"Modello: {MODEL_BASE_NAME}")
     
     try:
-        # FIX: Aggiunta funzione di log dell'ambiente
         log_environment_info()
         
         credentials = Credentials.from_service_account_file(
@@ -324,7 +343,7 @@ def main():
         model, scaler_past, scaler_forecast, scaler_target, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
         hist_data, fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
-        config["_prediction_start_time"] = last_ts # Salva il timestamp di partenza per l'output
+        config["_prediction_start_time"] = last_ts
         
         scalers = (scaler_past, scaler_forecast, scaler_target)
         data_inputs = (hist_data, fcst_data)
