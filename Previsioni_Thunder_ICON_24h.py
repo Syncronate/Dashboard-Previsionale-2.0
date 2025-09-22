@@ -1,3 +1,4 @@
+
 import os
 import json
 from datetime import datetime, timedelta
@@ -10,8 +11,8 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import traceback
-import io  # Importato per la gestione dei dati in memoria
-import csv # Importato per la conversione in formato CSV
+import io
+import csv
 
 # Imposta seed per riproducibilità (buona pratica)
 torch.manual_seed(42)
@@ -87,11 +88,11 @@ class Seq2SeqWithAttention(nn.Module):
 
 # --- Costanti Aggiornate ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20250919_1714" # Nome modello specifico
+MODEL_BASE_NAME = "modello_seq2seq_20250919_1714"
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ICON 24h" # Nome foglio output specifico
+GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Thunder-ICON 24h"
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
@@ -138,7 +139,16 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     enc_input_size = len(config["all_past_feature_columns"])
     dec_input_size = len(config["forecast_input_columns"])
-    dec_output_size = len(config["target_columns"])
+    
+    if config.get("training_mode") == "quantile" and "quantiles" in config:
+        num_quantiles = len(config["quantiles"])
+        num_targets = len(config["target_columns"])
+        dec_output_size = num_targets * num_quantiles
+        print(f"Rilevato modello quantilico. Dimensione output: {num_targets} (target) * {num_quantiles} (quantili) = {dec_output_size}")
+    else:
+        dec_output_size = len(config["target_columns"])
+        print(f"Rilevato modello standard. Dimensione output: {dec_output_size}")
+
     hidden = config["hidden_size"]
     layers = config["num_layers"]
     drop = config["dropout"]
@@ -168,38 +178,53 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     sh = gc.open_by_key(sheet_id)
     
-    # Funzione helper per convertire i dati grezzi in una stringa CSV
     def values_to_csv_string(data):
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerows(data)
         return output.getvalue()
 
-    # FIX: Uso di get_all_values() e pd.read_csv per maggiore robustezza
     print(f"Caricamento dati storici da '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'...")
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
     historical_values = historical_ws.get_all_values()
     historical_csv_string = values_to_csv_string(historical_values)
     df_historical_raw = pd.read_csv(io.StringIO(historical_csv_string), decimal=',')
-    print("--- DEBUG: PRIME RIGHE DATAFRAME STORICO GREZZO ---")
-    print(df_historical_raw.head())
-    print("--------------------------------------------------")
-
+    
     print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     forecast_values = forecast_ws.get_all_values()
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
     
-    # Mappatura nomi colonne (mantenuta perché è una buona pratica)
-    column_mapping = {
-        "Cumulata Sensore 1295 (Arcevia)_cumulata_30min": "Cumulata Sensore 1295 (Arcevia)",
-        "Cumulata Sensore 2637 (Bettolelle)_cumulata_30min": "Cumulata Sensore 2637 (Bettolelle)",
-        "Cumulata Sensore 2858 (Barbara)_cumulata_30min": "Cumulata Sensore 2858 (Barbara)",  
-        "Cumulata Sensore 2964 (Corinaldo)_cumulata_30min": "Cumulata Sensore 2964 (Corinaldo)"
+    print("Avvio rinomina dinamica e condizionale delle colonne...")
+    
+    hist_rename_map = {
+        col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
+        for col in df_historical_raw.columns
+        if 'Giornaliera ' in col or '_cumulata_30min' in col
     }
-    df_historical_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
-    df_forecast_raw.rename(columns=column_mapping, inplace=True, errors='ignore')
+    
+    fcst_rename_map = {
+        col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
+        for col in df_forecast_raw.columns
+        if 'Giornaliera ' in col or '_cumulata_30min' in col
+    }
+
+    if hist_rename_map:
+        df_historical_raw.rename(columns=hist_rename_map, inplace=True)
+        print(f"Rinominate {len(hist_rename_map)} colonne nel set di dati storici.")
+    
+    if fcst_rename_map:
+        df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
+        print(f"Rinominate {len(fcst_rename_map)} colonne nel set di dati previsionali.")
+
+    # --- INIZIO BLOCCO CORRETTIVO ---
+    # Rimuove le colonne duplicate che potrebbero essere state create dalla ridenominazione,
+    # mantenendo solo la prima occorrenza di ogni nome di colonna.
+    df_historical_raw = df_historical_raw.loc[:, ~df_historical_raw.columns.duplicated(keep='last')]
+    df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='last')]
+    print("✓ Eventuali colonne duplicate rimosse.")
+    # --- FINE BLOCCO CORRETTIVO ---
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
@@ -212,13 +237,13 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     for col in past_feature_columns:
         if col not in df_historical.columns:
+            print(f"!!! ERRORE: La colonna '{col}' non è stata trovata nel DataFrame.")
             raise ValueError(f"Colonna storica '{col}' non trovata.")
         df_historical[col] = pd.to_numeric(df_historical[col], errors='coerce')
 
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
     
-    # Aggiunto controllo di validità sui dati
     min_val, max_val = input_data_historical.min(), input_data_historical.max()
     print(f"Statistiche dati storici (finali): Min={min_val:.2f}, Max={max_val:.2f}, Mean={input_data_historical.mean():.2f}")
     min_ragionevole, max_ragionevole = -1000, 200000
@@ -268,8 +293,19 @@ def make_prediction(model, scalers, config, data_inputs, device):
         predictions_normalized, _ = model(historical_tensor, forecast_tensor)
     
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
-    predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
     
+    n_model_outputs = predictions_np.shape[1]
+    n_scaler_features = scaler_targets.n_features_in_
+    
+    if n_model_outputs != n_scaler_features:
+        print(f"Adattamento della forma per de-normalizzazione: {predictions_np.shape} -> (-1, {n_scaler_features})")
+        original_shape = predictions_np.shape
+        predictions_reshaped = predictions_np.reshape(-1, n_scaler_features)
+        scaled_back_reshaped = scaler_targets.inverse_transform(predictions_reshaped)
+        predictions_scaled_back = scaled_back_reshaped.reshape(original_shape)
+    else:
+        predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
+
     print(f"Previsioni finali stats: min={predictions_scaled_back.min():.4f}, max={predictions_scaled_back.max():.4f}")
     
     return predictions_scaled_back
@@ -282,10 +318,20 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
         worksheet.clear()
         print(f"Foglio '{predictions_sheet_name}' pulito.")
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=config["output_window_steps"] + 10, cols=len(config["target_columns"]) + 10)
+        cols_needed = predictions_np.shape[1] + 1
+        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=100, cols=cols_needed)
         print(f"Foglio '{predictions_sheet_name}' creato.")
     
-    header = ["Timestamp Previsione"] + [f"Previsto: {col}" for col in config["target_columns"]]
+    header_columns = []
+    if config.get("training_mode") == "quantile" and "quantiles" in config:
+        quantiles = config["quantiles"]
+        for col in config["target_columns"]:
+            for q in quantiles:
+                header_columns.append(f"Previsto {col} (q={q})")
+    else:
+        header_columns = [f"Previsto: {col}" for col in config["target_columns"]]
+
+    header = ["Timestamp Previsione"] + header_columns
     worksheet.append_row(header, value_input_option='USER_ENTERED')
     
     rows_to_append = []
