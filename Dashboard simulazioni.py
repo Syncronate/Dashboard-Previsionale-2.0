@@ -3203,35 +3203,25 @@ elif page == 'Test Modello su Storico':
                 st.write("Errore Quadratico Medio (MSE) per il periodo:")
                 st.dataframe(pd.DataFrame.from_dict(result['mses'], orient='index', columns=['MSE']).round(5))
 
-                # --- NUOVA LOGICA: Display Input Data Table ---
+                # --- NUOVA LOGICA (SEMPLIFICATA E CORRETTA): Display Input Data Table ---
                 st.markdown("### Dati Input utilizzati per la Previsione")
                 st.caption(f"Gli ultimi {N_INPUT_DISPLAY_STEPS} passi temporali che il modello ha ricevuto come input per questa previsione.")
 
-                raw_input_df_full_slice = result['raw_input_df_for_table'] # La fetta completa delle feature di input
-                input_cols_to_show = result['input_cols_for_display'] # Solo le colonne che il modello ha usato
+                raw_input_df_full_slice = result['raw_input_df_for_table']
+                input_cols_to_show = result['input_cols_for_display']
                 
-                if raw_input_df_full_slice is not None and not raw_input_df_full_slice.empty and date_col_name_csv in raw_input_df_full_slice.columns:
-                    input_start_dt_input_window = raw_input_df_full_slice[date_col_name_csv].iloc[0] # Inizio della finestra di input
-
-                    # Filtra solo le colonne che sono state effettivamente usate come input per il modello
-                    input_df_filtered_for_display = raw_input_df_full_slice[input_cols_to_show].copy()
+                if raw_input_df_full_slice is not None and not raw_input_df_full_slice.empty:
+                    # Seleziona le ultime N righe dalla slice di input originale
+                    last_n_inputs_df = raw_input_df_full_slice.tail(N_INPUT_DISPLAY_STEPS).copy()
                     
-                    # Prendi le ultime N_INPUT_DISPLAY_STEPS righe
-                    last_n_inputs = input_df_filtered_for_display.tail(N_INPUT_DISPLAY_STEPS)
+                    # Colonne da visualizzare: la colonna della data + le feature del modello
+                    cols_for_final_table = [date_col_name_csv] + input_cols_to_show
                     
-                    # Crea l'indice temporale per la tabella di input visualizzata
-                    # Calcola il datetime per la prima riga di `last_n_inputs`
-                    time_offset_to_last_n_inputs_start = timedelta(minutes=30 * (len(input_df_filtered_for_display) - N_INPUT_DISPLAY_STEPS))
-                    display_table_start_time = input_start_dt_input_window + time_offset_to_last_n_inputs_start
-
-                    input_datetimes_for_display_table = [display_table_start_time + timedelta(minutes=30 * i) 
-                                                         for i in range(N_INPUT_DISPLAY_STEPS)]
+                    # Filtra per le colonne di interesse e imposta la data come indice
+                    display_table = last_n_inputs_df[cols_for_final_table].set_index(date_col_name_csv)
                     
-                    # Imposta l'indice e formatta per la visualizzazione
-                    last_n_inputs.index = input_datetimes_for_display_table
-                    last_n_inputs.index.name = "Data_Ora_Input"
-                    
-                    st.dataframe(last_n_inputs.round(3), use_container_width=True)
+                    # Mostra il DataFrame formattato
+                    st.dataframe(display_table.style.format("{:.3f}"), use_container_width=True)
                 else:
                     st.info("Dati input per questo periodo non disponibili per la visualizzazione.")
                 # --- FINE NUOVA LOGICA ---
