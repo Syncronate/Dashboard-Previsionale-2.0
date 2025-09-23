@@ -3100,17 +3100,23 @@ elif page == 'Test Modello su Storico':
                 past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
                 future_input_np_raw = actual_df[forecast_feature_cols_model_test].values
                 
-                input_cols_for_display = past_feature_cols_model_test # Per la visualizzazione, mostriamo le feature passate
+                input_cols_for_display = past_feature_cols_model_test # Per la visualizzazione, questo è corretto
                 
-                # Scale for model prediction and convert to tensor
-                past_tens = torch.FloatTensor(active_scalers["past"].transform(past_input_np_raw)).unsqueeze(0).to(active_device)
-                future_tens = torch.FloatTensor(active_scalers["forecast"].transform(future_input_np_raw)).unsqueeze(0).to(active_device)
-                
-                # Model prediction
+                # --- CORREZIONE ---
+                # Passa i dati grezzi (NumPy array) direttamente alle funzioni.
+                # La scalatura e la conversione in tensore avvengono all'interno di queste funzioni.
                 if num_passes_test > 1 and not is_quantile_model_test:
-                    predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(active_model, past_tens, future_tens, active_scalers, active_config, active_device, num_passes=num_passes_test)
+                    predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(
+                        active_model, past_input_np_raw, future_input_np_raw, 
+                        active_scalers, active_config, active_device, 
+                        num_passes=num_passes_test
+                    )
                 else:
-                    predictions_period, _ = predict_seq2seq(active_model, past_tens, future_tens, active_scalers, active_config, active_device)
+                    predictions_period, _ = predict_seq2seq(
+                        active_model, past_input_np_raw, future_input_np_raw,
+                        active_scalers, active_config, active_device
+                    )
+                # --- FINE CORREZIONE ---
 
             elif active_model_type == "SpatioTemporalGNN":
                 node_columns_test = active_config['node_order']
