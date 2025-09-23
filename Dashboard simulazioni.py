@@ -758,11 +758,12 @@ def prepare_training_data(df, feature_columns, target_columns, input_window, out
 
 
 def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, target_cols,
-                                 input_window_steps, forecast_window_steps, output_window_steps,
+                                 input_window_steps, output_window_steps,
+                                 prediction_gap_steps=0, # NUOVO PARAMETRO CON DEFAULT
                                  lag_config_past=None, cumulative_config_past=None,
                                  use_weighted_loss=False, dummy_col_name='Variabile Dummy', post_modification_weight=1.0):
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati Seq2Seq...")
-    print(f"Input Steps: {input_window_steps}, Forecast Steps: {forecast_window_steps}, Output Steps: {output_window_steps}")
+    print(f"Input Steps: {input_window_steps}, Output Steps: {output_window_steps}, Prediction Gap Steps: {prediction_gap_steps}") # AGGIUNTO LOG
 
     original_past_feature_cols = list(past_feature_cols)
     engineered_past_feature_names = []
@@ -775,7 +776,6 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
                     new_col_name = f"{col}_lag{lag_hr}h"
                     df[new_col_name] = df[col].shift(lag_steps)
                     engineered_past_feature_names.append(new_col_name)
-                    print(f"Created lagged past feature: {new_col_name}")
             else:
                 st.warning(f"Colonna '{col}' specificata in lag_config_past non trovata.")
     
@@ -787,13 +787,11 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
                     new_col_name = f"{col}_cum{win_hr}h"
                     df[new_col_name] = df[col].rolling(window=window_steps, min_periods=1).sum()
                     engineered_past_feature_names.append(new_col_name)
-                    print(f"Created cumulative past feature: {new_col_name}")
             else:
                 st.warning(f"Colonna '{col}' specificata in cumulative_config_past non trovata.")
 
     current_past_feature_cols = original_past_feature_cols + engineered_past_feature_names
     
-    # NUOVA LOGICA: Gestione colonna dummy
     if use_weighted_loss:
         if dummy_col_name not in df.columns:
             st.error(f"Loss pesata attivata, ma la colonna dummy '{dummy_col_name}' non è stata trovata.")
@@ -812,9 +810,8 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
         if nan_sum_before_fill > 0:
             st.warning(f"NaN trovati ({nan_sum_before_fill}) prima della creazione sequenze Seq2Seq. Applico bfill/ffill.")
             df[cols_present_for_fillna_s2s] = df[cols_present_for_fillna_s2s].fillna(method='bfill').fillna(method='ffill')
-            nan_sum_after_fill = df[cols_present_for_fillna_s2s].isnull().sum().sum()
-            if nan_sum_after_fill > 0:
-                 st.error(f"NaN RESIDUI ({nan_sum_after_fill}) dopo bfill/ffill.")
+            if df[cols_present_for_fillna_s2s].isnull().sum().sum() > 0:
+                 st.error(f"NaN RESIDUI dopo bfill/ffill.")
                  return None, None, None, None, None, None, None
         df_to_use = df
             
@@ -823,9 +820,11 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
         return None, None, None, None, None, None, None
 
     X_encoder, X_decoder, y_target = [], [], []
-    sample_weights = [] # NUOVO
+    sample_weights = []
     total_len = len(df_to_use)
-    required_len = input_window_steps + max(forecast_window_steps, output_window_steps)
+    
+    decoder_input_length_actual = prediction_gap_steps + output_window_steps
+    required_len = input_window_steps + decoder_input_length_actual
 
     if total_len < required_len:
         st.error(f"Dati Seq2Seq insufficienti ({total_len} righe) per creare sequenze (richieste {required_len} righe).")
@@ -834,14 +833,14 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
     print(f"Creazione sequenze Seq2Seq: {total_len - required_len + 1} possibili...")
     for i in range(total_len - required_len + 1):
         enc_end = i + input_window_steps
+        target_start_idx = enc_end + prediction_gap_steps
+        target_end_idx = target_start_idx + output_window_steps
+        decoder_input_start_idx = enc_end
+        decoder_input_end_idx = decoder_input_start_idx + decoder_input_length_actual
+        
         past_feature_window_data = df_to_use.iloc[i : enc_end][current_past_feature_cols]
-        
-        dec_start = enc_end
-        dec_end_forecast = dec_start + forecast_window_steps
-        forecast_feature_window_data = df_to_use.iloc[dec_start : dec_end_forecast][forecast_feature_cols]
-        
-        target_end = dec_start + output_window_steps
-        target_window_data = df_to_use.iloc[dec_start : target_end][target_cols]
+        forecast_feature_window_data = df_to_use.iloc[decoder_input_start_idx : decoder_input_end_idx][forecast_feature_cols]
+        target_window_data = df_to_use.iloc[target_start_idx : target_end_idx][target_cols]
 
         if past_feature_window_data.isnull().any().any() or \
            forecast_feature_window_data.isnull().any().any() or \
@@ -852,56 +851,34 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
         X_decoder.append(forecast_feature_window_data.values)
         y_target.append(target_window_data.values)
 
-        # NUOVA LOGICA PESI
         if use_weighted_loss:
-            dummy_value = df_to_use.iloc[dec_start][dummy_col_name]
+            dummy_value = df_to_use.iloc[decoder_input_start_idx][dummy_col_name]
             sample_weights.append(post_modification_weight if dummy_value == 1 else 1.0)
 
-
-    if not X_encoder or not X_decoder or not y_target:
+    if not X_encoder:
         st.error("Errore creazione sequenze X_enc/X_dec/Y_target Seq2Seq.")
         return None, None, None, None, None, None, None
 
     X_encoder = np.array(X_encoder, dtype=np.float32)
     X_decoder = np.array(X_decoder, dtype=np.float32)
     y_target = np.array(y_target, dtype=np.float32)
-    sample_weights = np.array(sample_weights, dtype=np.float32) if use_weighted_loss else None # NUOVO
-    print(f"Shapes NumPy: Encoder={X_encoder.shape}, Decoder={X_decoder.shape}, Target={y_target.shape}")
-
-    if X_encoder.shape[1] != input_window_steps or X_decoder.shape[1] != forecast_window_steps or y_target.shape[1] != output_window_steps:
-         st.error("Errore shape sequenze Seq2Seq dopo creazione.")
-         return None, None, None, None, None, None, None
-    if X_encoder.shape[2] != len(current_past_feature_cols) or X_decoder.shape[2] != len(forecast_feature_cols) or y_target.shape[2] != len(target_cols):
-         st.error(f"Errore numero feature/target Seq2Seq. Encoder: {X_encoder.shape[2]} (atteso {len(current_past_feature_cols)}), Decoder: {X_decoder.shape[2]} (atteso {len(forecast_feature_cols)}), Target: {y_target.shape[2]} (atteso {len(target_cols)})")
+    sample_weights = np.array(sample_weights, dtype=np.float32) if use_weighted_loss else None
+    
+    if X_encoder.shape[1] != input_window_steps or \
+       X_decoder.shape[1] != decoder_input_length_actual or \
+       y_target.shape[1] != output_window_steps:
+         st.error(f"Errore shape sequenze Seq2Seq. Atteso: Enc[{input_window_steps}], Dec[{decoder_input_length_actual}], Tar[{output_window_steps}]. Ricevuto: Enc[{X_encoder.shape[1]}], Dec[{X_decoder.shape[1]}], Tar[{y_target.shape[1]}]")
          return None, None, None, None, None, None, None
 
     scaler_past_features = MinMaxScaler()
     scaler_forecast_features = MinMaxScaler()
     scaler_targets = MinMaxScaler()
-    num_sequences = X_encoder.shape[0]
-    X_enc_flat = X_encoder.reshape(-1, len(current_past_feature_cols))
-    X_dec_flat = X_decoder.reshape(-1, len(forecast_feature_cols))
-    y_tar_flat = y_target.reshape(-1, len(target_cols))
+    
+    X_enc_scaled = scaler_past_features.fit_transform(X_encoder.reshape(-1, X_encoder.shape[-1])).reshape(X_encoder.shape)
+    X_dec_scaled = scaler_forecast_features.fit_transform(X_decoder.reshape(-1, X_decoder.shape[-1])).reshape(X_decoder.shape)
+    y_tar_scaled = scaler_targets.fit_transform(y_target.reshape(-1, y_target.shape[-1])).reshape(y_target.shape)
 
-    try:
-        X_enc_scaled_flat = scaler_past_features.fit_transform(X_enc_flat)
-        X_dec_scaled_flat = scaler_forecast_features.fit_transform(X_dec_flat)
-        y_tar_scaled_flat = scaler_targets.fit_transform(y_tar_flat)
-    except ValueError as ve_scale_s2s:
-        if "Input contains NaN" in str(ve_scale_s2s):
-             st.error(f"Errore scaling Seq2Seq: Input contiene NaN. Dettagli: {ve_scale_s2s}")
-        else:
-             st.error(f"Errore scaling Seq2Seq: {ve_scale_s2s}")
-        return None, None, None, None, None, None, None
-    except Exception as e_scale:
-        st.error(f"Errore scaling Seq2Seq generico: {e_scale}")
-        return None, None, None, None, None, None, None
-
-    X_enc_scaled = X_enc_scaled_flat.reshape(num_sequences, input_window_steps, len(current_past_feature_cols))
-    X_dec_scaled = X_dec_scaled_flat.reshape(num_sequences, forecast_window_steps, len(forecast_feature_cols))
-    y_tar_scaled = y_tar_scaled_flat.reshape(num_sequences, output_window_steps, len(target_cols))
-
-    print(f"Dati Seq2Seq pronti: X_enc_scaled={X_enc_scaled.shape}, X_dec_scaled={X_dec_scaled.shape}, y_tar_scaled={y_tar_scaled.shape}. Past features utilizzate: {len(current_past_feature_cols)}")
+    print(f"Dati Seq2Seq pronti: X_enc_scaled={X_enc_scaled.shape}, X_dec_scaled={X_dec_scaled.shape}, y_tar_scaled={y_tar_scaled.shape}.")
     return (X_enc_scaled, X_dec_scaled, y_tar_scaled, sample_weights,
             scaler_past_features, scaler_forecast_features, scaler_targets)
 
@@ -1248,7 +1225,8 @@ def find_available_models(models_dir=MODELS_DIR):
             model_type = config_data.get("model_type", "LSTM")
 
             if model_type == "Seq2Seq" or model_type == "Seq2SeqAttention":
-                required_keys = ["input_window_steps", "output_window_steps", "forecast_window_steps",
+                # CHIAVI COMPATIBILI: non richiediamo 'prediction_gap_steps' né 'forecast_window_steps'
+                required_keys = ["input_window_steps", "output_window_steps",
                                  "hidden_size", "num_layers", "dropout",
                                  "all_past_feature_columns", "forecast_input_columns", "target_columns"]
                 s_past_p = os.path.join(models_dir, f"{base}_past_features.joblib")
@@ -1264,8 +1242,9 @@ def find_available_models(models_dir=MODELS_DIR):
                     })
                     valid_model = True
             elif model_type == "Transformer":
+                 # CHIAVI COMPATIBILI
                 required_keys = [
-                    "input_window_steps", "output_window_steps", "forecast_window_steps",
+                    "input_window_steps", "output_window_steps",
                     "d_model", "nhead", "num_encoder_layers", "num_decoder_layers", "dim_feedforward", "dropout",
                     "all_past_feature_columns", "forecast_input_columns", "target_columns"
                 ]
@@ -1643,20 +1622,24 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
     output_steps = predictions.shape[0]
     attribution_text = ATTRIBUTION_PHRASE
     figs = []
+    
+    # CHIAVE DI COMPATIBILITA': usiamo .get() con un default di 0
+    prediction_gap_steps = config.get("prediction_gap_steps", 0)
 
     for i, sensor in enumerate(target_cols):
         fig = go.Figure()
         if start_time:
-            # --- CORREZIONE QUI ---
-            # La previsione inizia a 'start_time', non un passo dopo. Rimosso il "+ 1".
-            time_steps_datetime = [start_time + timedelta(minutes=30 * step) for step in range(output_steps)]
-            # --- FINE CORREZIONE ---
+            # Calcola l'inizio effettivo della previsione tenendo conto dello skip
+            prediction_start_time_adjusted = start_time + timedelta(minutes=30 * prediction_gap_steps)
+            
+            time_steps_datetime = [prediction_start_time_adjusted + timedelta(minutes=30 * step) for step in range(output_steps)]
             x_axis, x_title = time_steps_datetime, "Data e Ora"
             x_tick_format = "%d/%m %H:%M"
         else:
-            time_steps_relative = np.arange(1, output_steps + 1) * 0.5
+            time_steps_relative = np.arange(1 + prediction_gap_steps, 1 + prediction_gap_steps + output_steps) * 0.5
             x_axis, x_title = time_steps_relative, "Ore Future (passi da 30 min)"
             x_tick_format = None
+            
         x_axis_np = np.array(x_axis)
 
         station_name_graph = get_station_label(sensor, short=False)
@@ -1671,10 +1654,11 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
                 y_axis_unit = unit_content.strip()
                 y_axis_title_h = f"Livello H ({y_axis_unit})"
         
+        # ... (Il resto della funzione rimane invariato) ...
+        # (La logica per gestire quantili, incertezza, soglie e portata è già corretta)
+        
         # Logica per gestire incertezza (Quantile o MC Dropout)
         if predictions.ndim == 3: # Modalità Quantile
-            # predictions shape: (seq_len, num_targets, num_quantiles)
-            # Assumiamo 3 quantili: [lower, median, upper]
             median_prediction = predictions[:, i, 1]
             lower_bound = predictions[:, i, 0]
             upper_bound = predictions[:, i, 2]
@@ -1713,8 +1697,6 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
                     x=x_axis_np, y=actual_data[:, i], mode='lines', name=f'{actual_data_label} H ({y_axis_unit})',
                     line=dict(color='green', dash='dashdot'), yaxis='y1'
                 ))
-            else:
-                st.warning(f"Shape 'actual_data' ({actual_data.shape}) non compatibile per {sensor}.")
 
         threshold_info = SIMULATION_THRESHOLDS.get(sensor, {})
         soglia_attenzione = threshold_info.get('attenzione')
@@ -2541,14 +2523,12 @@ with st.sidebar:
         display_feedback_name = cfg.get("display_name", active_model_name_sess)
         st.success(f"Modello Attivo: **{display_feedback_name}** ({model_type_sess})")
         
-        # Gestisce i modelli che usano le chiavi con "_steps"
         if model_type_sess in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
-            st.caption(f"Input: {cfg['input_window_steps']}s | Forecast: {cfg.get('forecast_window_steps', 'N/A')}s | Output: {cfg['output_window_steps']}s")
+            gap_steps_sidebar = cfg.get('prediction_gap_steps', 0)
+            st.caption(f"Input: {cfg['input_window_steps']}s | Salto: {gap_steps_sidebar}s | Output: {cfg['output_window_steps']}s")
         elif model_type_sess == "SpatioTemporalGNN":
-            # Caso specifico per GNN che usa le chiavi corrette
             st.caption(f"Input: {cfg['input_window_steps']}s | Output: {cfg['output_window_steps']}s")
-        # Gestisce il modello LSTM standard che usa chiavi diverse
-        else:
+        else: # LSTM Standard
             st.caption(f"Input: {cfg['input_window']}s | Output: {cfg['output_window']}s")
     elif load_error_sidebar and active_model_name_sess not in [MODEL_CHOICE_NONE]: st.error(f"Caricamento modello '{active_model_name_sess}' fallito.")
     elif active_model_name_sess == MODEL_CHOICE_UPLOAD and not active_model_sess: st.info("Completa il caricamento manuale del modello LSTM.")
@@ -2818,7 +2798,8 @@ elif page == 'Simulazione':
 
     target_columns_model = active_config['target_columns']
     if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
-        st.caption(f"Input Storico: {active_config['input_window_steps']}s | Input Forecast: {active_config['forecast_window_steps']}s | Output: {active_config['output_window_steps']}s")
+        prediction_gap_steps_sim = active_config.get('prediction_gap_steps', 0)
+        st.caption(f"Input Storico: {active_config['input_window_steps']}s | Salto Previsione: {prediction_gap_steps_sim}s | Lunghezza Output: {active_config['output_window_steps']}s")
         with st.expander(f"Dettagli Colonne Modello {active_model_type}"):
              st.markdown("**Feature Storiche (Input Encoder):**"); st.caption(f"`{', '.join(active_config['all_past_feature_columns'])}`")
              st.markdown("**Feature Forecast (Decoder Input):**"); st.caption(f"`{', '.join(active_config['forecast_input_columns'])}`")
@@ -2827,7 +2808,7 @@ elif page == 'Simulazione':
         output_steps_model = active_config['output_window_steps']
         past_feature_cols_model = active_config['all_past_feature_columns']
         forecast_feature_cols_model = active_config['forecast_input_columns']
-        forecast_steps_model = active_config['forecast_window_steps']
+        # forecast_steps_model = active_config['forecast_window_steps'] # Non più necessario qui
     elif active_model_type == "SpatioTemporalGNN":
         st.caption(f"Input: {active_config['input_window_steps']}s | Output: {active_config['output_window_steps']}s")
         with st.expander(f"Dettagli Colonne Modello {active_model_type}"):
@@ -2872,9 +2853,10 @@ elif page == 'Simulazione':
          else: st.info("Clicca il bottone 'Carica/Aggiorna Storico da GSheet' per recuperare i dati necessari.")
 
          if past_data_loaded_s2s:
-             num_rows_decoder_input = max(forecast_steps_model, output_steps_model)
-             st.markdown(f"**Passo 2: Inserisci Input Futuri per Decoder ({num_rows_decoder_input} steps)**"); st.caption(f"Inserisci i valori per le seguenti feature: `{', '.join(forecast_feature_cols_model)}`")
-             forecast_df_initial = pd.DataFrame(index=range(num_rows_decoder_input), columns=forecast_feature_cols_model); last_known_past_data = st.session_state.seq2seq_past_data_gsheet.iloc[-1]
+             decoder_input_len_actual = prediction_gap_steps_sim + output_steps_model
+             st.markdown(f"**Passo 2: Inserisci Input Futuri per Decoder ({decoder_input_len_actual} steps)**")
+             st.caption(f"Questi dati coprono il periodo di **salto** ({prediction_gap_steps_sim} steps) e il periodo di **previsione** ({output_steps_model} steps).")
+             forecast_df_initial = pd.DataFrame(index=range(decoder_input_len_actual), columns=forecast_feature_cols_model); last_known_past_data = st.session_state.seq2seq_past_data_gsheet.iloc[-1]
              for col in forecast_feature_cols_model:
                   if 'pioggia' in col.lower() or 'cumulata' in col.lower(): forecast_df_initial[col] = 0.0
                   elif col in last_known_past_data.index: forecast_df_initial[col] = last_known_past_data.get(col, 0.0)
@@ -2882,7 +2864,7 @@ elif page == 'Simulazione':
              edited_forecast_df = st.data_editor(forecast_df_initial.round(2), key="seq2seq_forecast_editor", num_rows="fixed", use_container_width=True, column_config={col: st.column_config.NumberColumn(label=get_station_label(col, short=True), help=f"Valore previsto per {col}", min_value=0.0 if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower() or 'livello' in col.lower()) else None, max_value=100.0 if 'umidit' in col.lower() else None, format="%.1f" if ('pioggia' in col.lower() or 'cumulata' in col.lower() or 'umidit' in col.lower()) else "%.2f", step=0.5 if ('pioggia' in col.lower() or 'cumulata' in col.lower()) else (1.0 if 'umidit' in col.lower() else 0.1), required=True) for col in forecast_feature_cols_model})
              forecast_data_valid_s2s = False
              if edited_forecast_df is not None and not edited_forecast_df.isnull().any().any():
-                 if edited_forecast_df.shape == (num_rows_decoder_input, len(forecast_feature_cols_model)):
+                 if edited_forecast_df.shape == (decoder_input_len_actual, len(forecast_feature_cols_model)):
                      try: edited_forecast_df.astype(float); forecast_data_valid_s2s = True
                      except ValueError: st.warning("Valori non numerici rilevati nella tabella previsioni.")
                  else: st.warning("Numero di righe o colonne errato nella tabella previsioni.")
@@ -3075,45 +3057,54 @@ if st.button("Esegui Test Walk-Forward su Storico", type="primary", key="run_wal
     all_period_mses = {target_col: [] for target_col in target_columns_model_test}
     
     progress_bar_test = st.progress(0.0, text="Avvio test walk-forward...")
+    
+    # CHIAVE DI COMPATIBILITA': Leggiamo il gap dalla config del modello
+    prediction_gap_steps_test = active_config.get('prediction_gap_steps', 0)
+    
+    # Ricalcoliamo required_len_for_test qui dentro per essere sicuri
+    if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
+        required_len_for_test = input_steps_model_test + prediction_gap_steps_test + output_steps_model_test
+    # (Le altre logiche per LSTM e GNN sono già corrette)
 
     for i_period in range(num_evaluation_periods):
         progress_bar_test.progress((i_period + 1) / num_evaluation_periods, text=f"Elaborazione Periodo {i_period + 1}/{num_evaluation_periods}...")
         
-        # Definiamo gli indici in modo esplicito
         current_input_start_index = first_input_start_index + (i_period * stride_between_periods)
         input_data_end_index = current_input_start_index + input_steps_model_test
         
-        # La finestra degli "actuals" (dati reali per il confronto) inizia subito dopo
-        actual_data_start_idx = input_data_end_index
-        actual_data_end_idx = actual_data_start_idx + output_steps_model_test
+        # SLICING COMPATIBILE CHE TIENE CONTO DEL GAP
+        target_start_idx = input_data_end_index + prediction_gap_steps_test
+        target_end_idx = target_start_idx + output_steps_model_test
         
-        if actual_data_end_idx > len(df_current_csv):
+        decoder_input_start_idx = input_data_end_index
+        decoder_input_end_idx = decoder_input_start_idx + prediction_gap_steps_test + output_steps_model_test
+        
+        if target_end_idx > len(df_current_csv):
             st.warning(f"Periodo {i_period+1} saltato: dati insufficienti nel CSV.")
             continue
 
-        # Estraiamo le fette di dati (slice)
         input_df_period_slice = df_current_csv.iloc[current_input_start_index:input_data_end_index].copy()
-        actual_df_period_slice = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx].copy()
+        actual_df_period_slice = df_current_csv.iloc[target_start_idx:target_end_idx].copy()
         
-        # Verifichiamo che le fette non siano vuote
-        if input_df_period_slice.empty or actual_df_period_slice.empty:
-            st.warning(f"Periodo {i_period+1} saltato: slice di dati vuoto.")
+        if actual_df_period_slice.empty:
+            st.warning(f"Periodo {i_period+1} saltato: slice di dati reali vuoto.")
             continue
-
-        # Dati grezzi e timestamp per il confronto e la visualizzazione
+            
         actual_data_np = actual_df_period_slice[target_columns_model_test].values
-        start_time_prediction_period = actual_df_period_slice[date_col_name_csv].iloc[0]
+        start_time_prediction_period = df_current_csv.iloc[input_data_end_index][date_col_name_csv] # L'inizio della previsione è il timestamp DOPO l'ultimo dato di input
 
-        predictions_period = None
-        uncertainty_period = None
-        input_cols_for_display = []
+        predictions_period = None; uncertainty_period = None; input_cols_for_display = []
         
         if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
-            past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
-            # Per il decoder, usiamo i dati reali dalla finestra di previsione
-            future_input_np_raw = actual_df_period_slice[forecast_feature_cols_model_test].values
-            input_cols_for_display = past_feature_cols_model_test
+            future_input_for_decoder_slice = df_current_csv.iloc[decoder_input_start_idx:decoder_input_end_idx].copy()
+            if future_input_for_decoder_slice.empty:
+                st.warning(f"Periodo {i_period+1} saltato: slice dati per decoder vuoto.")
+                continue
 
+            past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
+            future_input_np_raw = future_input_for_decoder_slice[forecast_feature_cols_model_test].values
+            input_cols_for_display = past_feature_cols_model_test
+            # (Il resto della logica di predizione rimane invariato)
             if num_passes_test > 1 and not is_quantile_model_test:
                 predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(
                     active_model, past_input_np_raw, future_input_np_raw, 
@@ -3428,8 +3419,18 @@ elif page == 'Allenamento Modello':
             c1, c2, c3 = st.columns(3)
             with c1:
                 iw_steps = st.number_input("Input Storico (steps 30min)", 2, value=48, step=2, key="t_s2s_in")
-                fw_steps = st.number_input("Input Forecast (steps 30min)", 1, value=6, step=1, key="t_s2s_fore")
-                ow_steps = st.number_input("Output Previsione (steps 30min)", 1, value=6, step=1, key="t_s2s_out")
+                
+                # ECCO L'INPUT CHE MANCAVA
+                prediction_gap_steps = st.number_input(
+                    "Passi da Saltare prima della Previsione (steps 30min)", 
+                    min_value=0, 
+                    value=6, 
+                    step=1, 
+                    key="t_s2s_gap", 
+                    help="Quanti passi da 30 min il modello deve 'ignorare' dopo l'ultimo dato di input prima di iniziare a prevedere. Esempio: 6 = prevede a partire da 3 ore dopo."
+                )
+                
+                ow_steps = st.number_input("Lunghezza Previsione (steps 30min)", 1, value=6, step=1, key="t_s2s_out")
                 n_splits_cv = st.number_input("Numero Fold CV", 2, value=3, step=1, key="t_s2s_n_splits_cv")
             with c2:
                 if train_model_type == "Transformer":
@@ -3458,8 +3459,9 @@ elif page == 'Allenamento Modello':
             with st.spinner(f"Preparazione dati {train_model_type}..."):
                 # <<< MODIFICA 3: Passaggio parametri
                 data_tuple = prepare_training_data_seq2seq(
-                    df_current_csv.copy(), selected_past_features, selected_forecast_features, selected_targets, 
-                    iw_steps, fw_steps, ow_steps,
+                    df_current_csv.copy(), selected_past_features, selected_forecast_features, selected_targets,
+                    iw_steps, ow_steps,
+                    prediction_gap_steps=prediction_gap_steps,
                     use_weighted_loss=use_weighted_loss,
                     dummy_col_name=dummy_col_name,
                     post_modification_weight=post_mod_weight
@@ -3513,7 +3515,20 @@ elif page == 'Allenamento Modello':
                     joblib.dump(sc_fore, f"{base_path}_forecast_features.joblib")
                     joblib.dump(sc_tar, f"{base_path}_targets.joblib")
                     
-                    config_save = {"display_name": save_name, "training_date": datetime.now(italy_tz).isoformat(), "model_type": train_model_type.replace(" (Encoder-Decoder)", ""), "input_window_steps": iw_steps, "forecast_window_steps": fw_steps, "output_window_steps": ow_steps, "all_past_feature_columns": selected_past_features, "forecast_input_columns": selected_forecast_features, "target_columns": selected_targets, "dropout": dr, "training_mode": training_mode.split()[0].lower(), "loss_function": loss_choice}
+                    config_save = {
+                        "display_name": save_name,
+                        "training_date": datetime.now(italy_tz).isoformat(),
+                        "model_type": train_model_type.replace(" (Encoder-Decoder)", ""),
+                        "input_window_steps": iw_steps,
+                        "output_window_steps": ow_steps,
+                        "prediction_gap_steps": prediction_gap_steps, # SALVA IL NUOVO PARAMETRO
+                        "all_past_feature_columns": selected_past_features,
+                        "forecast_input_columns": selected_forecast_features,
+                        "target_columns": selected_targets,
+                        "dropout": dr,
+                        "training_mode": training_mode.split()[0].lower(),
+                        "loss_function": loss_choice
+                    }
                     if training_mode == "Quantile Regression": config_save["quantiles"] = quantiles_list
                     if train_model_type == "Transformer":
                         config_save.update({"d_model": d_model, "nhead": nhead, "dim_feedforward": dim_ff, "num_encoder_layers": num_enc_l, "num_decoder_layers": num_dec_l})
