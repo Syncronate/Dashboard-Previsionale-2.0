@@ -1635,6 +1635,7 @@ def plot_attention_weights(attention_weights, input_labels, output_labels):
     )
     return fig
 
+# SOSTITUISCI QUESTA INTERA FUNZIONE
 def plot_predictions(predictions, config, start_time=None, actual_data=None, actual_data_label="Dati Reali CSV", uncertainty=None):
     if config is None or predictions is None: return []
 
@@ -1646,7 +1647,10 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
     for i, sensor in enumerate(target_cols):
         fig = go.Figure()
         if start_time:
-            time_steps_datetime = [start_time + timedelta(minutes=30 * (step + 1)) for step in range(output_steps)]
+            # --- CORREZIONE QUI ---
+            # La previsione inizia a 'start_time', non un passo dopo. Rimosso il "+ 1".
+            time_steps_datetime = [start_time + timedelta(minutes=30 * step) for step in range(output_steps)]
+            # --- FINE CORREZIONE ---
             x_axis, x_title = time_steps_datetime, "Data e Ora"
             x_tick_format = "%d/%m %H:%M"
         else:
@@ -3063,174 +3067,155 @@ elif page == 'Test Modello su Storico':
 
     st.markdown("---")
     
-    if st.button("Esegui Test Walk-Forward su Storico", type="primary", key="run_walk_forward_test_button"):
-        from sklearn.metrics import mean_squared_error
+# SOSTITUISCI QUESTO INTERO BLOCCO if st.button(...)
+if st.button("Esegui Test Walk-Forward su Storico", type="primary", key="run_walk_forward_test_button"):
+    from sklearn.metrics import mean_squared_error
+    
+    evaluation_results_list = []
+    all_period_mses = {target_col: [] for target_col in target_columns_model_test}
+    
+    progress_bar_test = st.progress(0.0, text="Avvio test walk-forward...")
+
+    for i_period in range(num_evaluation_periods):
+        progress_bar_test.progress((i_period + 1) / num_evaluation_periods, text=f"Elaborazione Periodo {i_period + 1}/{num_evaluation_periods}...")
         
-        evaluation_results_list = []
-        all_period_mses = {target_col: [] for target_col in target_columns_model_test}
+        # Definiamo gli indici in modo esplicito
+        current_input_start_index = first_input_start_index + (i_period * stride_between_periods)
+        input_data_end_index = current_input_start_index + input_steps_model_test
         
-        progress_bar_test = st.progress(0.0, text="Avvio test walk-forward...")
+        # La finestra degli "actuals" (dati reali per il confronto) inizia subito dopo
+        actual_data_start_idx = input_data_end_index
+        actual_data_end_idx = actual_data_start_idx + output_steps_model_test
+        
+        if actual_data_end_idx > len(df_current_csv):
+            st.warning(f"Periodo {i_period+1} saltato: dati insufficienti nel CSV.")
+            continue
 
-        for i_period in range(num_evaluation_periods):
-            progress_bar_test.progress((i_period + 1) / num_evaluation_periods, text=f"Elaborazione Periodo {i_period + 1}/{num_evaluation_periods}...")
+        # Estraiamo le fette di dati (slice)
+        input_df_period_slice = df_current_csv.iloc[current_input_start_index:input_data_end_index].copy()
+        actual_df_period_slice = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx].copy()
+        
+        # Verifichiamo che le fette non siano vuote
+        if input_df_period_slice.empty or actual_df_period_slice.empty:
+            st.warning(f"Periodo {i_period+1} saltato: slice di dati vuoto.")
+            continue
+
+        # Dati grezzi e timestamp per il confronto e la visualizzazione
+        actual_data_np = actual_df_period_slice[target_columns_model_test].values
+        start_time_prediction_period = actual_df_period_slice[date_col_name_csv].iloc[0]
+
+        predictions_period = None
+        uncertainty_period = None
+        input_cols_for_display = []
+        
+        if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
+            past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
+            # Per il decoder, usiamo i dati reali dalla finestra di previsione
+            future_input_np_raw = actual_df_period_slice[forecast_feature_cols_model_test].values
+            input_cols_for_display = past_feature_cols_model_test
+
+            if num_passes_test > 1 and not is_quantile_model_test:
+                predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(
+                    active_model, past_input_np_raw, future_input_np_raw, 
+                    active_scalers, active_config, active_device, 
+                    num_passes=num_passes_test
+                )
+            else:
+                predictions_period, _ = predict_seq2seq(
+                    active_model, past_input_np_raw, future_input_np_raw,
+                    active_scalers, active_config, active_device
+                )
+        
+        elif active_model_type == "SpatioTemporalGNN":
+            node_columns_test = active_config['node_order']
+            feature_mapping_test = active_config['node_feature_mapping']
+            num_features_test = active_config['num_features']
             
-            # --- Data extraction for the current period ---
-            current_input_start_index = first_input_start_index + (i_period * stride_between_periods)
-            input_data_end_index = current_input_start_index + input_steps_model_test
-            actual_data_start_idx = current_input_start_index + input_steps_model_test
-            actual_data_end_idx = actual_data_start_idx + output_steps_model_test
-            
-            if actual_data_end_idx > len(df_current_csv):
-                st.warning(f"Periodo {i_period+1} saltato: dati insufficienti nel CSV.")
-                continue
+            all_gnn_model_feature_cols = []
+            for node_name in node_columns_test:
+                all_gnn_model_feature_cols.append(node_name)
+                all_gnn_model_feature_cols.extend(feature_mapping_test.get(node_name, []))
+            input_cols_for_display = sorted(list(set(all_gnn_model_feature_cols)))
 
-            # This DataFrame slice contains all potential raw input features for the current window
-            input_df_period_slice = df_current_csv.iloc[current_input_start_index:input_data_end_index].copy()
-            actual_df = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx]
-            actual_data_np = actual_df[target_columns_model_test].values
-            start_time_prediction_period = actual_df[date_col_name_csv].iloc[0] # This is the start of the prediction window
-
-
-            # --- NUOVA LOGICA: Preparazione input per il modello E per la visualizzazione ---
-            input_cols_for_display = []
-            raw_input_df_for_table = input_df_period_slice.copy() # Store the full slice for later filtering
-            uncertainty_period = None # Initialize uncertainty period to None
-
-            if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
-                past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
-                future_input_np_raw = actual_df[forecast_feature_cols_model_test].values
-                
-                input_cols_for_display = past_feature_cols_model_test # Per la visualizzazione, questo è corretto
-                
-                # --- CORREZIONE ---
-                # Passa i dati grezzi (NumPy array) direttamente alle funzioni.
-                # La scalatura e la conversione in tensore avvengono all'interno di queste funzioni.
-                if num_passes_test > 1 and not is_quantile_model_test:
-                    predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(
-                        active_model, past_input_np_raw, future_input_np_raw, 
-                        active_scalers, active_config, active_device, 
-                        num_passes=num_passes_test
-                    )
-                else:
-                    predictions_period, _ = predict_seq2seq(
-                        active_model, past_input_np_raw, future_input_np_raw,
-                        active_scalers, active_config, active_device
-                    )
-                # --- FINE CORREZIONE ---
-
-            elif active_model_type == "SpatioTemporalGNN":
-                node_columns_test = active_config['node_order']
-                feature_mapping_test = active_config['node_feature_mapping']
-                num_features_test = active_config['num_features']
-                
-                # Build a list of all feature column names that will be used by the GNN model
-                # This ensures the display table will have the same columns used by the GNN.
-                all_gnn_model_feature_cols = []
-                for node_name in node_columns_test:
-                    all_gnn_model_feature_cols.append(node_name) # Main node feature (e.g., level)
+            raw_input_data_multi_feature = np.zeros((input_steps_model_test, len(node_columns_test), num_features_test), dtype=np.float32)
+            for t in range(input_steps_model_test):
+                for node_idx, node_name in enumerate(node_columns_test):
+                    raw_input_data_multi_feature[t, node_idx, 0] = input_df_period_slice[node_name].iloc[t]
                     additional_features = feature_mapping_test.get(node_name, [])
-                    all_gnn_model_feature_cols.extend(additional_features)
-                # Ensure uniqueness and order for `input_cols_for_display`
-                input_cols_for_display = sorted(list(set(all_gnn_model_feature_cols)))
-                
-                # Construct the raw (unscaled) multi-feature input array for the GNN model
-                raw_input_data_multi_feature_for_gnn_model = np.zeros((input_steps_model_test, len(node_columns_test), num_features_test), dtype=np.float32)
+                    for feat_idx, feat_col in enumerate(additional_features):
+                        if feat_col in input_df_period_slice.columns:
+                            raw_input_data_multi_feature[t, node_idx, 1 + feat_idx] = input_df_period_slice[feat_col].iloc[t]
 
-                for t in range(input_steps_model_test):
-                    for node_idx, node_name in enumerate(node_columns_test):
-                        raw_input_data_multi_feature_for_gnn_model[t, node_idx, 0] = input_df_period_slice[node_name].iloc[t]
-                        additional_features = feature_mapping_test.get(node_name, [])
-                        for feat_idx, feat_col in enumerate(additional_features):
-                            if feat_col in input_df_period_slice.columns:
-                                raw_input_data_multi_feature_for_gnn_model[t, node_idx, 1 + feat_idx] = input_df_period_slice[feat_col].iloc[t]
-                            else:
-                                raw_input_data_multi_feature_for_gnn_model[t, node_idx, 1 + feat_idx] = 0.0 # Default if feature not found
+            predictions_period, uncertainty_period = predict_gnn(active_model, raw_input_data_multi_feature, active_scalers, active_config, active_device, uncertainty_passes=num_passes_test)
 
-                # predict_gnn expects the raw (unscaled) multi-feature input, it will scale it itself.
-                predictions_period, uncertainty_period = predict_gnn(active_model, raw_input_data_multi_feature_for_gnn_model, active_scalers, active_config, active_device, uncertainty_passes=num_passes_test)
+        else: # LSTM Standard
+            input_np_raw = input_df_period_slice[feature_columns_model_test].values
+            input_cols_for_display = feature_columns_model_test
+            
+            if num_passes_test > 1 and not is_quantile_model_test:
+                predictions_period, uncertainty_period = predict_with_uncertainty(active_model, input_np_raw, active_scalers[0], active_scalers[1], active_config, active_device, num_passes=num_passes_test)
+            else:
+                predictions_period = predict(active_model, input_np_raw, active_scalers[0], active_scalers[1], active_config, active_device)
 
-            else: # LSTM Standard
-                # Raw input for the model is also the raw input for display
-                input_np_raw = input_df_period_slice[feature_columns_model_test].values
-                input_cols_for_display = feature_columns_model_test
-                
-                # The predict function (and predict_with_uncertainty) expects raw input and scales internally.
-                if num_passes_test > 1 and not is_quantile_model_test:
-                    predictions_period, uncertainty_period = predict_with_uncertainty(active_model, input_np_raw, active_scalers[0], active_scalers[1], active_config, active_device, num_passes=num_passes_test)
-                else:
-                    predictions_period = predict(active_model, input_np_raw, active_scalers[0], active_scalers[1], active_config, active_device)
-            # --- FINE NUOVA LOGICA ---
+        if predictions_period is not None:
+            period_mses = {}
+            for i_target, target_col in enumerate(target_columns_model_test):
+                pred_series = predictions_period[:, i_target, 1] if predictions_period.ndim == 3 else predictions_period[:, i_target]
+                mse = mean_squared_error(actual_data_np[:, i_target], pred_series)
+                period_mses[target_col] = mse
+                all_period_mses[target_col].append(mse)
 
-            if predictions_period is not None:
-                period_mses = {}
-                for i_target, target_col in enumerate(target_columns_model_test):
-                    pred_series = predictions_period[:, i_target, 1] if predictions_period.ndim == 3 else predictions_period[:, i_target]
-                    mse = mean_squared_error(actual_data_np[:, i_target], pred_series)
-                    period_mses[target_col] = mse
-                    all_period_mses[target_col].append(mse)
+            evaluation_results_list.append({
+                "period_num": i_period + 1,
+                "predictions": predictions_period,
+                "actuals": actual_data_np,
+                "uncertainty": uncertainty_period,
+                "start_time_prediction_period": start_time_prediction_period,
+                "mses": period_mses,
+                "raw_input_df_for_table": input_df_period_slice, # Salva lo slice corretto
+                "input_cols_for_display": input_cols_for_display,
+            })
 
-                # --- NUOVA LOGICA: Salva i dati di input raw per la visualizzazione ---
-                evaluation_results_list.append({
-                    "period_num": i_period + 1,
-                    "predictions": predictions_period,
-                    "actuals": actual_data_np,
-                    "uncertainty": uncertainty_period,
-                    "start_time_prediction_period": start_time_prediction_period, # Inizio della finestra di previsione
-                    "mses": period_mses,
-                    "raw_input_df_for_table": raw_input_df_for_table, # La fetta completa del DataFrame di input
-                    "input_cols_for_display": input_cols_for_display, # Le colonne che il modello ha effettivamente usato
-                })
-                # --- FINE NUOVA LOGICA ---
+    progress_bar_test.empty()
+    
+    if not evaluation_results_list:
+        st.error("Nessun periodo di test è stato completato con successo.")
+    else:
+        st.success(f"Test completato per {len(evaluation_results_list)} periodi.")
+        for result in evaluation_results_list:
+            st.subheader(f"Risultati Test - Periodo {result['period_num']}")
+            st.markdown(f"**Inizio periodo di previsione:** {result['start_time_prediction_period'].strftime('%d/%m/%Y %H:%M')}")
+            
+            figs = plot_predictions(result['predictions'], active_config, start_time=result['start_time_prediction_period'], actual_data=result['actuals'], uncertainty=result['uncertainty'])
+            
+            num_graph_cols = min(len(figs), 2)
+            graph_cols = st.columns(num_graph_cols)
+            for i_fig, fig in enumerate(figs):
+                with graph_cols[i_fig % num_graph_cols]:
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            st.write("Errore Quadratico Medio (MSE) per il periodo:")
+            st.dataframe(pd.DataFrame.from_dict(result['mses'], orient='index', columns=['MSE']).round(5))
 
-        progress_bar_test.empty()
-        
-        if not evaluation_results_list:
-            st.error("Nessun periodo di test è stato completato con successo.")
-        else:
-            st.success(f"Test completato per {len(evaluation_results_list)} periodi.")
-            for result in evaluation_results_list:
-                st.subheader(f"Risultati Test - Periodo {result['period_num']}")
-                st.markdown(f"**Inizio periodo di previsione:** {result['start_time_prediction_period'].strftime('%d/%m/%Y %H:%M')}")
-                
-                figs = plot_predictions(result['predictions'], active_config, start_time=result['start_time_prediction_period'], actual_data=result['actuals'], uncertainty=result['uncertainty'])
-                
-                num_graph_cols = min(len(figs), 2)
-                graph_cols = st.columns(num_graph_cols)
-                for i_fig, fig in enumerate(figs):
-                    with graph_cols[i_fig % num_graph_cols]:
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                st.write("Errore Quadratico Medio (MSE) per il periodo:")
-                st.dataframe(pd.DataFrame.from_dict(result['mses'], orient='index', columns=['MSE']).round(5))
+            st.markdown("### Dati Input utilizzati per la Previsione")
+            st.caption(f"Gli ultimi {N_INPUT_DISPLAY_STEPS} passi temporali che il modello ha ricevuto come input per questa previsione.")
 
-                # --- NUOVA LOGICA (SEMPLIFICATA E CORRETTA): Display Input Data Table ---
-                st.markdown("### Dati Input utilizzati per la Previsione")
-                st.caption(f"Gli ultimi {N_INPUT_DISPLAY_STEPS} passi temporali che il modello ha ricevuto come input per questa previsione.")
+            raw_input_df_full_slice = result['raw_input_df_for_table']
+            input_cols_to_show = result['input_cols_for_display']
+            
+            if raw_input_df_full_slice is not None and not raw_input_df_full_slice.empty:
+                last_n_inputs_df = raw_input_df_full_slice.tail(N_INPUT_DISPLAY_STEPS).copy()
+                cols_for_final_table = [date_col_name_csv] + [col for col in input_cols_to_show if col in last_n_inputs_df.columns]
+                display_table = last_n_inputs_df[cols_for_final_table].set_index(date_col_name_csv)
+                st.dataframe(display_table.style.format("{:.3f}"), use_container_width=True)
+            else:
+                st.info("Dati input per questo periodo non disponibili per la visualizzazione.")
 
-                raw_input_df_full_slice = result['raw_input_df_for_table']
-                input_cols_to_show = result['input_cols_for_display']
-                
-                if raw_input_df_full_slice is not None and not raw_input_df_full_slice.empty:
-                    # Seleziona le ultime N righe dalla slice di input originale
-                    last_n_inputs_df = raw_input_df_full_slice.tail(N_INPUT_DISPLAY_STEPS).copy()
-                    
-                    # Colonne da visualizzare: la colonna della data + le feature del modello
-                    cols_for_final_table = [date_col_name_csv] + input_cols_to_show
-                    
-                    # Filtra per le colonne di interesse e imposta la data come indice
-                    display_table = last_n_inputs_df[cols_for_final_table].set_index(date_col_name_csv)
-                    
-                    # Mostra il DataFrame formattato
-                    st.dataframe(display_table.style.format("{:.3f}"), use_container_width=True)
-                else:
-                    st.info("Dati input per questo periodo non disponibili per la visualizzazione.")
-                # --- FINE NUOVA LOGICA ---
+            st.divider()
 
-                st.divider()
-
-            st.subheader("Riepilogo Metriche Medie su Tutti i Periodi")
-            avg_mse_data = {get_station_label(k): np.mean(v) for k, v in all_period_mses.items() if v}
-            st.dataframe(pd.DataFrame.from_dict(avg_mse_data, orient='index', columns=['MSE Medio']).round(5))
+        st.subheader("Riepilogo Metriche Medie su Tutti i Periodi")
+        avg_mse_data = {get_station_label(k): np.mean(v) for k, v in all_period_mses.items() if v}
+        st.dataframe(pd.DataFrame.from_dict(avg_mse_data, orient='index', columns=['MSE Medio']).round(5))
 
 elif page == 'Analisi Dati Storici':
     st.header('Analisi Dati Storici (da file CSV)')
