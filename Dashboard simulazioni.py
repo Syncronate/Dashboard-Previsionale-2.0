@@ -85,7 +85,7 @@ SIMULATION_THRESHOLDS = {
 N_INPUT_DISPLAY_STEPS = 10 # Numero di passi di input da mostrare nella tabella
 
 # --- NUOVE COSTANTI PER LA FRASE DI ATTRIBUZIONE ---
-ATTRIBUTION_PHRASE = "Previsione progettata ed elaborata da Alberto Bussaglia del Comune di Senigallia. La previsione è di tipo probabilistico e non rappresenta una certezza.<br> Per maggiori informazioni, o per ottenere il consenso all'utilizzo/pubblicazione, contattare l'autore."
+ATTRIBUTION_PHRASE = "Previsione progettata ed elaborata da Alberto Bussaglia"
 ATTRIBUTION_PHRASE_FILENAME_SUFFIX = "_da_Alberto_Bussaglia_Area_PC"
 
 italy_tz = pytz.timezone('Europe/Rome')
@@ -761,147 +761,98 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
                                  input_window_steps, forecast_window_steps, output_window_steps,
                                  lag_config_past=None, cumulative_config_past=None,
                                  use_weighted_loss=False, dummy_col_name='Variabile Dummy', post_modification_weight=1.0):
-    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati Seq2Seq...")
+    print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Preparazione dati Seq2Seq/Transformer (Ottimizzata)...")
     print(f"Input Steps: {input_window_steps}, Forecast Steps: {forecast_window_steps}, Output Steps: {output_window_steps}")
-
-    original_past_feature_cols = list(past_feature_cols)
+    
+    # --- 1. Feature Engineering (invariato) ---
+    df_processed = df.copy()
     engineered_past_feature_names = []
-
     if lag_config_past:
         for col, lag_periods_hours in lag_config_past.items():
-            if col in df.columns:
+            if col in df_processed.columns:
                 for lag_hr in lag_periods_hours:
                     lag_steps = lag_hr * 2
                     new_col_name = f"{col}_lag{lag_hr}h"
-                    df[new_col_name] = df[col].shift(lag_steps)
+                    df_processed[new_col_name] = df_processed[col].shift(lag_steps)
                     engineered_past_feature_names.append(new_col_name)
-                    print(f"Created lagged past feature: {new_col_name}")
-            else:
-                st.warning(f"Colonna '{col}' specificata in lag_config_past non trovata.")
     
     if cumulative_config_past:
         for col, window_periods_hours in cumulative_config_past.items():
-            if col in df.columns:
+            if col in df_processed.columns:
                 for win_hr in window_periods_hours:
                     window_steps = win_hr * 2
                     new_col_name = f"{col}_cum{win_hr}h"
-                    df[new_col_name] = df[col].rolling(window=window_steps, min_periods=1).sum()
+                    df_processed[new_col_name] = df_processed[col].rolling(window=window_steps, min_periods=1).sum()
                     engineered_past_feature_names.append(new_col_name)
-                    print(f"Created cumulative past feature: {new_col_name}")
-            else:
-                st.warning(f"Colonna '{col}' specificata in cumulative_config_past non trovata.")
-
-    current_past_feature_cols = original_past_feature_cols + engineered_past_feature_names
+                    
+    current_past_feature_cols = past_feature_cols + engineered_past_feature_names
     
-    # NUOVA LOGICA: Gestione colonna dummy
+    # --- 2. Estrazione Dati in NumPy (OTTIMIZZAZIONE CHIAVE) ---
+    all_needed_cols = list(set(current_past_feature_cols + forecast_feature_cols + target_cols))
     if use_weighted_loss:
-        if dummy_col_name not in df.columns:
+        if dummy_col_name not in df_processed.columns:
             st.error(f"Loss pesata attivata, ma la colonna dummy '{dummy_col_name}' non è stata trovata.")
             return None, None, None, None, None, None, None
-        all_needed_cols = list(set(current_past_feature_cols + forecast_feature_cols + target_cols + [dummy_col_name]))
-    else:
-        all_needed_cols = list(set(current_past_feature_cols + forecast_feature_cols + target_cols))
+        all_needed_cols.append(dummy_col_name)
+    
+    if engineered_past_feature_names:
+        df_processed[engineered_past_feature_names] = df_processed[engineered_past_feature_names].fillna(method='bfill').fillna(method='ffill')
 
-    try:
-        for col in all_needed_cols:
-            if col not in df.columns: raise ValueError(f"Colonna '{col}' richiesta per Seq2Seq non trovata.")
-        
-        cols_present_for_fillna_s2s = [c for c in all_needed_cols if c in df.columns]
+    past_features_np = df_processed[current_past_feature_cols].values.astype(np.float32)
+    forecast_features_np = df_processed[forecast_feature_cols].values.astype(np.float32)
+    target_np = df_processed[target_cols].values.astype(np.float32)
+    dummy_np = df_processed[dummy_col_name].values.astype(np.float32) if use_weighted_loss else None
 
-        nan_sum_before_fill = df[cols_present_for_fillna_s2s].isnull().sum().sum()
-        if nan_sum_before_fill > 0:
-            st.warning(f"NaN trovati ({nan_sum_before_fill}) prima della creazione sequenze Seq2Seq. Applico bfill/ffill.")
-            df[cols_present_for_fillna_s2s] = df[cols_present_for_fillna_s2s].fillna(method='bfill').fillna(method='ffill')
-            nan_sum_after_fill = df[cols_present_for_fillna_s2s].isnull().sum().sum()
-            if nan_sum_after_fill > 0:
-                 st.error(f"NaN RESIDUI ({nan_sum_after_fill}) dopo bfill/ffill.")
-                 return None, None, None, None, None, None, None
-        df_to_use = df
-            
-    except ValueError as e:
-        st.error(f"Errore colonne in prepare_seq2seq: {e}")
-        return None, None, None, None, None, None, None
-
-    X_encoder, X_decoder, y_target = [], [], []
-    sample_weights = [] # NUOVO
-    total_len = len(df_to_use)
-    required_len = input_window_steps + max(forecast_window_steps, output_window_steps)
-
+    # --- 3. Creazione delle Sequenze con Viste (OTTIMIZZAZIONE CHIAVE) ---
+    total_len = len(df_processed)
+    required_len = input_window_steps + output_window_steps
     if total_len < required_len:
-        st.error(f"Dati Seq2Seq insufficienti ({total_len} righe) per creare sequenze (richieste {required_len} righe).")
+        st.error(f"Dati insufficienti ({total_len} righe) per creare sequenze (richieste {required_len} righe).")
         return None, None, None, None, None, None, None
 
-    print(f"Creazione sequenze Seq2Seq: {total_len - required_len + 1} possibili...")
-    for i in range(total_len - required_len + 1):
-        enc_end = i + input_window_steps
-        past_feature_window_data = df_to_use.iloc[i : enc_end][current_past_feature_cols]
+    X_encoder_view = sliding_window_view(past_features_np, (input_window_steps, past_features_np.shape[1]))
+    X_decoder_view = sliding_window_view(forecast_features_np, (forecast_window_steps, forecast_features_np.shape[1]))
+    y_target_view = sliding_window_view(target_np, (output_window_steps, target_np.shape[1]))
+
+    num_samples = total_len - required_len + 1
+    # Le viste hanno shape: (num_windows, 1, window_steps, num_features). Rimuoviamo SOLO la dim singleton centrale.
+    X_encoder = X_encoder_view[:num_samples, 0, :, :]
+    X_decoder = X_decoder_view[input_window_steps:input_window_steps + num_samples, 0, :, :]
+    y_target = y_target_view[input_window_steps:input_window_steps + num_samples, 0, :, :]
+
+    sample_weights = None
+    if use_weighted_loss:
+        dummy_values_at_target_start = dummy_np[input_window_steps : input_window_steps + num_samples]
+        sample_weights = np.where(dummy_values_at_target_start == 1, post_modification_weight, 1.0).astype(np.float32)
+
+    # --- 4. Filtro NaN Vettorizzato (OTTIMIZZAZIONE CHIAVE) ---
+    nan_mask_enc = np.isnan(X_encoder).any(axis=(1, 2))
+    nan_mask_dec = np.isnan(X_decoder).any(axis=(1, 2))
+    nan_mask_tar = np.isnan(y_target).any(axis=(1, 2))
+    valid_mask = ~ (nan_mask_enc | nan_mask_dec | nan_mask_tar)
+    
+    X_encoder = X_encoder[valid_mask]
+    X_decoder = X_decoder[valid_mask]
+    y_target = y_target[valid_mask]
+    if use_weighted_loss:
+        sample_weights = sample_weights[valid_mask]
         
-        dec_start = enc_end
-        dec_end_forecast = dec_start + forecast_window_steps
-        forecast_feature_window_data = df_to_use.iloc[dec_start : dec_end_forecast][forecast_feature_cols]
-        
-        target_end = dec_start + output_window_steps
-        target_window_data = df_to_use.iloc[dec_start : target_end][target_cols]
-
-        if past_feature_window_data.isnull().any().any() or \
-           forecast_feature_window_data.isnull().any().any() or \
-           target_window_data.isnull().any().any():
-            continue
-
-        X_encoder.append(past_feature_window_data.values)
-        X_decoder.append(forecast_feature_window_data.values)
-        y_target.append(target_window_data.values)
-
-        # NUOVA LOGICA PESI
-        if use_weighted_loss:
-            dummy_value = df_to_use.iloc[dec_start][dummy_col_name]
-            sample_weights.append(post_modification_weight if dummy_value == 1 else 1.0)
-
-
-    if not X_encoder or not X_decoder or not y_target:
-        st.error("Errore creazione sequenze X_enc/X_dec/Y_target Seq2Seq.")
+    if X_encoder.shape[0] == 0:
+        st.error("Nessun campione valido trovato dopo la rimozione dei NaN.")
         return None, None, None, None, None, None, None
 
-    X_encoder = np.array(X_encoder, dtype=np.float32)
-    X_decoder = np.array(X_decoder, dtype=np.float32)
-    y_target = np.array(y_target, dtype=np.float32)
-    sample_weights = np.array(sample_weights, dtype=np.float32) if use_weighted_loss else None # NUOVO
-    print(f"Shapes NumPy: Encoder={X_encoder.shape}, Decoder={X_decoder.shape}, Target={y_target.shape}")
-
-    if X_encoder.shape[1] != input_window_steps or X_decoder.shape[1] != forecast_window_steps or y_target.shape[1] != output_window_steps:
-         st.error("Errore shape sequenze Seq2Seq dopo creazione.")
-         return None, None, None, None, None, None, None
-    if X_encoder.shape[2] != len(current_past_feature_cols) or X_decoder.shape[2] != len(forecast_feature_cols) or y_target.shape[2] != len(target_cols):
-         st.error(f"Errore numero feature/target Seq2Seq. Encoder: {X_encoder.shape[2]} (atteso {len(current_past_feature_cols)}), Decoder: {X_decoder.shape[2]} (atteso {len(forecast_feature_cols)}), Target: {y_target.shape[2]} (atteso {len(target_cols)})")
-         return None, None, None, None, None, None, None
-
+    # --- 5. Scaling ---
     scaler_past_features = MinMaxScaler()
     scaler_forecast_features = MinMaxScaler()
     scaler_targets = MinMaxScaler()
-    num_sequences = X_encoder.shape[0]
-    X_enc_flat = X_encoder.reshape(-1, len(current_past_feature_cols))
-    X_dec_flat = X_decoder.reshape(-1, len(forecast_feature_cols))
-    y_tar_flat = y_target.reshape(-1, len(target_cols))
 
-    try:
-        X_enc_scaled_flat = scaler_past_features.fit_transform(X_enc_flat)
-        X_dec_scaled_flat = scaler_forecast_features.fit_transform(X_dec_flat)
-        y_tar_scaled_flat = scaler_targets.fit_transform(y_tar_flat)
-    except ValueError as ve_scale_s2s:
-        if "Input contains NaN" in str(ve_scale_s2s):
-             st.error(f"Errore scaling Seq2Seq: Input contiene NaN. Dettagli: {ve_scale_s2s}")
-        else:
-             st.error(f"Errore scaling Seq2Seq: {ve_scale_s2s}")
-        return None, None, None, None, None, None, None
-    except Exception as e_scale:
-        st.error(f"Errore scaling Seq2Seq generico: {e_scale}")
-        return None, None, None, None, None, None, None
+    X_enc_scaled = scaler_past_features.fit_transform(X_encoder.reshape(-1, X_encoder.shape[-1])).reshape(X_encoder.shape)
+    X_dec_scaled = scaler_forecast_features.fit_transform(X_decoder.reshape(-1, X_decoder.shape[-1])).reshape(X_decoder.shape)
+    y_tar_scaled = scaler_targets.fit_transform(y_target.reshape(-1, y_target.shape[-1])).reshape(y_target.shape)
 
-    X_enc_scaled = X_enc_scaled_flat.reshape(num_sequences, input_window_steps, len(current_past_feature_cols))
-    X_dec_scaled = X_dec_scaled_flat.reshape(num_sequences, forecast_window_steps, len(forecast_feature_cols))
-    y_tar_scaled = y_tar_scaled_flat.reshape(num_sequences, output_window_steps, len(target_cols))
-
-    print(f"Dati Seq2Seq pronti: X_enc_scaled={X_enc_scaled.shape}, X_dec_scaled={X_dec_scaled.shape}, y_tar_scaled={y_tar_scaled.shape}. Past features utilizzate: {len(current_past_feature_cols)}")
+    st.success(f"Preparazione dati ottimizzata completata. Creati {X_encoder.shape[0]} campioni validi.")
+    print(f"Shapes Finali: Encoder={X_enc_scaled.shape}, Decoder={X_dec_scaled.shape}, Target={y_tar_scaled.shape}")
+    
     return (X_enc_scaled, X_dec_scaled, y_tar_scaled, sample_weights,
             scaler_past_features, scaler_forecast_features, scaler_targets)
 
