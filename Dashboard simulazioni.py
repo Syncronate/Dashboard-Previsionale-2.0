@@ -1886,11 +1886,24 @@ def plot_predictions(predictions, config, start_time=None, actual_data=None, act
         # Logica per gestire incertezza (Quantile o MC Dropout)
         if predictions.ndim == 3: # Modalità Quantile
             # predictions shape: (seq_len, num_targets, num_quantiles)
-            # Assumiamo 3 quantili: [lower, median, upper]
-            median_prediction = predictions[:, i, 1]
+            num_quantiles_local = predictions.shape[2]
             lower_bound = predictions[:, i, 0]
-            upper_bound = predictions[:, i, 2]
-            
+            if num_quantiles_local >= 3:
+                median_prediction = predictions[:, i, 1]
+                upper_bound = predictions[:, i, 2]
+            elif num_quantiles_local == 2:
+                # Se sono presenti solo 2 quantili (lower, upper), usiamo la media come linea centrale
+                upper_bound = predictions[:, i, 1]
+                median_prediction = (lower_bound + upper_bound) / 2.0
+            else:
+                # Caso degrado: un solo quantile -> tratti come puntuale
+                puntual_prediction = predictions[:, i, 0]
+                fig.add_trace(go.Scatter(
+                    x=x_axis_np, y=puntual_prediction, mode='lines+markers', name=f'Previsto H ({y_axis_unit})', yaxis='y1'
+                ))
+                figs.append(fig)
+                continue
+
             fig.add_trace(go.Scatter(
                 x=np.concatenate([x_axis_np, x_axis_np[::-1]]),
                 y=np.concatenate([upper_bound, lower_bound[::-1]]),
@@ -2894,6 +2907,9 @@ with st.sidebar:
         elif model_type_sess == "SpatioTemporalGNN":
             # Caso specifico per GNN che usa le chiavi corrette
             st.caption(f"Input: {cfg['input_window_steps']}s | Output: {cfg['output_window_steps']}s")
+        elif model_type_sess == "Seq2SeqAutoregressivo":
+            # Caso specifico autoregressivo: non usa forecast_window_steps
+            st.caption(f"Input: {cfg['input_window_steps']}s | Output: {cfg['output_window_steps']}s")
         # Gestisce il modello LSTM standard che usa chiavi diverse
         else:
             st.caption(f"Input: {cfg['input_window']}s | Output: {cfg['output_window']}s")
@@ -3427,6 +3443,12 @@ elif page == 'Test Modello su Storico':
         past_feature_cols_model_test = active_config['all_past_feature_columns']
         forecast_feature_cols_model_test = active_config['forecast_input_columns']
         required_len_for_test = input_steps_model_test + output_steps_model_test
+    elif active_model_type == "Seq2SeqAutoregressivo":
+        input_steps_model_test = active_config['input_window_steps']
+        output_steps_model_test = active_config['output_window_steps']
+        past_feature_cols_model_test = active_config['all_past_feature_columns']
+        forecast_feature_cols_model_test = active_config['forecast_input_columns']
+        required_len_for_test = input_steps_model_test + output_steps_model_test
     elif active_model_type == "SpatioTemporalGNN":
         input_steps_model_test = active_config['input_window_steps']
         output_steps_model_test = active_config['output_window_steps']
@@ -3515,6 +3537,18 @@ if st.button("Esegui Test Walk-Forward su Storico", type="primary", key="run_wal
                     active_model, past_input_np_raw, future_input_np_raw,
                     active_scalers, active_config, active_device
                 )
+        elif active_model_type == "Seq2SeqAutoregressivo":
+            past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
+            future_input_np_raw = actual_df_period_slice[forecast_feature_cols_model_test].values
+            input_cols_for_display = past_feature_cols_model_test
+
+            # Ultimo target noto: ultima riga della finestra di input
+            last_known_target_np = input_df_period_slice[target_columns_model_test].iloc[-1:].values.reshape(1, -1)
+
+            predictions_period, _ = predict_seq2seq_autoregressive(
+                active_model, past_input_np_raw, future_input_np_raw,
+                last_known_target_np, active_scalers, active_config, active_device
+            )
         
         elif active_model_type == "SpatioTemporalGNN":
             node_columns_test = active_config['node_order']
