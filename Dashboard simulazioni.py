@@ -240,14 +240,21 @@ class DecoderLSTM(nn.Module):
         self.num_layers = num_layers
         self.forecast_input_size = forecast_input_size
         self.output_size = output_size
-        self.num_quantiles = num_quantiles
+        self.num_quantiles = num_quantiles # <<< AGGIUNGI QUESTA LINEA
         self.lstm = nn.LSTM(forecast_input_size, hidden_size, num_layers,
                           batch_first=True, dropout=dropout if num_layers > 1 else 0)
-        self.fc = nn.Linear(hidden_size, output_size * num_quantiles) # Prevede 1 step alla volta
+        self.fc = nn.Linear(hidden_size, output_size * num_quantiles)
 
     def forward(self, x_forecast_step, hidden, cell):
         output, (hidden, cell) = self.lstm(x_forecast_step, (hidden, cell))
         prediction = self.fc(output.squeeze(1)) # Shape: (batch, output_size * num_quantiles)
+        
+        # <<< INIZIA BLOCCO AGGIUNTO >>>
+        if self.num_quantiles > 1:
+            # Reshape per separare i quantili: (batch, output_size, num_quantiles)
+            prediction = prediction.view(prediction.size(0), self.output_size, self.num_quantiles)
+        # <<< FINE BLOCCO AGGIUNTO >>>
+            
         return prediction, hidden, cell
 
 class Attention(nn.Module):
@@ -282,9 +289,17 @@ class DecoderLSTMWithAttention(nn.Module):
         attn_weights = self.attention(hidden, encoder_outputs).unsqueeze(1)
         context_vector = torch.bmm(attn_weights, encoder_outputs)
         lstm_input = torch.cat([x_forecast_step, context_vector], dim=2)
+        
         output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
         prediction = self.fc(output.squeeze(1))
-        return prediction, hidden, cell, attn_weights # Restituisci anche i pesi
+        
+        # <<< INIZIA BLOCCO AGGIUNTO >>>
+        if self.num_quantiles > 1:
+            # Reshape per separare i quantili: (batch, output_size, num_quantiles)
+            prediction = prediction.view(prediction.size(0), self.output_size, self.num_quantiles)
+        # <<< FINE BLOCCO AGGIUNTO >>>
+            
+        return prediction, hidden, cell, attn_weights
 
 class Seq2SeqHydro(nn.Module):
     def __init__(self, encoder, decoder, output_window_steps):
@@ -293,41 +308,36 @@ class Seq2SeqHydro(nn.Module):
         self.decoder = decoder
         self.output_window = output_window_steps
 
-    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0): # Default TF a 0 per inferenza
+    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0):
         batch_size = x_past.shape[0]
-        forecast_window = x_future_forecast.shape[1]
-        
-        # Determine output size from decoder
         target_output_size = self.decoder.output_size
         num_quantiles = self.decoder.num_quantiles
-        decoder_output_dim = target_output_size * num_quantiles
-
-        if forecast_window < self.output_window:
-             missing_steps = self.output_window - forecast_window
-             last_forecast_step = x_future_forecast[:, -1:, :]
-             padding = last_forecast_step.repeat(1, missing_steps, 1)
-             x_future_forecast = torch.cat([x_future_forecast, padding], dim=1)
-             forecast_window = self.output_window
-
-        outputs = torch.zeros(batch_size, self.output_window, decoder_output_dim).to(x_past.device)
+        
+        # <<< MODIFICA QUI >>>
+        # Il tensore di output ora deve avere spazio per la dimensione dei quantili
+        outputs = torch.zeros(batch_size, self.output_window, target_output_size, num_quantiles).to(x_past.device)
+        
         _, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
         decoder_input_step = x_future_forecast[:, 0:1, :]
 
         for t in range(self.output_window):
+            # L'output ora avrà shape [batch, target_size, quantiles] o [batch, target_size]
             decoder_output_step, decoder_hidden, decoder_cell = self.decoder(
                 decoder_input_step, decoder_hidden, decoder_cell
             )
-            outputs[:, t, :] = decoder_output_step
+            # Assicuriamoci che abbia la giusta dimensione per l'assegnazione
+            if num_quantiles == 1 and decoder_output_step.ndim == 2:
+                decoder_output_step = decoder_output_step.unsqueeze(-1) # Aggiungi la dim del quantile
+                
+            outputs[:, t, :, :] = decoder_output_step
 
             if t < self.output_window - 1:
-                if teacher_forcing_ratio > 0 and random.random() < teacher_forcing_ratio :
-                     pass
-                else:
-                    decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+                decoder_input_step = x_future_forecast[:, t+1:t+2, :]
         
-        if num_quantiles > 1:
-             outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
+        # Se non ci sono quantili, rimuovi l'ultima dimensione per retrocompatibilità
+        if num_quantiles == 1:
+            outputs = outputs.squeeze(-1)
 
         return outputs, None
 
@@ -342,9 +352,9 @@ class Seq2SeqWithAttention(nn.Module):
         batch_size = x_past.shape[0]
         target_output_size = self.decoder.output_size
         num_quantiles = self.decoder.num_quantiles
-        decoder_output_dim = target_output_size * num_quantiles
 
-        outputs = torch.zeros(batch_size, self.output_window, decoder_output_dim).to(x_past.device)
+        # <<< MODIFICA QUI >>>
+        outputs = torch.zeros(batch_size, self.output_window, target_output_size, num_quantiles).to(x_past.device)
         attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(x_past.device)
 
         encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
@@ -355,25 +365,33 @@ class Seq2SeqWithAttention(nn.Module):
             decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
                 decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
             )
-            outputs[:, t, :] = decoder_output_step
+            
+            if num_quantiles == 1 and decoder_output_step.ndim == 2:
+                decoder_output_step = decoder_output_step.unsqueeze(-1)
+
+            outputs[:, t, :, :] = decoder_output_step
             attention_weights_history[:, t, :] = attn_weights.squeeze()
 
             if t < self.output_window - 1:
                 decoder_input_step = x_future_forecast[:, t+1:t+2, :]
         
-        if num_quantiles > 1:
-             outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
+        if num_quantiles == 1:
+            outputs = outputs.squeeze(-1)
         
         return outputs, attention_weights_history
 
 
 class DecoderLSTMAutoregressive(nn.Module):
-    # NOTA: È quasi identico al Decoder con Attention, ma lo teniamo separato per chiarezza
     def __init__(self, forecast_input_size, hidden_size, output_size, num_layers=2, dropout=0.2):
         super().__init__()
         self.hidden_size = hidden_size
-        self.output_size = output_size # Dimensione del solo target (es. 5 livelli)
-        self.forecast_input_size = forecast_input_size # Dimensione input combinato (meteo + target_precedente)
+        self.output_size = output_size
+        self.forecast_input_size = forecast_input_size
+        
+        # NOTA: il modello autoregressivo non supporta i quantili con l'implementazione attuale
+        # perché l'input del passo successivo non saprebbe quale quantile usare.
+        # Per ora, lasciamo la logica ma con un avviso.
+        self.num_quantiles = 1 # Forziamo a 1 per evitare errori
         
         self.attention = Attention(hidden_size)
         self.lstm = nn.LSTM(forecast_input_size + hidden_size, hidden_size, num_layers,
@@ -386,7 +404,8 @@ class DecoderLSTMAutoregressive(nn.Module):
         lstm_input = torch.cat([x_forecast_step, context_vector], dim=2)
         
         output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
-        prediction = self.fc(output.squeeze(1)) # Output ha solo la dimensione dei target
+        prediction = self.fc(output.squeeze(1))
+        
         return prediction, hidden, cell, attn_weights
 
 class Seq2SeqAutoregressive(nn.Module):
