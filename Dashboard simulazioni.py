@@ -1156,15 +1156,23 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
 
             all_val_preds_np = np.concatenate(all_val_preds, axis=0)
             all_val_trues_np = np.concatenate(all_val_trues, axis=0)
-            
+
             preds_for_metrics = all_val_preds_np
             if training_mode == 'quantile':
-                preds_for_metrics = all_val_preds_np[:, :, :, 1]
+                # Se usiamo i quantili, il nostro array ha 4 dimensioni (batch, seq, target, quantili)
+                # Prendiamo la mediana (indice 1) lungo l'asse dei quantili (l'ultimo asse)
+                preds_for_metrics = all_val_preds_np[:, :, :, 1] # <-- LA FORMA È (campioni, seq, target, quantili)
 
-            val_rmse = calculate_rmse(all_val_trues_np, preds_for_metrics)
-            val_mae = calculate_mae(all_val_trues_np, preds_for_metrics)
-            val_nse = calculate_nse(all_val_trues_np, preds_for_metrics)
-            val_mbe = calculate_mbe(all_val_trues_np, preds_for_metrics)
+            # Appiattiamo gli array da 3D a 2D prima di calcolare le metriche
+            num_targets = all_val_trues_np.shape[2]
+            all_val_trues_flat = all_val_trues_np.reshape(-1, num_targets)
+            preds_for_metrics_flat = preds_for_metrics.reshape(-1, num_targets)
+
+            # Ora usiamo gli array appiattiti per i calcoli
+            val_rmse = calculate_rmse(all_val_trues_flat, preds_for_metrics_flat)
+            val_mae = calculate_mae(all_val_trues_flat, preds_for_metrics_flat)
+            val_nse = calculate_nse(all_val_trues_flat, preds_for_metrics_flat)
+            val_mbe = calculate_mbe(all_val_trues_flat, preds_for_metrics_flat)
 
             scheduler.step(epoch_val_loss)
             if epoch_val_loss < best_val_loss:
@@ -2093,12 +2101,20 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
 
             preds_for_metrics = all_val_preds_np
             if training_mode == 'quantile':
-                preds_for_metrics = all_val_preds_np[:, :, :, 1]
+                # Se usiamo i quantili, il nostro array ha 4 dimensioni (batch, seq, target, quantili)
+                # Prendiamo la mediana (indice 1) lungo l'asse dei quantili (l'ultimo asse)
+                preds_for_metrics = all_val_preds_np[:, :, :, 1] # <-- LA FORMA È (campioni, seq, target, quantili)
 
-            val_rmse = calculate_rmse(all_val_trues_np, preds_for_metrics)
-            val_mae = calculate_mae(all_val_trues_np, preds_for_metrics)
-            val_nse = calculate_nse(all_val_trues_np, preds_for_metrics)
-            val_mbe = calculate_mbe(all_val_trues_np, preds_for_metrics)
+            # Appiattiamo gli array da 3D a 2D prima di calcolare le metriche
+            num_targets = all_val_trues_np.shape[2]
+            all_val_trues_flat = all_val_trues_np.reshape(-1, num_targets)
+            preds_for_metrics_flat = preds_for_metrics.reshape(-1, num_targets)
+
+            # Ora usiamo gli array appiattiti per i calcoli
+            val_rmse = calculate_rmse(all_val_trues_flat, preds_for_metrics_flat)
+            val_mae = calculate_mae(all_val_trues_flat, preds_for_metrics_flat)
+            val_nse = calculate_nse(all_val_trues_flat, preds_for_metrics_flat)
+            val_mbe = calculate_mbe(all_val_trues_flat, preds_for_metrics_flat)
 
             scheduler.step(epoch_val_loss)
             if epoch_val_loss < best_val_loss:
@@ -2297,12 +2313,20 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
 
             preds_for_metrics = all_val_preds_np
             if training_mode == 'quantile':
-                preds_for_metrics = all_val_preds_np[:, :, :, 1]
+                # Se usiamo i quantili, il nostro array ha 4 dimensioni (batch, seq, target, quantili)
+                # Prendiamo la mediana (indice 1) lungo l'asse dei quantili (l'ultimo asse)
+                preds_for_metrics = all_val_preds_np[:, :, :, 1] # <-- LA FORMA È (campioni, seq, target, quantili)
 
-            val_rmse = calculate_rmse(all_val_trues_np, preds_for_metrics)
-            val_mae = calculate_mae(all_val_trues_np, preds_for_metrics)
-            val_nse = calculate_nse(all_val_trues_np, preds_for_metrics)
-            val_mbe = calculate_mbe(all_val_trues_np, preds_for_metrics)
+            # Appiattiamo gli array da 3D a 2D prima di calcolare le metriche
+            num_targets = all_val_trues_np.shape[2]
+            all_val_trues_flat = all_val_trues_np.reshape(-1, num_targets)
+            preds_for_metrics_flat = preds_for_metrics.reshape(-1, num_targets)
+
+            # Ora usiamo gli array appiattiti per i calcoli
+            val_rmse = calculate_rmse(all_val_trues_flat, preds_for_metrics_flat)
+            val_mae = calculate_mae(all_val_trues_flat, preds_for_metrics_flat)
+            val_nse = calculate_nse(all_val_trues_flat, preds_for_metrics_flat)
+            val_mbe = calculate_mbe(all_val_trues_flat, preds_for_metrics_flat)
 
             scheduler.step(epoch_val_loss)
             if epoch_val_loss < best_val_loss:
