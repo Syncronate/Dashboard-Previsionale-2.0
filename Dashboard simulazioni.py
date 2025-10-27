@@ -3176,7 +3176,26 @@ elif page == 'Test Modello su Storico':
                 else:
                     predictions_period, _ = predict_seq2seq(active_model, past_input_np_raw, future_input_np_raw, active_scalers, active_config, active_device)
             elif active_model_type == "SpatioTemporalGNN":
-                # ... (logica GNN invariata)
+                node_columns_test = active_config['node_order']
+                feature_mapping_test = active_config['node_feature_mapping']
+                num_features_test = active_config['num_features']
+
+                all_gnn_model_feature_cols = []
+                for node_name in node_columns_test:
+                    all_gnn_model_feature_cols.append(node_name)
+                    all_gnn_model_feature_cols.extend(feature_mapping_test.get(node_name, []))
+                input_cols_for_display = sorted(list(set(all_gnn_model_feature_cols)))
+
+                raw_input_data_multi_feature = np.zeros((input_steps_model_test, len(node_columns_test), num_features_test), dtype=np.float32)
+                for t in range(input_steps_model_test):
+                    for node_idx, node_name in enumerate(node_columns_test):
+                        raw_input_data_multi_feature[t, node_idx, 0] = input_df_period_slice[node_name].iloc[t]
+                        additional_features = feature_mapping_test.get(node_name, [])
+                        for feat_idx, feat_col in enumerate(additional_features):
+                            if feat_col in input_df_period_slice.columns:
+                                raw_input_data_multi_feature[t, node_idx, 1 + feat_idx] = input_df_period_slice[feat_col].iloc[t]
+
+                predictions_period, uncertainty_period = predict_gnn(active_model, raw_input_data_multi_feature, active_scalers, active_config, active_device, uncertainty_passes=num_passes_test)
             else: # LSTM Standard
                 input_np_raw = input_df_period_slice[feature_columns_model_test].values
                 input_cols_for_display = feature_columns_model_test
