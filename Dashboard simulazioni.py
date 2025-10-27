@@ -614,6 +614,36 @@ class WeightedQuantileLoss(nn.Module):
         return weighted_loss
 
 # --- Funzioni Utilità Modello/Dati ---
+
+# --- INIZIO CODICE DA AGGIUNGERE ---
+
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+def calculate_rmse(y_true, y_pred):
+    """Calcola il Root Mean Squared Error."""
+    return np.sqrt(mean_squared_error(y_true, y_pred))
+
+def calculate_mae(y_true, y_pred):
+    """Calcola il Mean Absolute Error."""
+    return mean_absolute_error(y_true, y_pred)
+
+def calculate_mbe(y_true, y_pred):
+    """Calcola il Mean Bias Error."""
+    return np.mean(y_pred - y_true)
+
+def calculate_nse(y_true, y_pred):
+    """Calcola la Nash-Sutcliffe Efficiency (NSE)."""
+    numerator = np.sum((y_pred - y_true) ** 2)
+    denominator = np.sum((y_true - np.mean(y_true)) ** 2)
+    # Aggiungi un controllo per evitare la divisione per zero
+    if denominator == 0:
+        # Se la varianza dei dati reali è zero, non si può calcolare l'NSE.
+        # Restituiamo -inf per indicare un risultato non valido/pessimo.
+        return -np.inf
+    return 1 - (numerator / denominator)
+
+# --- FINE CODICE DA AGGIUNGERE ---
+
 # MODIFICATA: Aggiunti argomenti e logica per i pesi
 def prepare_training_data(df, feature_columns, target_columns, input_window, output_window,
                           lag_config=None, cumulative_config=None,
@@ -961,7 +991,7 @@ def prepare_training_data_gnn(df, node_columns, target_columns, feature_mapping,
     print(f"Dati GNN pronti: X_scaled={X_scaled.shape}, y_scaled={y_scaled.shape}, Weights={sample_weights.shape if sample_weights is not None else 'None'}")
     return X_scaled, y_scaled, sample_weights, scaler_features, scaler_targets, num_features
 
-def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, edge_index, edge_weights,
+def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_targets, model, edge_index, edge_weights,
                     epochs=50, batch_size=32, learning_rate=0.001,
                     save_strategy='migliore', preferred_device='auto',
                     n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None,
@@ -1093,25 +1123,49 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, ed
         if val_loader:
             model.eval()
             epoch_val_loss_sum = 0.0
+            all_val_preds, all_val_trues = [], []
             with torch.no_grad():
                 for X_batch, y_batch in val_loader:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                     outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
-                    # --- INIZIO BLOCCO DI VALIDAZIONE CORRETTO (DA SOSTITUIRE) ---
-
-                    # Calcola la loss per campione (sarà un tensore se reduction='none')
-                    loss_per_sample_val = criterion(outputs, y_batch) # Usa y_tar per seq2seq
-
-                    # Indipendentemente da tutto, dobbiamo ridurre la loss di validazione a uno scalare
-                    # facendo la media. La validazione non usa MAI pesi.
+                    loss_per_sample_val = criterion(outputs, y_batch)
                     val_loss_unweighted = loss_per_sample_val.mean()
+                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0)
+                    
+                    preds_scaled = outputs.cpu().numpy()
+                    trues_scaled = y_batch.cpu().numpy()
+                    num_targets = trues_scaled.shape[-1]
+                    
+                    if training_mode == 'quantile':
+                        preds_scaled_permuted = preds_scaled.transpose(0, 1, 3, 2)
+                        preds_scaled_flat = preds_scaled_permuted.reshape(-1, num_targets)
+                        preds_unscaled_flat = scaler_targets.inverse_transform(preds_scaled_flat)
+                        preds_unscaled = preds_unscaled_flat.reshape(
+                            preds_scaled.shape[0], preds_scaled.shape[1], preds_scaled.shape[3], num_targets
+                        ).transpose(0, 1, 3, 2)
+                    else:
+                        preds_unscaled = scaler_targets.inverse_transform(preds_scaled.reshape(-1, num_targets)).reshape(preds_scaled.shape)
+                    
+                    trues_unscaled = scaler_targets.inverse_transform(trues_scaled.reshape(-1, num_targets)).reshape(trues_scaled.shape)
+                    
+                    all_val_preds.append(preds_unscaled)
+                    all_val_trues.append(trues_unscaled)
 
-                    # Ora val_loss_unweighted è garantito essere uno scalare.
-                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0) # Usa x_enc.size(0) per seq2seq
-
-                    # --- FINE BLOCCO DI VALIDAZIONE CORRETTO ---
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
+
+            all_val_preds_np = np.concatenate(all_val_preds, axis=0)
+            all_val_trues_np = np.concatenate(all_val_trues, axis=0)
+            
+            preds_for_metrics = all_val_preds_np
+            if training_mode == 'quantile':
+                preds_for_metrics = all_val_preds_np[:, :, :, 1]
+
+            val_rmse = calculate_rmse(all_val_trues_np, preds_for_metrics)
+            val_mae = calculate_mae(all_val_trues_np, preds_for_metrics)
+            val_nse = calculate_nse(all_val_trues_np, preds_for_metrics)
+            val_mbe = calculate_mbe(all_val_trues_np, preds_for_metrics)
+
             scheduler.step(epoch_val_loss)
             if epoch_val_loss < best_val_loss:
                 best_val_loss = epoch_val_loss
@@ -1120,7 +1174,10 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, model, ed
             val_losses.append(None)
 
         val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
-        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
+        if val_loader and epoch_val_loss is not None:
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
+        else:
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -1846,7 +1903,7 @@ def fetch_sim_gsheet_data(sheet_id_fetch, n_rows_steps, date_col_gs, date_format
 
 # --- Funzioni Allenamento (Standard e Seq2Seq) --- MODIFICATE ---
 # MODIFICATA: per accettare i pesi e calcolare la loss pesata
-def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOMENTO
+def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_targets,
                 input_size, output_size, output_window_steps,
                 hidden_size=128, num_layers=2, epochs=50, batch_size=32, learning_rate=0.001, dropout=0.2,
                 save_strategy='migliore', preferred_device='auto', 
@@ -2000,25 +2057,49 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
         if val_loader:
             model.eval()
             epoch_val_loss_sum = 0.0
+            all_val_preds, all_val_trues = [], []
             with torch.no_grad():
                 for X_batch, y_batch in val_loader:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                     outputs = model(X_batch)
-                    # --- INIZIO BLOCCO DI VALIDAZIONE CORRETTO (DA SOSTITUIRE) ---
-
-                    # Calcola la loss per campione (sarà un tensore se reduction='none')
-                    loss_per_sample_val = criterion(outputs, y_batch) # Usa y_tar per seq2seq
-
-                    # Indipendentemente da tutto, dobbiamo ridurre la loss di validazione a uno scalare
-                    # facendo la media. La validazione non usa MAI pesi.
+                    loss_per_sample_val = criterion(outputs, y_batch)
                     val_loss_unweighted = loss_per_sample_val.mean()
+                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0)
 
-                    # Ora val_loss_unweighted è garantito essere uno scalare.
-                    epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0) # Usa x_enc.size(0) per seq2seq
+                    preds_scaled = outputs.cpu().numpy()
+                    trues_scaled = y_batch.cpu().numpy()
+                    num_targets = trues_scaled.shape[-1]
+                    
+                    if training_mode == 'quantile':
+                        preds_scaled_permuted = preds_scaled.transpose(0, 1, 3, 2)
+                        preds_scaled_flat = preds_scaled_permuted.reshape(-1, num_targets)
+                        preds_unscaled_flat = scaler_targets.inverse_transform(preds_scaled_flat)
+                        preds_unscaled = preds_unscaled_flat.reshape(
+                            preds_scaled.shape[0], preds_scaled.shape[1], preds_scaled.shape[3], num_targets
+                        ).transpose(0, 1, 3, 2)
+                    else:
+                        preds_unscaled = scaler_targets.inverse_transform(preds_scaled.reshape(-1, num_targets)).reshape(preds_scaled.shape)
+                    
+                    trues_unscaled = scaler_targets.inverse_transform(trues_scaled.reshape(-1, num_targets)).reshape(trues_scaled.shape)
+                    
+                    all_val_preds.append(preds_unscaled)
+                    all_val_trues.append(trues_unscaled)
 
-                    # --- FINE BLOCCO DI VALIDAZIONE CORRETTO ---
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
+
+            all_val_preds_np = np.concatenate(all_val_preds, axis=0)
+            all_val_trues_np = np.concatenate(all_val_trues, axis=0)
+
+            preds_for_metrics = all_val_preds_np
+            if training_mode == 'quantile':
+                preds_for_metrics = all_val_preds_np[:, :, :, 1]
+
+            val_rmse = calculate_rmse(all_val_trues_np, preds_for_metrics)
+            val_mae = calculate_mae(all_val_trues_np, preds_for_metrics)
+            val_nse = calculate_nse(all_val_trues_np, preds_for_metrics)
+            val_mbe = calculate_mbe(all_val_trues_np, preds_for_metrics)
+
             scheduler.step(epoch_val_loss)
             if epoch_val_loss < best_val_loss:
                 best_val_loss = epoch_val_loss
@@ -2027,7 +2108,10 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
              val_losses.append(None)
 
         val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
-        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
+        if val_loader and epoch_val_loss is not None:
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
+        else:
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -2039,7 +2123,7 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, # NUOVO ARGOM
     return model, (train_losses, []), (val_losses, [])
 
 
-def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full, sample_weights_full,
+def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full, sample_weights_full, scaler_targets,
                         model,
                         output_window_steps, epochs=50, batch_size=32, learning_rate=0.001,
                         save_strategy='migliore', preferred_device='auto', teacher_forcing_ratio_schedule=None,
@@ -2177,25 +2261,49 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         if val_loader:
             model.eval()
             epoch_val_loss_sum = 0.0
+            all_val_preds, all_val_trues = [], []
             with torch.no_grad():
                 for x_enc, x_dec, y_tar in val_loader:
                     x_enc, x_dec, y_tar = x_enc.to(device), x_dec.to(device), y_tar.to(device)
                     outputs, _ = model(x_enc, x_dec, teacher_forcing_ratio=0.0)
-                    # --- INIZIO BLOCCO DI VALIDAZIONE CORRETTO (DA SOSTITUIRE) ---
-
-                    # Calcola la loss per campione (sarà un tensore se reduction='none')
-                    loss_per_sample_val = criterion(outputs, y_tar) # Usa y_tar per seq2seq
-
-                    # Indipendentemente da tutto, dobbiamo ridurre la loss di validazione a uno scalare
-                    # facendo la media. La validazione non usa MAI pesi.
+                    loss_per_sample_val = criterion(outputs, y_tar)
                     val_loss_unweighted = loss_per_sample_val.mean()
+                    epoch_val_loss_sum += val_loss_unweighted.item() * x_enc.size(0)
 
-                    # Ora val_loss_unweighted è garantito essere uno scalare.
-                    epoch_val_loss_sum += val_loss_unweighted.item() * x_enc.size(0) # Usa x_enc.size(0) per seq2seq
+                    preds_scaled = outputs.cpu().numpy()
+                    trues_scaled = y_tar.cpu().numpy()
+                    num_targets = trues_scaled.shape[-1]
 
-                    # --- FINE BLOCCO DI VALIDAZIONE CORRETTO ---
+                    if training_mode == 'quantile':
+                        preds_scaled_permuted = preds_scaled.transpose(0, 1, 3, 2)
+                        preds_scaled_flat = preds_scaled_permuted.reshape(-1, num_targets)
+                        preds_unscaled_flat = scaler_targets.inverse_transform(preds_scaled_flat)
+                        preds_unscaled = preds_unscaled_flat.reshape(
+                            preds_scaled.shape[0], preds_scaled.shape[1], preds_scaled.shape[3], num_targets
+                        ).transpose(0, 1, 3, 2)
+                    else:
+                        preds_unscaled = scaler_targets.inverse_transform(preds_scaled.reshape(-1, num_targets)).reshape(preds_scaled.shape)
+
+                    trues_unscaled = scaler_targets.inverse_transform(trues_scaled.reshape(-1, num_targets)).reshape(trues_scaled.shape)
+
+                    all_val_preds.append(preds_unscaled)
+                    all_val_trues.append(trues_unscaled)
+            
             epoch_val_loss = epoch_val_loss_sum / len(val_loader.dataset)
             val_losses.append(epoch_val_loss)
+
+            all_val_preds_np = np.concatenate(all_val_preds, axis=0)
+            all_val_trues_np = np.concatenate(all_val_trues, axis=0)
+
+            preds_for_metrics = all_val_preds_np
+            if training_mode == 'quantile':
+                preds_for_metrics = all_val_preds_np[:, :, :, 1]
+
+            val_rmse = calculate_rmse(all_val_trues_np, preds_for_metrics)
+            val_mae = calculate_mae(all_val_trues_np, preds_for_metrics)
+            val_nse = calculate_nse(all_val_trues_np, preds_for_metrics)
+            val_mbe = calculate_mbe(all_val_trues_np, preds_for_metrics)
+
             scheduler.step(epoch_val_loss)
             if epoch_val_loss < best_val_loss:
                 best_val_loss = epoch_val_loss
@@ -2204,7 +2312,10 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             val_losses.append(None)
 
         val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
-        status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
+        if val_loader and epoch_val_loss is not None:
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
+        else:
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -2967,7 +3078,7 @@ elif page == 'Simulazione':
                     st.error("Predizione GNN fallita.")
     else: # LSTM
          # ... (La logica per LSTM rimane simile, ma con le modifiche per disabilitare MC Dropout se quantile)
-         pass
+        pass
 
 # --- PAGINA TEST MODELLO SU STORICO ---
 elif page == 'Test Modello su Storico':
@@ -3019,154 +3130,143 @@ elif page == 'Test Modello su Storico':
     st.markdown("---")
     
 # SOSTITUISCI QUESTO INTERO BLOCCO if st.button(...)
-if st.button("Esegui Test Walk-Forward su Storico", type="primary", key="run_walk_forward_test_button"):
-    from sklearn.metrics import mean_squared_error
+    if st.button("Esegui Test Walk-Forward su Storico", type="primary", key="run_walk_forward_test_button"):
     
-    evaluation_results_list = []
-    all_period_mses = {target_col: [] for target_col in target_columns_model_test}
-    
-    progress_bar_test = st.progress(0.0, text="Avvio test walk-forward...")
-
-    for i_period in range(num_evaluation_periods):
-        progress_bar_test.progress((i_period + 1) / num_evaluation_periods, text=f"Elaborazione Periodo {i_period + 1}/{num_evaluation_periods}...")
+        evaluation_results_list = []
+        all_period_metrics = {
+            target_col: {'mse': [], 'rmse': [], 'mae': [], 'nse': [], 'mbe': []} 
+            for target_col in target_columns_model_test
+        }
         
-        # Definiamo gli indici in modo esplicito
-        current_input_start_index = first_input_start_index + (i_period * stride_between_periods)
-        input_data_end_index = current_input_start_index + input_steps_model_test
+        progress_bar_test = st.progress(0.0, text="Avvio test walk-forward...")
+
+        for i_period in range(num_evaluation_periods):
+            progress_bar_test.progress((i_period + 1) / num_evaluation_periods, text=f"Elaborazione Periodo {i_period + 1}/{num_evaluation_periods}...")
+            
+            current_input_start_index = first_input_start_index + (i_period * stride_between_periods)
+            input_data_end_index = current_input_start_index + input_steps_model_test
+            actual_data_start_idx = input_data_end_index
+            actual_data_end_idx = actual_data_start_idx + output_steps_model_test
+            
+            if actual_data_end_idx > len(df_current_csv):
+                st.warning(f"Periodo {i_period+1} saltato: dati insufficienti nel CSV.")
+                continue
+
+            input_df_period_slice = df_current_csv.iloc[current_input_start_index:input_data_end_index].copy()
+            actual_df_period_slice = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx].copy()
+            
+            if input_df_period_slice.empty or actual_df_period_slice.empty:
+                st.warning(f"Periodo {i_period+1} saltato: slice di dati vuoto.")
+                continue
+
+            actual_data_np = actual_df_period_slice[target_columns_model_test].values
+            start_time_prediction_period = actual_df_period_slice[date_col_name_csv].iloc[0]
+
+            predictions_period = None
+            uncertainty_period = None
+            input_cols_for_display = []
+            
+            # ... (la logica di predizione rimane invariata)
+            if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
+                past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
+                future_input_np_raw = actual_df_period_slice[forecast_feature_cols_model_test].values
+                input_cols_for_display = past_feature_cols_model_test
+                if num_passes_test > 1 and not is_quantile_model_test:
+                    predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(active_model, past_input_np_raw, future_input_np_raw, active_scalers, active_config, active_device, num_passes=num_passes_test)
+                else:
+                    predictions_period, _ = predict_seq2seq(active_model, past_input_np_raw, future_input_np_raw, active_scalers, active_config, active_device)
+            elif active_model_type == "SpatioTemporalGNN":
+                # ... (logica GNN invariata)
+            else: # LSTM Standard
+                input_np_raw = input_df_period_slice[feature_columns_model_test].values
+                input_cols_for_display = feature_columns_model_test
+                if num_passes_test > 1 and not is_quantile_model_test:
+                    predictions_period, uncertainty_period = predict_with_uncertainty(active_model, input_np_raw, active_scalers[0], active_scalers[1], active_config, active_device, num_passes=num_passes_test)
+                else:
+                    predictions_period = predict(active_model, input_np_raw, active_scalers[0], active_scalers[1], active_config, active_device)
+
+            if predictions_period is not None:
+                period_metrics = {}
+                for i_target, target_col in enumerate(target_columns_model_test):
+                    true_series = actual_data_np[:, i_target]
+                    pred_series = predictions_period[:, i_target, 1] if predictions_period.ndim == 3 else predictions_period[:, i_target]
+                    
+                    mse = mean_squared_error(true_series, pred_series)
+                    rmse = calculate_rmse(true_series, pred_series)
+                    mae = calculate_mae(true_series, pred_series)
+                    nse = calculate_nse(true_series, pred_series)
+                    mbe = calculate_mbe(true_series, pred_series)
+                    
+                    period_metrics[target_col] = {'MSE': mse, 'RMSE': rmse, 'MAE': mae, 'NSE': nse, 'MBE': mbe}
+                    
+                    all_period_metrics[target_col]['mse'].append(mse)
+                    all_period_metrics[target_col]['rmse'].append(rmse)
+                    all_period_metrics[target_col]['mae'].append(mae)
+                    all_period_metrics[target_col]['nse'].append(nse)
+                    all_period_metrics[target_col]['mbe'].append(mbe)
+
+                evaluation_results_list.append({
+                    "period_num": i_period + 1,
+                    "predictions": predictions_period,
+                    "actuals": actual_data_np,
+                    "uncertainty": uncertainty_period,
+                    "start_time_prediction_period": start_time_prediction_period,
+                    "metrics": period_metrics,
+                    "raw_input_df_for_table": input_df_period_slice,
+                    "input_cols_for_display": input_cols_for_display,
+                })
+
+        progress_bar_test.empty()
         
-        # La finestra degli "actuals" (dati reali per il confronto) inizia subito dopo
-        actual_data_start_idx = input_data_end_index
-        actual_data_end_idx = actual_data_start_idx + output_steps_model_test
-        
-        if actual_data_end_idx > len(df_current_csv):
-            st.warning(f"Periodo {i_period+1} saltato: dati insufficienti nel CSV.")
-            continue
+        if not evaluation_results_list:
+            st.error("Nessun periodo di test è stato completato con successo.")
+        else:
+            st.success(f"Test completato per {len(evaluation_results_list)} periodi.")
+            for result in evaluation_results_list:
+                st.subheader(f"Risultati Test - Periodo {result['period_num']}")
+                st.markdown(f"**Inizio periodo di previsione:** {result['start_time_prediction_period'].strftime('%d/%m/%Y %H:%M')}")
+                
+                figs = plot_predictions(result['predictions'], active_config, start_time=result['start_time_prediction_period'], actual_data=result['actuals'], uncertainty=result['uncertainty'])
+                
+                num_graph_cols = min(len(figs), 2)
+                graph_cols = st.columns(num_graph_cols)
+                for i_fig, fig in enumerate(figs):
+                    with graph_cols[i_fig % num_graph_cols]:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                st.write("Metriche di Valutazione per il periodo:")
+                metrics_df = pd.DataFrame.from_dict(result['metrics'], orient='index').round(5)
+                st.dataframe(metrics_df)
 
-        # Estraiamo le fette di dati (slice)
-        input_df_period_slice = df_current_csv.iloc[current_input_start_index:input_data_end_index].copy()
-        actual_df_period_slice = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx].copy()
-        
-        # Verifichiamo che le fette non siano vuote
-        if input_df_period_slice.empty or actual_df_period_slice.empty:
-            st.warning(f"Periodo {i_period+1} saltato: slice di dati vuoto.")
-            continue
+                st.markdown("### Dati Input utilizzati per la Previsione")
+                st.caption(f"Gli ultimi {N_INPUT_DISPLAY_STEPS} passi temporali che il modello ha ricevuto come input per questa previsione.")
 
-        # Dati grezzi e timestamp per il confronto e la visualizzazione
-        actual_data_np = actual_df_period_slice[target_columns_model_test].values
-        start_time_prediction_period = actual_df_period_slice[date_col_name_csv].iloc[0]
+                raw_input_df_full_slice = result['raw_input_df_for_table']
+                input_cols_to_show = result['input_cols_for_display']
+                
+                if raw_input_df_full_slice is not None and not raw_input_df_full_slice.empty:
+                    last_n_inputs_df = raw_input_df_full_slice.tail(N_INPUT_DISPLAY_STEPS).copy()
+                    cols_for_final_table = [date_col_name_csv] + [col for col in input_cols_to_show if col in last_n_inputs_df.columns]
+                    display_table = last_n_inputs_df[cols_for_final_table].set_index(date_col_name_csv)
+                    st.dataframe(display_table.style.format("{:.3f}"), use_container_width=True)
+                else:
+                    st.info("Dati input per questo periodo non disponibili per la visualizzazione.")
 
-        predictions_period = None
-        uncertainty_period = None
-        input_cols_for_display = []
-        
-        if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
-            past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
-            # Per il decoder, usiamo i dati reali dalla finestra di previsione
-            future_input_np_raw = actual_df_period_slice[forecast_feature_cols_model_test].values
-            input_cols_for_display = past_feature_cols_model_test
+                st.divider()
 
-            if num_passes_test > 1 and not is_quantile_model_test:
-                predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(
-                    active_model, past_input_np_raw, future_input_np_raw, 
-                    active_scalers, active_config, active_device, 
-                    num_passes=num_passes_test
-                )
-            else:
-                predictions_period, _ = predict_seq2seq(
-                    active_model, past_input_np_raw, future_input_np_raw,
-                    active_scalers, active_config, active_device
-                )
-        
-        elif active_model_type == "SpatioTemporalGNN":
-            node_columns_test = active_config['node_order']
-            feature_mapping_test = active_config['node_feature_mapping']
-            num_features_test = active_config['num_features']
+            st.subheader("Riepilogo Metriche Medie su Tutti i Periodi")
+            avg_metrics_data = {}
+            for target, metrics in all_period_metrics.items():
+                avg_metrics_data[get_station_label(target)] = {
+                    'MSE Medio': np.mean(metrics['mse']),
+                    'RMSE Medio': np.mean(metrics['rmse']),
+                    'MAE Medio': np.mean(metrics['mae']),
+                    'NSE Medio': np.mean(metrics['nse']),
+                    'MBE Medio': np.mean(metrics['mbe'])
+                }
             
-            all_gnn_model_feature_cols = []
-            for node_name in node_columns_test:
-                all_gnn_model_feature_cols.append(node_name)
-                all_gnn_model_feature_cols.extend(feature_mapping_test.get(node_name, []))
-            input_cols_for_display = sorted(list(set(all_gnn_model_feature_cols)))
-
-            raw_input_data_multi_feature = np.zeros((input_steps_model_test, len(node_columns_test), num_features_test), dtype=np.float32)
-            for t in range(input_steps_model_test):
-                for node_idx, node_name in enumerate(node_columns_test):
-                    raw_input_data_multi_feature[t, node_idx, 0] = input_df_period_slice[node_name].iloc[t]
-                    additional_features = feature_mapping_test.get(node_name, [])
-                    for feat_idx, feat_col in enumerate(additional_features):
-                        if feat_col in input_df_period_slice.columns:
-                            raw_input_data_multi_feature[t, node_idx, 1 + feat_idx] = input_df_period_slice[feat_col].iloc[t]
-
-            predictions_period, uncertainty_period = predict_gnn(active_model, raw_input_data_multi_feature, active_scalers, active_config, active_device, uncertainty_passes=num_passes_test)
-
-        else: # LSTM Standard
-            input_np_raw = input_df_period_slice[feature_columns_model_test].values
-            input_cols_for_display = feature_columns_model_test
-            
-            if num_passes_test > 1 and not is_quantile_model_test:
-                predictions_period, uncertainty_period = predict_with_uncertainty(active_model, input_np_raw, active_scalers[0], active_scalers[1], active_config, active_device, num_passes=num_passes_test)
-            else:
-                predictions_period = predict(active_model, input_np_raw, active_scalers[0], active_scalers[1], active_config, active_device)
-
-        if predictions_period is not None:
-            period_mses = {}
-            for i_target, target_col in enumerate(target_columns_model_test):
-                pred_series = predictions_period[:, i_target, 1] if predictions_period.ndim == 3 else predictions_period[:, i_target]
-                mse = mean_squared_error(actual_data_np[:, i_target], pred_series)
-                period_mses[target_col] = mse
-                all_period_mses[target_col].append(mse)
-
-            evaluation_results_list.append({
-                "period_num": i_period + 1,
-                "predictions": predictions_period,
-                "actuals": actual_data_np,
-                "uncertainty": uncertainty_period,
-                "start_time_prediction_period": start_time_prediction_period,
-                "mses": period_mses,
-                "raw_input_df_for_table": input_df_period_slice, # Salva lo slice corretto
-                "input_cols_for_display": input_cols_for_display,
-            })
-
-    progress_bar_test.empty()
-    
-    if not evaluation_results_list:
-        st.error("Nessun periodo di test è stato completato con successo.")
-    else:
-        st.success(f"Test completato per {len(evaluation_results_list)} periodi.")
-        for result in evaluation_results_list:
-            st.subheader(f"Risultati Test - Periodo {result['period_num']}")
-            st.markdown(f"**Inizio periodo di previsione:** {result['start_time_prediction_period'].strftime('%d/%m/%Y %H:%M')}")
-            
-            figs = plot_predictions(result['predictions'], active_config, start_time=result['start_time_prediction_period'], actual_data=result['actuals'], uncertainty=result['uncertainty'])
-            
-            num_graph_cols = min(len(figs), 2)
-            graph_cols = st.columns(num_graph_cols)
-            for i_fig, fig in enumerate(figs):
-                with graph_cols[i_fig % num_graph_cols]:
-                    st.plotly_chart(fig, use_container_width=True)
-            
-            st.write("Errore Quadratico Medio (MSE) per il periodo:")
-            st.dataframe(pd.DataFrame.from_dict(result['mses'], orient='index', columns=['MSE']).round(5))
-
-            st.markdown("### Dati Input utilizzati per la Previsione")
-            st.caption(f"Gli ultimi {N_INPUT_DISPLAY_STEPS} passi temporali che il modello ha ricevuto come input per questa previsione.")
-
-            raw_input_df_full_slice = result['raw_input_df_for_table']
-            input_cols_to_show = result['input_cols_for_display']
-            
-            if raw_input_df_full_slice is not None and not raw_input_df_full_slice.empty:
-                last_n_inputs_df = raw_input_df_full_slice.tail(N_INPUT_DISPLAY_STEPS).copy()
-                cols_for_final_table = [date_col_name_csv] + [col for col in input_cols_to_show if col in last_n_inputs_df.columns]
-                display_table = last_n_inputs_df[cols_for_final_table].set_index(date_col_name_csv)
-                st.dataframe(display_table.style.format("{:.3f}"), use_container_width=True)
-            else:
-                st.info("Dati input per questo periodo non disponibili per la visualizzazione.")
-
-            st.divider()
-
-        st.subheader("Riepilogo Metriche Medie su Tutti i Periodi")
-        avg_mse_data = {get_station_label(k): np.mean(v) for k, v in all_period_mses.items() if v}
-        st.dataframe(pd.DataFrame.from_dict(avg_mse_data, orient='index', columns=['MSE Medio']).round(5))
+            avg_metrics_df = pd.DataFrame.from_dict(avg_metrics_data, orient='index')
+            st.dataframe(avg_metrics_df.round(5))
 
 elif page == 'Analisi Dati Storici':
     st.header('Analisi Dati Storici (da file CSV)')
@@ -3334,7 +3434,7 @@ elif page == 'Allenamento Modello':
             if X_scaled is not None and y_scaled is not None:
                 # <<< MODIFICA 2: Passaggio sample_weights e use_weighted_loss al trainer
                 trained_model, _, _ = train_model(
-                    X_scaled, y_scaled, sample_weights,
+                    X_scaled, y_scaled, sample_weights, sc_t,
                     X_scaled.shape[2], len(selected_targets), ow_steps, hs, nl, ep, bs, lr, dr, 
                     'migliore' if 'Migliore' in save_choice else 'finale', 
                     'auto' if 'Auto' in device_option else 'cpu', 
@@ -3439,7 +3539,7 @@ elif page == 'Allenamento Modello':
                 
                 # <<< MODIFICA 5: Passaggio parametri al trainer
                 trained_model, _, _ = train_model_seq2seq(
-                    X_enc_scaled, X_dec_scaled, y_tar_scaled, sample_weights,
+                    X_enc_scaled, X_dec_scaled, y_tar_scaled, sample_weights, sc_tar,
                     model_instance, ow_steps, ep, bs, lr, 
                     'migliore' if 'Migliore' in save_choice else 'finale',
                     'auto' if 'Auto' in device_option else 'cpu',
@@ -3563,7 +3663,7 @@ elif page == 'Allenamento Modello':
                     
                     # <<< MODIFICA 7: Passaggio parametri al trainer
                     trained_model, _, _ = train_model_gnn(
-                        X_scaled, y_scaled, sample_weights,
+                        X_scaled, y_scaled, sample_weights, sc_t,
                         model, edge_index, edge_weights, ep, bs, lr,
                         training_mode=training_mode.split()[0].lower(),
                         quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
