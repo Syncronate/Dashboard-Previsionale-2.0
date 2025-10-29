@@ -997,6 +997,11 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
                     n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None,
                     split_method="Temporale", validation_percentage_temporal=0.2, validation_percentage_random=0.2, use_weighted_loss=False, 
                     use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
+    if (split_method == "Temporale (Consigliato per Serie Storiche)" and validation_percentage_temporal == 0) or \
+       (split_method == "Casuale per Percentuale" and validation_percentage_random == 0):
+        if save_strategy == 'migliore':
+            st.warning("Validation set a 0%. Impossibile usare la strategia di salvataggio 'Migliore'. Forzato salvataggio del modello finale.")
+            save_strategy = 'finale'
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
     model.to(device)
     edge_index_tensor = torch.tensor(edge_index, dtype=torch.long).to(device)
@@ -1244,11 +1249,14 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
         else:
             val_losses.append(None)
 
-        val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
-        if val_loader and epoch_val_loss is not None:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
-        else:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str}")
+        val_loss_str = f"{epoch_val_loss:.6f}" if 'epoch_val_loss' in locals() and epoch_val_loss is not None else "N/A"
+        train_metrics_str = f"Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f}"
+
+        if 'val_rmse' in locals(): # Se le metriche di validazione esistono
+            val_metrics_str = f"Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}"
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | {train_metrics_str} | {val_metrics_str}")
+        else: # Se non c'è set di validazione
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | {train_metrics_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -1983,6 +1991,11 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
                 _model_to_continue_train=None,
                 split_method="Temporale", validation_percentage_temporal=0.2, validation_percentage_random=0.2,
                 use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
+    if (split_method == "Temporale (Consigliato per Serie Storiche)" and validation_percentage_temporal == 0) or \
+       (split_method == "Casuale per Percentuale" and validation_percentage_random == 0):
+        if save_strategy == 'migliore':
+            st.warning("Validation set a 0%. Impossibile usare la strategia di salvataggio 'Migliore'. Forzato salvataggio del modello finale.")
+            save_strategy = 'finale'
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training LSTM (Weighted Loss: {use_weighted_loss})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
@@ -2244,11 +2257,14 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
         else:
              val_losses.append(None)
 
-        val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
-        if val_loader and epoch_val_loss is not None:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
-        else:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str}")
+        val_loss_str = f"{epoch_val_loss:.6f}" if 'epoch_val_loss' in locals() and epoch_val_loss is not None else "N/A"
+        train_metrics_str = f"Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f}"
+
+        if 'val_rmse' in locals(): # Se le metriche di validazione esistono
+            val_metrics_str = f"Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}"
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | {train_metrics_str} | {val_metrics_str}")
+        else: # Se non c'è set di validazione
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | {train_metrics_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -2268,6 +2284,11 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                         training_mode='standard', quantiles=None,
                         split_method="Temporale", validation_percentage_temporal=0.2, validation_percentage_random=0.2,
                         use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
+    if (split_method == "Temporale (Consigliato per Serie Storiche)" and validation_percentage_temporal == 0) or \
+       (split_method == "Casuale per Percentuale" and validation_percentage_random == 0):
+        if save_strategy == 'migliore':
+            st.warning("Validation set a 0%. Impossibile usare la strategia di salvataggio 'Migliore'. Forzato salvataggio del modello finale.")
+            save_strategy = 'finale'
     print(f"[{datetime.now(italy_tz).strftime('%H:%M:%S')}] Avvio training Seq2Seq (Weighted: {use_weighted_loss}, loss={loss_function_name})...")
     
     device = torch.device('cuda' if ('auto' in preferred_device.lower() and torch.cuda.is_available()) else 'cpu')
@@ -2522,11 +2543,14 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         else:
             val_losses.append(None)
 
-        val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
-        if val_loader and epoch_val_loss is not None:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
-        else:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str}")
+        val_loss_str = f"{epoch_val_loss:.6f}" if 'epoch_val_loss' in locals() and epoch_val_loss is not None else "N/A"
+        train_metrics_str = f"Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f}"
+
+        if 'val_rmse' in locals(): # Se le metriche di validazione esistono
+            val_metrics_str = f"Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}"
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | {train_metrics_str} | {val_metrics_str}")
+        else: # Se non c'è set di validazione
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | {train_metrics_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -3545,7 +3569,7 @@ elif page == 'Allenamento Modello':
     validation_percentage_temporal = 0.2
     if split_method == "Temporale (Consigliato per Serie Storiche)":
         validation_percentage_temporal = st.slider(
-            "Percentuale Dati Recenti per il Validation Set:", 10, 50, 20, 5, format="%d%%",
+            "Percentuale Dati Recenti per il Validation Set:", 0, 50, 20, 5, format="%d%%",
             key="validation_split_percentage_temporal",
             help="Es: 20% significa che l'80% più vecchio dei dati sarà per il training e il 20% più recente per la validazione."
         ) / 100.0
@@ -3554,7 +3578,7 @@ elif page == 'Allenamento Modello':
     if split_method == "Casuale per Percentuale":
         st.warning("⚠️ Attenzione: La suddivisione casuale può portare a stime delle performance irrealisticamente ottimistiche per le serie storiche.")
         validation_percentage_random = st.slider(
-            "Percentuale Dati per il Validation Set:", 10, 50, 20, 5, format="%d%%", key="validation_split_percentage_random"
+            "Percentuale Dati per il Validation Set:", 0, 50, 20, 5, format="%d%%", key="validation_split_percentage_random"
         ) / 100.0
 
     st.markdown("**Modalità di Training e Funzione di Loss**")
