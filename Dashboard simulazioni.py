@@ -1080,6 +1080,7 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
     for epoch in range(epochs):
         model.train()
         epoch_train_loss = 0.0
+        all_train_preds, all_train_trues = [], []
         
         for batch in train_loader:
             if use_weighted_loss:
@@ -1091,6 +1092,26 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
             outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
+
+            with torch.no_grad():
+                preds_scaled = outputs.cpu().numpy()
+                trues_scaled = y_batch.cpu().numpy()
+                num_targets = trues_scaled.shape[-1]
+                
+                if training_mode == 'quantile':
+                    preds_scaled_permuted = preds_scaled.transpose(0, 1, 3, 2)
+                    preds_scaled_flat = preds_scaled_permuted.reshape(-1, num_targets)
+                    preds_unscaled_flat = scaler_targets.inverse_transform(preds_scaled_flat)
+                    preds_unscaled = preds_unscaled_flat.reshape(
+                        preds_scaled.shape[0], preds_scaled.shape[1], preds_scaled.shape[3], num_targets
+                    ).transpose(0, 1, 3, 2)
+                else:
+                    preds_unscaled = scaler_targets.inverse_transform(preds_scaled.reshape(-1, num_targets)).reshape(preds_scaled.shape)
+                
+                trues_unscaled = scaler_targets.inverse_transform(trues_scaled.reshape(-1, num_targets)).reshape(trues_scaled.shape)
+                
+                all_train_preds.append(preds_unscaled)
+                all_train_trues.append(trues_unscaled)
             # --- INIZIO DEL NUOVO BLOCCO DI CALCOLO LOSS (DA SOSTITUIRE) ---
 
             # `criterion` calcola la loss per campione (pesata per magnitudo se attivata).
@@ -1118,6 +1139,22 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
             epoch_train_loss += loss.item() * X_batch.size(0)
         
         train_losses.append(epoch_train_loss / len(train_loader.dataset))
+
+        all_train_preds_np = np.concatenate(all_train_preds, axis=0)
+        all_train_trues_np = np.concatenate(all_train_trues, axis=0)
+
+        train_preds_for_metrics = all_train_preds_np
+        if training_mode == 'quantile':
+            train_preds_for_metrics = all_train_preds_np[:, :, :, 1]
+
+        num_targets_train = all_train_trues_np.shape[2]
+        all_train_trues_flat = all_train_trues_np.reshape(-1, num_targets_train)
+        train_preds_for_metrics_flat = train_preds_for_metrics.reshape(-1, num_targets_train)
+
+        train_rmse = calculate_rmse(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_mae = calculate_mae(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_nse = calculate_nse(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_mbe = calculate_mbe(all_train_trues_flat, train_preds_for_metrics_flat)
         
         epoch_val_loss = None
         if val_loader:
@@ -1183,9 +1220,9 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
 
         val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
         if val_loader and epoch_val_loss is not None:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
         else:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -2019,6 +2056,7 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
     for epoch in range(epochs):
         model.train()
         epoch_train_loss = 0.0
+        all_train_preds, all_train_trues = [], []
         
         # MODIFICATO: Unpack del batch
         batch_items = train_loader
@@ -2034,6 +2072,27 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
             
             optimizer.zero_grad()
             outputs = model(X_batch)
+
+            with torch.no_grad():
+                preds_scaled = outputs.cpu().numpy()
+                trues_scaled = y_batch.cpu().numpy()
+                num_targets = trues_scaled.shape[-1]
+                
+                if training_mode == 'quantile':
+                    preds_scaled_permuted = preds_scaled.transpose(0, 1, 3, 2)
+                    preds_scaled_flat = preds_scaled_permuted.reshape(-1, num_targets)
+                    preds_unscaled_flat = scaler_targets.inverse_transform(preds_scaled_flat)
+                    preds_unscaled = preds_unscaled_flat.reshape(
+                        preds_scaled.shape[0], preds_scaled.shape[1], preds_scaled.shape[3], num_targets
+                    ).transpose(0, 1, 3, 2)
+                else:
+                    preds_unscaled = scaler_targets.inverse_transform(preds_scaled.reshape(-1, num_targets)).reshape(preds_scaled.shape)
+                
+                trues_unscaled = scaler_targets.inverse_transform(trues_scaled.reshape(-1, num_targets)).reshape(trues_scaled.shape)
+                
+                all_train_preds.append(preds_unscaled)
+                all_train_trues.append(trues_unscaled)
+
             # --- INIZIO DEL NUOVO BLOCCO DI CALCOLO LOSS (DA SOSTITUIRE) ---
 
             # `criterion` calcola la loss per campione (pesata per magnitudo se attivata).
@@ -2060,6 +2119,22 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
             optimizer.step()
             epoch_train_loss += loss.item() * X_batch.size(0)
         train_losses.append(epoch_train_loss / len(train_loader.dataset))
+
+        all_train_preds_np = np.concatenate(all_train_preds, axis=0)
+        all_train_trues_np = np.concatenate(all_train_trues, axis=0)
+
+        train_preds_for_metrics = all_train_preds_np
+        if training_mode == 'quantile':
+            train_preds_for_metrics = all_train_preds_np[:, :, :, 1]
+
+        num_targets_train = all_train_trues_np.shape[2]
+        all_train_trues_flat = all_train_trues_np.reshape(-1, num_targets_train)
+        train_preds_for_metrics_flat = train_preds_for_metrics.reshape(-1, num_targets_train)
+
+        train_rmse = calculate_rmse(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_mae = calculate_mae(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_nse = calculate_nse(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_mbe = calculate_mbe(all_train_trues_flat, train_preds_for_metrics_flat)
         
         epoch_val_loss = None
         if val_loader:
@@ -2125,9 +2200,9 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
 
         val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
         if val_loader and epoch_val_loss is not None:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
         else:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
@@ -2229,6 +2304,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     for epoch in range(epochs):
         model.train()
         epoch_train_loss = 0.0
+        all_train_preds, all_train_trues = [], []
         current_tf_ratio = 0.5
         if teacher_forcing_ratio_schedule:
             start_tf, end_tf = teacher_forcing_ratio_schedule
@@ -2245,6 +2321,27 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             
             optimizer.zero_grad()
             outputs, _ = model(x_enc, x_dec, teacher_forcing_ratio=current_tf_ratio)
+
+            with torch.no_grad():
+                preds_scaled = outputs.cpu().numpy()
+                trues_scaled = y_tar.cpu().numpy()
+                num_targets = trues_scaled.shape[-1]
+
+                if training_mode == 'quantile':
+                    preds_scaled_permuted = preds_scaled.transpose(0, 1, 3, 2)
+                    preds_scaled_flat = preds_scaled_permuted.reshape(-1, num_targets)
+                    preds_unscaled_flat = scaler_targets.inverse_transform(preds_scaled_flat)
+                    preds_unscaled = preds_unscaled_flat.reshape(
+                        preds_scaled.shape[0], preds_scaled.shape[1], preds_scaled.shape[3], num_targets
+                    ).transpose(0, 1, 3, 2)
+                else:
+                    preds_unscaled = scaler_targets.inverse_transform(preds_scaled.reshape(-1, num_targets)).reshape(preds_scaled.shape)
+
+                trues_unscaled = scaler_targets.inverse_transform(trues_scaled.reshape(-1, num_targets)).reshape(trues_scaled.shape)
+
+                all_train_preds.append(preds_unscaled)
+                all_train_trues.append(trues_unscaled)
+
             # --- INIZIO DEL NUOVO BLOCCO DI CALCOLO LOSS (DA SOSTITUIRE) ---
 
             # `criterion` calcola la loss per campione (pesata per magnitudo se attivata).
@@ -2272,6 +2369,22 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             epoch_train_loss += loss.item() * x_enc.size(0)
         
         train_losses.append(epoch_train_loss / len(train_loader.dataset))
+
+        all_train_preds_np = np.concatenate(all_train_preds, axis=0)
+        all_train_trues_np = np.concatenate(all_train_trues, axis=0)
+
+        train_preds_for_metrics = all_train_preds_np
+        if training_mode == 'quantile':
+            train_preds_for_metrics = all_train_preds_np[:, :, :, 1]
+
+        num_targets_train = all_train_trues_np.shape[2]
+        all_train_trues_flat = all_train_trues_np.reshape(-1, num_targets_train)
+        train_preds_for_metrics_flat = train_preds_for_metrics.reshape(-1, num_targets_train)
+
+        train_rmse = calculate_rmse(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_mae = calculate_mae(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_nse = calculate_nse(all_train_trues_flat, train_preds_for_metrics_flat)
+        train_mbe = calculate_mbe(all_train_trues_flat, train_preds_for_metrics_flat)
         
         epoch_val_loss = None
         if val_loader:
@@ -2337,9 +2450,9 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
 
         val_loss_str = f"{epoch_val_loss:.6f}" if epoch_val_loss is not None else "N/A"
         if val_loader and epoch_val_loss is not None:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str} | Val RMSE: {val_rmse:.3f} | Val NSE: {val_nse:.3f} | Val MBE: {val_mbe:.3f}")
         else:
-            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Val Loss: {val_loss_str}")
+            status_text.markdown(f"Epoca {epoch + 1}/{epochs} | Train Loss: {train_losses[-1]:.6f} | Train RMSE: {train_rmse:.3f} | Train NSE: {train_nse:.3f} | Train MBE: {train_mbe:.3f} | Val Loss: {val_loss_str}")
 
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
