@@ -1038,30 +1038,23 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
 
     from sklearn.model_selection import train_test_split
     weights_train, weights_val = None, None
-    X_train, X_val, y_train, y_val = None, None, None, None
-    # Variabili specifiche per Seq2Seq
-    X_dec_train, X_dec_val = None, None
+    X_enc_train, X_enc_val, X_dec_train, X_dec_val, y_tar_train, y_tar_val = [None] * 6
 
     if "Temporale" in split_method:
         st.info(f"Suddivisione temporale: {int((1-validation_percentage_temporal)*100)}% training, {int(validation_percentage_temporal*100)}% validazione.")
         
-        # Per Seq2Seq e GNN, l'input principale è il primo array
-        main_input_data = X_enc_scaled_full if 'X_enc_scaled_full' in locals() else X_scaled_full
-        
-        split_idx = int(len(main_input_data) * (1 - validation_percentage_temporal))
+        split_idx = int(len(X_enc_scaled_full) * (1 - validation_percentage_temporal))
         
         train_indices = range(0, split_idx)
-        val_indices = range(split_idx, len(main_input_data))
+        val_indices = range(split_idx, len(X_enc_scaled_full))
 
-        # Suddivisione per tutti i tipi di modello
-        X_train = main_input_data[train_indices]
-        y_train = y_scaled_full[train_indices]
-        X_val = main_input_data[val_indices]
-        y_val = y_scaled_full[val_indices]
-
-        if 'X_dec_scaled_full' in locals():
-            X_dec_train = X_dec_scaled_full[train_indices]
-            X_dec_val = X_dec_scaled_full[val_indices]
+        X_enc_train = X_enc_scaled_full[train_indices]
+        X_dec_train = X_dec_scaled_full[train_indices]
+        y_tar_train = y_tar_scaled_full[train_indices]
+        
+        X_enc_val = X_enc_scaled_full[val_indices]
+        X_dec_val = X_dec_scaled_full[val_indices]
+        y_tar_val = y_tar_scaled_full[val_indices]
 
         if use_weighted_loss and sample_weights_full is not None:
             weights_train = sample_weights_full[train_indices]
@@ -1070,11 +1063,7 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
     else: # Logica Casuale
         st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
         
-        main_input_data = X_enc_scaled_full if 'X_enc_scaled_full' in locals() else X_scaled_full
-        
-        arrays_to_split = [main_input_data, y_scaled_full]
-        if 'X_dec_scaled_full' in locals():
-            arrays_to_split.append(X_dec_scaled_full)
+        arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full]
         if use_weighted_loss and sample_weights_full is not None:
             arrays_to_split.append(sample_weights_full)
 
@@ -1085,16 +1074,12 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
             random_state=42
         )
         
-        # Unpacking dinamico e sicuro
-        X_train, X_val = split_results[0], split_results[1]
-        y_train, y_val = split_results[2], split_results[3]
+        X_enc_train, X_enc_val = split_results[0], split_results[1]
+        X_dec_train, X_dec_val = split_results[2], split_results[3]
+        y_tar_train, y_tar_val = split_results[4], split_results[5]
         
-        current_idx = 4
-        if 'X_dec_scaled_full' in locals():
-            X_dec_train, X_dec_val = split_results[current_idx], split_results[current_idx + 1]
-            current_idx += 2
         if use_weighted_loss and sample_weights_full is not None:
-            weights_train, weights_val = split_results[current_idx], split_results[current_idx + 1]
+            weights_train, weights_val = split_results[6], split_results[7]
 
     # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
 
@@ -2047,30 +2032,24 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
 
     from sklearn.model_selection import train_test_split
     weights_train, weights_val = None, None
-    X_train, X_val, y_train, y_val = None, None, None, None
-    # Variabili specifiche per Seq2Seq
+    X_enc_train, X_enc_val, y_tar_train, y_tar_val = [None] * 4 # Corretto
     X_dec_train, X_dec_val = None, None
 
     if "Temporale" in split_method:
         st.info(f"Suddivisione temporale: {int((1-validation_percentage_temporal)*100)}% training, {int(validation_percentage_temporal*100)}% validazione.")
         
-        # Per Seq2Seq e GNN, l'input principale è il primo array
-        main_input_data = X_enc_scaled_full if 'X_enc_scaled_full' in locals() else X_scaled_full
-        
-        split_idx = int(len(main_input_data) * (1 - validation_percentage_temporal))
+        split_idx = int(len(X_enc_scaled_full) * (1 - validation_percentage_temporal))
         
         train_indices = range(0, split_idx)
-        val_indices = range(split_idx, len(main_input_data))
+        val_indices = range(split_idx, len(X_enc_scaled_full))
 
-        # Suddivisione per tutti i tipi di modello
-        X_train = main_input_data[train_indices]
-        y_train = y_scaled_full[train_indices]
-        X_val = main_input_data[val_indices]
-        y_val = y_scaled_full[val_indices]
-
-        if 'X_dec_scaled_full' in locals():
-            X_dec_train = X_dec_scaled_full[train_indices]
-            X_dec_val = X_dec_scaled_full[val_indices]
+        X_enc_train = X_enc_scaled_full[train_indices]
+        X_dec_train = X_dec_scaled_full[train_indices]
+        y_tar_train = y_tar_scaled_full[train_indices] # Corretto
+        
+        X_enc_val = X_enc_scaled_full[val_indices]
+        X_dec_val = X_dec_scaled_full[val_indices]
+        y_tar_val = y_tar_scaled_full[val_indices] # Corretto
 
         if use_weighted_loss and sample_weights_full is not None:
             weights_train = sample_weights_full[train_indices]
@@ -2079,11 +2058,7 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
     else: # Logica Casuale
         st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
         
-        main_input_data = X_enc_scaled_full if 'X_enc_scaled_full' in locals() else X_scaled_full
-        
-        arrays_to_split = [main_input_data, y_scaled_full]
-        if 'X_dec_scaled_full' in locals():
-            arrays_to_split.append(X_dec_scaled_full)
+        arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full] # Corretto
         if use_weighted_loss and sample_weights_full is not None:
             arrays_to_split.append(sample_weights_full)
 
@@ -2094,16 +2069,12 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
             random_state=42
         )
         
-        # Unpacking dinamico e sicuro
-        X_train, X_val = split_results[0], split_results[1]
-        y_train, y_val = split_results[2], split_results[3]
+        X_enc_train, X_enc_val = split_results[0], split_results[1]
+        X_dec_train, X_dec_val = split_results[2], split_results[3]
+        y_tar_train, y_tar_val = split_results[4], split_results[5] # Corretto
         
-        current_idx = 4
-        if 'X_dec_scaled_full' in locals():
-            X_dec_train, X_dec_val = split_results[current_idx], split_results[current_idx + 1]
-            current_idx += 2
         if use_weighted_loss and sample_weights_full is not None:
-            weights_train, weights_val = split_results[current_idx], split_results[current_idx + 1]
+            weights_train, weights_val = split_results[6], split_results[7]
 
     # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
 
@@ -2336,30 +2307,24 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
 
     from sklearn.model_selection import train_test_split
     weights_train, weights_val = None, None
-    X_train, X_val, y_train, y_val = None, None, None, None
-    # Variabili specifiche per Seq2Seq
+    X_enc_train, X_enc_val, y_tar_train, y_tar_val = [None] * 4 # Corretto
     X_dec_train, X_dec_val = None, None
 
     if "Temporale" in split_method:
         st.info(f"Suddivisione temporale: {int((1-validation_percentage_temporal)*100)}% training, {int(validation_percentage_temporal*100)}% validazione.")
         
-        # Per Seq2Seq e GNN, l'input principale è il primo array
-        main_input_data = X_enc_scaled_full if 'X_enc_scaled_full' in locals() else X_scaled_full
-        
-        split_idx = int(len(main_input_data) * (1 - validation_percentage_temporal))
+        split_idx = int(len(X_enc_scaled_full) * (1 - validation_percentage_temporal))
         
         train_indices = range(0, split_idx)
-        val_indices = range(split_idx, len(main_input_data))
+        val_indices = range(split_idx, len(X_enc_scaled_full))
 
-        # Suddivisione per tutti i tipi di modello
-        X_train = main_input_data[train_indices]
-        y_train = y_scaled_full[train_indices]
-        X_val = main_input_data[val_indices]
-        y_val = y_scaled_full[val_indices]
-
-        if 'X_dec_scaled_full' in locals():
-            X_dec_train = X_dec_scaled_full[train_indices]
-            X_dec_val = X_dec_scaled_full[val_indices]
+        X_enc_train = X_enc_scaled_full[train_indices]
+        X_dec_train = X_dec_scaled_full[train_indices]
+        y_tar_train = y_tar_scaled_full[train_indices] # Corretto
+        
+        X_enc_val = X_enc_scaled_full[val_indices]
+        X_dec_val = X_dec_scaled_full[val_indices]
+        y_tar_val = y_tar_scaled_full[val_indices] # Corretto
 
         if use_weighted_loss and sample_weights_full is not None:
             weights_train = sample_weights_full[train_indices]
@@ -2368,11 +2333,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     else: # Logica Casuale
         st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
         
-        main_input_data = X_enc_scaled_full if 'X_enc_scaled_full' in locals() else X_scaled_full
-        
-        arrays_to_split = [main_input_data, y_scaled_full]
-        if 'X_dec_scaled_full' in locals():
-            arrays_to_split.append(X_dec_scaled_full)
+        arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full] # Corretto
         if use_weighted_loss and sample_weights_full is not None:
             arrays_to_split.append(sample_weights_full)
 
@@ -2383,18 +2344,17 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             random_state=42
         )
         
-        # Unpacking dinamico e sicuro
-        X_train, X_val = split_results[0], split_results[1]
-        y_train, y_val = split_results[2], split_results[3]
+        X_enc_train, X_enc_val = split_results[0], split_results[1]
+        X_dec_train, X_dec_val = split_results[2], split_results[3]
+        y_tar_train, y_tar_val = split_results[4], split_results[5] # Corretto
         
-        current_idx = 4
-        if 'X_dec_scaled_full' in locals():
-            X_dec_train, X_dec_val = split_results[current_idx], split_results[current_idx + 1]
-            current_idx += 2
         if use_weighted_loss and sample_weights_full is not None:
-            weights_train, weights_val = split_results[current_idx], split_results[current_idx + 1]
+            weights_train, weights_val = split_results[6], split_results[7]
 
     # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
+
+    X_train, y_train = X_enc_train, y_tar_train
+    X_val, y_val = X_enc_val, y_tar_val
 
     train_loader = DataLoader(TimeSeriesDataset(X_enc_train, X_dec_train, y_tar_train, weights_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_enc_val, X_dec_val, y_tar_val), batch_size=batch_size) if len(X_enc_val) > 0 else None
