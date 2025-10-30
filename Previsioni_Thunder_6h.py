@@ -87,7 +87,7 @@ class Seq2SeqWithAttention(nn.Module):
 
 # --- Costanti ---
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_lstm_20251029_2100"
+MODEL_BASE_NAME = "modello_seq2seq_20250919_1641"
 
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
