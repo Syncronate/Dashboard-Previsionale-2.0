@@ -2709,65 +2709,106 @@ with st.sidebar:
     if is_uploaded and st.session_state.get('uploaded_file_processed') != uploaded_data_file.name: process_file = True
     elif data_path_to_load == DEFAULT_DATA_PATH and not st.session_state.get('uploaded_file_processed'): process_file = True
 
-    if process_file and data_path_to_load:
-        with st.spinner("Caricamento e processamento dati CSV..."):
-            try:
-                read_args = {'sep': ';', 'decimal': ',', 'low_memory': False}; encodings_to_try = ['utf-8', 'latin1', 'iso-8859-1']; df_temp = None
-                file_obj = data_path_to_load
-                for enc in encodings_to_try:
-                     try:
-                         if hasattr(file_obj, 'seek'): file_obj.seek(0)
-                         df_temp = pd.read_csv(file_obj, encoding=enc, **read_args); break
-                     except UnicodeDecodeError: continue
-                     except Exception as read_e: raise read_e
-                if df_temp is None: raise ValueError(f"Impossibile leggere CSV con encodings: {encodings_to_try}")
-                date_col_csv = st.session_state.date_col_name_csv
-                if date_col_csv not in df_temp.columns: raise ValueError(f"Colonna data CSV '{date_col_csv}' mancante.")
-                try:
-                    df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%y %H.%M', errors='raise')
-                except ValueError:
-                    try:
-                        df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%Y %H:%M', errors='raise')
-                    except ValueError:
-                        st.caption(f"Formato data CSV non standard ('{date_col_csv}'). Tentativo di inferenza automatica.")
-                        try:
-                            df_temp[date_col_csv] = pd.to_datetime(df_temp[date_col_csv], errors='coerce', infer_datetime_format=True)
-                        except Exception as e_date_csv_infer:
-                            raise ValueError(f"Errore conversione data CSV '{date_col_csv}': {e_date_csv_infer}")
-                df_temp = df_temp.dropna(subset=[date_col_csv])
-                if df_temp.empty: raise ValueError("Nessuna riga valida dopo pulizia data CSV.")
-                df_temp = df_temp.sort_values(by=date_col_csv).reset_index(drop=True)
-                features_to_clean = [col for col in df_temp.columns if col != date_col_csv]
-                for col in features_to_clean:
-                    if pd.api.types.is_object_dtype(df_temp[col]) or pd.api.types.is_string_dtype(df_temp[col]):
-                         col_str = df_temp[col].astype(str).str.strip().replace(['N/A', '', '-', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
-                         if '.' in col_str.unique() and ',' in col_str.unique(): col_str = col_str.str.replace('.', '', regex=False)
-                         col_str = col_str.str.replace(',', '.', regex=False)
-                         df_temp[col] = pd.to_numeric(col_str, errors='coerce')
-                    elif pd.api.types.is_numeric_dtype(df_temp[col]): pass
-                    else: df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce')
-                numeric_cols = df_temp.select_dtypes(include=np.number).columns
-                n_nan_before_fill = df_temp[numeric_cols].isnull().sum().sum()
-                if n_nan_before_fill > 0:
-                     st.caption(f"Trovati {n_nan_before_fill} NaN/non numerici nel CSV. Eseguito ffill/bfill.")
-                     df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(method='ffill').fillna(method='bfill')
-                     n_nan_after_fill = df_temp[numeric_cols].isnull().sum().sum()
-                     if n_nan_after_fill > 0: st.warning(f"NaN residui ({n_nan_after_fill}) dopo fill CSV. Riempiti con 0."); df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(0)
-                st.session_state.df = df_temp
-                if is_uploaded: st.session_state['uploaded_file_processed'] = uploaded_data_file.name
-                else: st.session_state['uploaded_file_processed'] = True
-                st.success(f"Dati CSV caricati ({len(st.session_state.df)} righe)."); df = st.session_state.df
-            except Exception as e: df = None; st.session_state.df = None; st.session_state['uploaded_file_processed'] = None; df_load_error = f'Errore caricamento/processamento CSV: {e}'; st.error(f"Errore CSV: {df_load_error}"); print(traceback.format_exc())
+    # SOSTITUISCI IL VECCHIO BLOCCO CON QUESTO
+if process_file and data_path_to_load:
+    with st.spinner("Caricamento e processamento dati CSV..."):
+        try:
+            # Legge il file CSV tentando diversi encoding comuni per massima compatibilità
+            read_args = {'sep': ';', 'decimal': ',', 'low_memory': False}
+            encodings_to_try = ['utf-8', 'latin1', 'iso-8859-1']
+            df_temp = None
+            
+            # Assicura che il puntatore del file sia all'inizio
+            if hasattr(data_path_to_load, 'seek'):
+                data_path_to_load.seek(0)
 
-    if df is None and 'df' in st.session_state and st.session_state.df is not None:
-        df = st.session_state.df
-        if data_source_info == "":
-            if st.session_state.get('uploaded_file_processed') and isinstance(st.session_state.get('uploaded_file_processed'), str): data_source_info = f"File caricato: **{st.session_state['uploaded_file_processed']}** (da sessione)"
-            elif st.session_state.get('uploaded_file_processed') == True: data_source_info = f"File default: **{DEFAULT_DATA_PATH}** (da sessione)"
-    if data_source_info: st.caption(data_source_info)
-    if df_load_error and not data_source_info: st.error(df_load_error)
-    data_ready_csv = df is not None
-    st.divider()
+            for enc in encodings_to_try:
+                try:
+                    if hasattr(data_path_to_load, 'seek'):
+                        data_path_to_load.seek(0)
+                    df_temp = pd.read_csv(data_path_to_load, encoding=enc, **read_args)
+                    break 
+                except UnicodeDecodeError:
+                    continue
+            
+            if df_temp is None:
+                raise ValueError(f"Impossibile leggere il file CSV con gli encoding: {encodings_to_try}")
+
+            date_col_csv = st.session_state.date_col_name_csv
+            if date_col_csv not in df_temp.columns:
+                raise ValueError(f"Colonna data '{date_col_csv}' non trovata nel CSV.")
+
+            # --- NUOVA LOGICA DI PARSING FLESSIBILE PER FORMATI MISTI ---
+
+            # 1. Tenta il parsing con il formato anno a 4 cifre (es. 27/09/2025 14:30).
+            #    'errors='coerce'' imposta a NaT (Not a Time) le date non conformi, senza bloccare l'esecuzione.
+            parsed_dates = pd.to_datetime(df_temp[date_col_csv], format='%d/%m/%Y %H:%M', errors='coerce')
+            
+            # 2. Per le date che NON sono state convertite (ora sono NaT), tenta con il formato anno a 2 cifre.
+            unparsed_mask = parsed_dates.isnull()
+            if unparsed_mask.any():
+                # Applica il secondo formato solo al sottoinsieme di dati non parsati
+                parsed_dates.loc[unparsed_mask] = pd.to_datetime(
+                    df_temp.loc[unparsed_mask, date_col_csv], format='%d/%m/%y %H.%M', errors='coerce'
+                )
+
+            # 3. Come ultima risorsa, per qualsiasi altra data non convertita, usa l'inferenza automatica di Pandas.
+            unparsed_mask = parsed_dates.isnull()
+            if unparsed_mask.any():
+                st.caption("Alcune date non corrispondevano ai formati standard. Tentativo di inferenza automatica...")
+                parsed_dates.loc[unparsed_mask] = pd.to_datetime(
+                    df_temp.loc[unparsed_mask, date_col_csv], infer_datetime_format=True, errors='coerce'
+                )
+
+            # Assegna la serie di date, ora completamente processata, al DataFrame
+            df_temp[date_col_csv] = parsed_dates
+            
+            # --- FINE DELLA NUOVA LOGICA ---
+
+            # Controllo finale e pulizia delle righe non parsate
+            num_invalid_dates = df_temp[date_col_csv].isnull().sum()
+            if num_invalid_dates > 0:
+                st.warning(f"Attenzione: {num_invalid_dates} righe avevano un formato di data non riconoscibile e sono state ignorate.")
+            
+            df_temp = df_temp.dropna(subset=[date_col_csv])
+            
+            if df_temp.empty:
+                raise ValueError("Nessuna riga con data valida è stata trovata nel file CSV dopo la pulizia.")
+
+            # Il resto della tua logica per ordinare e pulire le altre colonne rimane invariato
+            df_temp = df_temp.sort_values(by=date_col_csv).reset_index(drop=True)
+            features_to_clean = [col for col in df_temp.columns if col != date_col_csv]
+            for col in features_to_clean:
+                if pd.api.types.is_object_dtype(df_temp[col]) or pd.api.types.is_string_dtype(df_temp[col]):
+                     col_str = df_temp[col].astype(str).str.strip().replace(['N/A', '', '-', 'None', 'null', 'NaN', 'nan'], np.nan, regex=False)
+                     if '.' in col_str.unique() and ',' in col_str.unique(): col_str = col_str.str.replace('.', '', regex=False)
+                     col_str = col_str.str.replace(',', '.', regex=False)
+                     df_temp[col] = pd.to_numeric(col_str, errors='coerce')
+                elif pd.api.types.is_numeric_dtype(df_temp[col]): pass
+                else: df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce')
+            
+            numeric_cols = df_temp.select_dtypes(include=np.number).columns
+            n_nan_before_fill = df_temp[numeric_cols].isnull().sum().sum()
+            if n_nan_before_fill > 0:
+                 st.caption(f"Trovati {n_nan_before_fill} NaN/non numerici nel CSV. Eseguito ffill/bfill.")
+                 df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(method='ffill').fillna(method='bfill')
+                 n_nan_after_fill = df_temp[numeric_cols].isnull().sum().sum()
+                 if n_nan_after_fill > 0: st.warning(f"NaN residui ({n_nan_after_fill}) dopo fill CSV. Riempiti con 0."); df_temp.loc[:, numeric_cols] = df_temp[numeric_cols].fillna(0)
+            
+            st.session_state.df = df_temp
+            if is_uploaded: st.session_state['uploaded_file_processed'] = uploaded_data_file.name
+            else: st.session_state['uploaded_file_processed'] = True
+            
+            st.success(f"Dati CSV caricati e processati ({len(st.session_state.df)} righe valide).")
+            df = st.session_state.df
+
+        except Exception as e:
+            df = None
+            st.session_state.df = None
+            st.session_state['uploaded_file_processed'] = None
+            df_load_error = f'Errore caricamento/processamento CSV: {e}'
+            st.error(f"Errore CSV: {df_load_error}")
+            print(traceback.format_exc())
 
     st.subheader("Modello Predittivo (per Simulazione/Test)")
     available_models_dict = find_available_models(MODELS_DIR)
