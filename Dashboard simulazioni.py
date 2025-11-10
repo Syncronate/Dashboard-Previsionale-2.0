@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import numpy as np
 import torch.nn as nn
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, RobustScaler
 import os
 import io
 import base64
@@ -374,17 +374,17 @@ class PositionalEncoding(nn.Module):
 
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        pe = torch.zeros(1, max_len, d_model)  # ✅ (1, seq_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+            x: Tensor, shape [batch_size, seq_len, embedding_dim]
         """
-        x = x + self.pe[:x.size(0)]
+        x = x + self.pe[:, :x.size(1), :]  # ✅ Broadcast corretto per batch_first
         return self.dropout(x)
 
 
@@ -417,25 +417,39 @@ class HydroTransformer(nn.Module):
         
         self.fc_out = nn.Linear(d_model, output_dim * num_quantiles)
         
-    def forward(self, src: torch.Tensor, tgt: torch.Tensor, src_padding_mask: torch.Tensor = None, tgt_padding_mask: torch.Tensor = None, teacher_forcing_ratio=0.0) -> torch.Tensor:
-        src_embedded_no_pos = self.encoder_embedding(src) * math.sqrt(self.d_model)
-        tgt_embedded_no_pos = self.decoder_embedding(tgt) * math.sqrt(self.d_model)
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor, 
+            src_padding_mask: torch.Tensor = None, 
+            tgt_padding_mask: torch.Tensor = None, 
+            teacher_forcing_ratio=0.0) -> torch.Tensor:
+    
+        # Embedding con scaling
+        src_embedded = self.encoder_embedding(src) * math.sqrt(self.d_model)
+        tgt_embedded = self.decoder_embedding(tgt) * math.sqrt(self.d_model)
 
-        src_embedded = self.pos_encoder(src_embedded_no_pos.permute(1, 0, 2)).permute(1, 0, 2)
-        tgt_embedded = self.pos_encoder(tgt_embedded_no_pos.permute(1, 0, 2)).permute(1, 0, 2)
+        # Positional Encoding (già gestisce batch_first)
+        src_embedded = self.pos_encoder(src_embedded)
+        tgt_embedded = self.pos_encoder(tgt_embedded)
 
+        # Mask causale per il decoder
         tgt_seq_len = tgt.size(1)
         tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_seq_len).to(src.device)
 
+        # Forward del Transformer
         output = self.transformer(
-            src=src_embedded, tgt=tgt_embedded, tgt_mask=tgt_mask,
-            src_key_padding_mask=src_padding_mask, tgt_key_padding_mask=tgt_padding_mask
+            src=src_embedded, 
+            tgt=tgt_embedded, 
+            tgt_mask=tgt_mask,
+            src_key_padding_mask=src_padding_mask, 
+            tgt_key_padding_mask=tgt_padding_mask
         )
 
         prediction = self.fc_out(output)
         
         if self.num_quantiles > 1:
-            prediction = prediction.view(prediction.shape[0], prediction.shape[1], self.output_dim, self.num_quantiles)
+            prediction = prediction.view(
+                prediction.shape[0], prediction.shape[1], 
+                self.output_dim, self.num_quantiles
+            )
 
         return prediction, None
 
@@ -874,7 +888,7 @@ def prepare_training_data_seq2seq(df, past_feature_cols, forecast_feature_cols, 
     # --- 5. Scaling ---
     scaler_past_features = MinMaxScaler()
     scaler_forecast_features = MinMaxScaler()
-    scaler_targets = MinMaxScaler()
+    scaler_targets = RobustScaler()
 
     X_enc_scaled = scaler_past_features.fit_transform(X_encoder.reshape(-1, X_encoder.shape[-1])).reshape(X_encoder.shape)
     X_dec_scaled = scaler_forecast_features.fit_transform(X_decoder.reshape(-1, X_decoder.shape[-1])).reshape(X_decoder.shape)
