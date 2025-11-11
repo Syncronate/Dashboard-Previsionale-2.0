@@ -605,6 +605,7 @@ class HydroTransformer(nn.Module):
         self.d_model = d_model
         self.num_quantiles = num_quantiles
         self.output_dim = output_dim
+        self.input_dim_decoder = input_dim_decoder
         
         self.encoder_embedding = nn.Linear(input_dim_encoder, d_model)
         self.decoder_embedding = nn.Linear(input_dim_decoder, d_model)
@@ -619,33 +620,86 @@ class HydroTransformer(nn.Module):
         self.fc_out = nn.Linear(d_model, output_dim * num_quantiles)
         
     def forward(self, src: torch.Tensor, tgt: torch.Tensor, 
-            src_padding_mask: torch.Tensor = None, 
-            tgt_padding_mask: torch.Tensor = None, 
-            teacher_forcing_ratio=0.0) -> torch.Tensor:
-    
-        # Embedding con scaling
-        src_embedded = self.encoder_embedding(src) * math.sqrt(self.d_model)
-        tgt_embedded = self.decoder_embedding(tgt) * math.sqrt(self.d_model)
-
-        # Positional Encoding (già gestisce batch_first)
-        src_embedded = self.pos_encoder(src_embedded)
-        tgt_embedded = self.pos_encoder(tgt_embedded)
-
-        # Mask causale per il decoder
-        tgt_seq_len = tgt.size(1)
-        tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_seq_len).to(src.device)
-
-        # Forward del Transformer
-        output = self.transformer(
-            src=src_embedded, 
-            tgt=tgt_embedded, 
-            tgt_mask=tgt_mask,
-            src_key_padding_mask=src_padding_mask, 
-            tgt_key_padding_mask=tgt_padding_mask
-        )
-
-        prediction = self.fc_out(output)
+                src_padding_mask: torch.Tensor = None, 
+                tgt_padding_mask: torch.Tensor = None, 
+                teacher_forcing_ratio=0.0) -> torch.Tensor:
         
+        batch_size = src.size(0)
+        tgt_seq_len = tgt.size(1)
+        
+        # Encoding della sorgente
+        src_embedded = self.encoder_embedding(src) * math.sqrt(self.d_model)
+        src_embedded = self.pos_encoder(src_embedded)
+        
+        # Encode con il Transformer encoder
+        memory = self.transformer.encoder(src_embedded, src_key_padding_mask=src_padding_mask)
+        
+        # **DECODIFICA AUTOREGRESSIVA**
+        if self.training and teacher_forcing_ratio > 0:
+            # Durante il training con teacher forcing, usa la sequenza completa
+            tgt_embedded = self.decoder_embedding(tgt) * math.sqrt(self.d_model)
+            tgt_embedded = self.pos_encoder(tgt_embedded)
+            tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_seq_len).to(src.device)
+            
+            output = self.transformer.decoder(
+                tgt_embedded, memory,
+                tgt_mask=tgt_mask,
+                tgt_key_padding_mask=tgt_padding_mask,
+                memory_key_padding_mask=src_padding_mask
+            )
+            prediction = self.fc_out(output)
+        else:
+            # **INFERENZA AUTOREGRESSIVA**: genera un passo alla volta
+            outputs = []
+            
+            # Inizializza con il primo step dell'input decoder
+            decoder_input = tgt[:, 0:1, :]  # (batch, 1, input_dim_decoder)
+            
+            for t in range(tgt_seq_len):
+                # Embedding del decoder input corrente
+                tgt_embedded = self.decoder_embedding(decoder_input) * math.sqrt(self.d_model)
+                tgt_embedded = self.pos_encoder(tgt_embedded)
+                
+                # Mask causale per la lunghezza corrente
+                current_len = decoder_input.size(1)
+                tgt_mask = self.transformer.generate_square_subsequent_mask(current_len).to(src.device)
+                
+                # Decodifica
+                decoder_output = self.transformer.decoder(
+                    tgt_embedded, memory,
+                    tgt_mask=tgt_mask,
+                    memory_key_padding_mask=src_padding_mask
+                )
+                
+                # Predizione per l'ultimo step
+                step_prediction = self.fc_out(decoder_output[:, -1:, :])  # (batch, 1, output_dim * num_quantiles)
+                outputs.append(step_prediction)
+                
+                # Prepara input per il prossimo step
+                if t < tgt_seq_len - 1:
+                    # Usa le forecast features del prossimo step
+                    next_forecast_features = tgt[:, t+1:t+2, :]
+                    
+                    # **INTEGRA LA PREDIZIONE NELLE FEATURES**
+                    # Assumendo che le ultime output_dim features siano i livelli da sostituire
+                    if self.num_quantiles > 1:
+                        # Usa la mediana (quantile centrale) per modelli quantile
+                        pred_reshaped = step_prediction.view(batch_size, 1, self.output_dim, self.num_quantiles)
+                        pred_targets = pred_reshaped[:, :, :, 1]  # Mediana
+                    else:
+                        pred_targets = step_prediction.view(batch_size, 1, self.output_dim)
+                    
+                    # Sostituisci gli ultimi output_dim valori con le predizioni
+                    next_input = next_forecast_features.clone()
+                    next_input[:, :, -self.output_dim:] = pred_targets
+                    
+                    # Concatena all'input decoder per il prossimo step
+                    decoder_input = torch.cat([decoder_input, next_input], dim=1)
+            
+            # Concatena tutti gli output
+            prediction = torch.cat(outputs, dim=1)  # (batch, tgt_seq_len, output_dim * num_quantiles)
+        
+        # Reshape finale
         if self.num_quantiles > 1:
             prediction = prediction.view(
                 prediction.shape[0], prediction.shape[1], 
