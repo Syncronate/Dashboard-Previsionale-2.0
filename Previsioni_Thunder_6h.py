@@ -95,10 +95,16 @@ class DecoderLSTMWithAttention(nn.Module):
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0
         )
+        
+        # --- QUESTA È LA RIGA CORRETTA ---
+        # La dimensione dell'input ora è calcolata come: forecast_input_size + hidden_size + hidden_size
+        # che corrisponde a 4 + 128 + 128 = 260.
         self.gate = nn.Sequential(
-            nn.Linear(forecast_input_size + hidden_size * 2 + hidden_size, hidden_size),
+            nn.Linear(forecast_input_size + hidden_size + hidden_size, hidden_size),
             nn.Sigmoid()
         )
+        # ------------------------------------
+
         self.context_proj = nn.Linear(hidden_size * 2, hidden_size)
         self.fc = nn.Linear(hidden_size, output_size * num_quantiles)
         self.dropout = nn.Dropout(dropout)
@@ -106,19 +112,28 @@ class DecoderLSTMWithAttention(nn.Module):
     def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
         decoder_hidden = hidden[-1]
         context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
+        
         lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
+        
         output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
         output = output.squeeze(1)
+        
         projected_context = self.context_proj(context)
+
+        # Questo gate_input ora corrisponderà alla definizione del layer nn.Linear qui sopra
         gate_input = torch.cat([
             x_forecast_step.squeeze(1),
             projected_context,
             output
         ], dim=1)
+        
         gate_value = self.gate(gate_input)
+        
         gated_output = gate_value * output + (1 - gate_value) * projected_context
         gated_output = self.dropout(gated_output)
+        
         prediction = self.fc(gated_output)
+        
         return prediction, hidden, cell, attn_weights
 
 class Seq2SeqWithAttention(nn.Module):
