@@ -433,7 +433,7 @@ def main():
     try:
         log_environment_info()
         
-        credentials_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+        credentials_json = os.environ.get("GCP_CREDENTIALS_JSON")
         if not credentials_json:
             raise ValueError("La variabile d'ambiente GOOGLE_CREDENTIALS_JSON non è impostata.")
         
