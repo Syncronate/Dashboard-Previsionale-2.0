@@ -89,7 +89,7 @@ class DecoderLSTMWithAttention(nn.Module):
         self.attention = Attention(hidden_size, attention_type)
 
         self.lstm = nn.LSTM(
-            forecast_input_size + hidden_size * 2,
+            forecast_input_size + hidden_size * 2, # Input LSTM corretto
             hidden_size,
             num_layers,
             batch_first=True,
