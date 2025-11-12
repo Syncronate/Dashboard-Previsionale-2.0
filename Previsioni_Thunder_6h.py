@@ -12,15 +12,14 @@ import numpy as np
 import traceback
 import io
 import csv
-import random # Importato per compatibilità con il forward di Seq2Seq
+import random
 
 # Imposta seed per riproducibilità
 torch.manual_seed(42)
 np.random.seed(42)
 
-# --- INIZIO BLOCCO MODELLO AGGIORNATO ---
-# Queste classi sono state copiate dalla tua app di training Streamlit per corrispondere
-# esattamente all'architettura del modello salvato.
+# --- INIZIO BLOCCO MODELLO CORRETTO ---
+# Classi del modello allineate con quelle usate per l'addestramento.
 
 class EncoderLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2, bidirectional=True):
@@ -56,15 +55,13 @@ class EncoderLSTM(nn.Module):
             cell = self.cell_proj(torch.cat([cell[:, 0, :, :], cell[:, 1, :, :]], dim=-1))
         return outputs, hidden, cell
 
-# NOTA: Questa è la classe 'ImprovedAttention' dalla tua app, rinominata in 'Attention' per compatibilità.
 class Attention(nn.Module):
     def __init__(self, hidden_size, attention_type='additive'):
         super().__init__()
         self.hidden_size = hidden_size
         self.attention_type = attention_type
-        # Questa implementazione corrisponde a quella che ha generato le chiavi nel file .pth
         self.W_decoder = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.W_encoder = nn.Linear(hidden_size * 2, hidden_size, bias=False) # *2 per encoder bidirezionale
+        self.W_encoder = nn.Linear(hidden_size * 2, hidden_size, bias=False)
         self.v = nn.Linear(hidden_size, 1, bias=False)
         self.softmax = nn.Softmax(dim=1)
 
@@ -91,7 +88,6 @@ class DecoderLSTMWithAttention(nn.Module):
         self.num_quantiles = num_quantiles
         self.attention = Attention(hidden_size, attention_type)
 
-        # L'input LSTM ora include forecast features + context vector (da encoder bidirezionale)
         self.lstm = nn.LSTM(
             forecast_input_size + hidden_size * 2,
             hidden_size,
@@ -99,9 +95,8 @@ class DecoderLSTMWithAttention(nn.Module):
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0
         )
-        # Questi layer ora esistono e corrispondono al file .pth
         self.gate = nn.Sequential(
-            nn.Linear(forecast_input_size + hidden_size * 2 + hidden_size, hidden_size), # Corretto per includere output
+            nn.Linear(forecast_input_size + hidden_size * 2 + hidden_size, hidden_size),
             nn.Sigmoid()
         )
         self.context_proj = nn.Linear(hidden_size * 2, hidden_size)
@@ -111,26 +106,19 @@ class DecoderLSTMWithAttention(nn.Module):
     def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
         decoder_hidden = hidden[-1]
         context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
-        
         lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
-        
         output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
         output = output.squeeze(1)
-        
         projected_context = self.context_proj(context)
         gate_input = torch.cat([
             x_forecast_step.squeeze(1),
             projected_context,
             output
         ], dim=1)
-        
         gate_value = self.gate(gate_input)
-        
         gated_output = gate_value * output + (1 - gate_value) * projected_context
         gated_output = self.dropout(gated_output)
-        
         prediction = self.fc(gated_output)
-        
         return prediction, hidden, cell, attn_weights
 
 class Seq2SeqWithAttention(nn.Module):
@@ -159,16 +147,14 @@ class Seq2SeqWithAttention(nn.Module):
                 decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
             )
             outputs[:, t, :] = decoder_output_step
-            attention_weights_history[:, t, :] = attn_weights.squeeze(0) # Squeeze per rimuovere la dimensione batch che è sempre 1
+            attention_weights_history[:, t, :] = attn_weights.squeeze(0)
 
             if t < self.output_window - 1:
-                # Per l'inferenza, usiamo sempre l'input futuro fornito (no teacher forcing o autoregressione complessa)
                 decoder_input_step = x_future_forecast[:, t+1:t+2, :]
-
-        # Non è necessario fare il reshape qui per l'inferenza, la funzione chiamante lo gestisce.
+        
         return outputs, attention_weights_history
 
-# --- FINE BLOCCO MODELLO AGGIORNATO ---
+# --- FINE BLOCCO MODELLO ---
 
 
 # --- Costanti ---
@@ -234,7 +220,6 @@ def load_model_and_scalers(model_base_name, models_dir):
         print("Rilevato modello con output singolo (non a quantili).")
     
     dec_output_size = len(config["target_columns"])
-    # NOTA: La dimensione di output del decoder è solo il numero di target. I quantili sono gestiti internamente.
     final_output_dim = dec_output_size * num_quantiles
     print(f"Dimensione output del decoder impostata a: {final_output_dim}")
     
@@ -243,15 +228,12 @@ def load_model_and_scalers(model_base_name, models_dir):
     drop = config["dropout"]
     out_win = config["output_window_steps"]
     
-    # Istanziazione delle classi del modello NUOVE E CORRETTE
     encoder = EncoderLSTM(enc_input_size, hidden, layers, drop)
-    # Passiamo num_quantiles al decoder
     decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop, num_quantiles=num_quantiles)
     model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
     
     model_state = torch.load(model_path, map_location=device)
     
-    # Caricamento dello state_dict. Questo ora dovrebbe funzionare.
     model.load_state_dict(model_state)
     model.eval()
     
@@ -261,8 +243,6 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     print("Modello e scaler caricati con successo.")
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
-
-# --- Il resto dello script (da qui in poi) rimane invariato ---
 
 def fetch_and_prepare_data(gc, sheet_id, config):
     print(f"\n=== CARICAMENTO E PREPARAZIONE DATI ===")
@@ -433,18 +413,21 @@ def main():
     try:
         log_environment_info()
         
-        credentials_json = os.environ.get("GCP_CREDENTIALS_JSON")
-        if not credentials_json:
-            raise ValueError("La variabile d'ambiente GOOGLE_CREDENTIALS_JSON non è impostata.")
+        # --- BLOCCO DI AUTENTICAZIONE MODIFICATO (SOLUZIONE 1) ---
+        # Questo blocco ora legge il file 'credentials.json' creato dal file .yml
         
-        credentials_info = json.loads(credentials_json)
-        credentials = Credentials.from_service_account_info(
-            credentials_info,
+        credentials_file_path = "credentials.json"
+        if not os.path.exists(credentials_file_path):
+             raise FileNotFoundError(f"File delle credenziali '{credentials_file_path}' non trovato. Assicurarsi che lo step YML lo crei correttamente.")
+
+        credentials = Credentials.from_service_account_file(
+            credentials_file_path,
             scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         )
         gc = gspread.authorize(credentials)
         print("✓ Autenticazione Google Sheets riuscita.")
         
+        # Il resto dello script continua normalmente
         model, scaler_past, scaler_forecast, scaler_target, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
         hist_data, fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
