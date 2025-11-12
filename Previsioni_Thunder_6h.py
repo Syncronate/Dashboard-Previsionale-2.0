@@ -12,54 +12,125 @@ import numpy as np
 import traceback
 import io
 import csv
+import random # Importato per compatibilità con il forward di Seq2Seq
 
 # Imposta seed per riproducibilità
 torch.manual_seed(42)
 np.random.seed(42)
 
-# --- Classi del modello (invariate) ---
+# --- INIZIO BLOCCO MODELLO AGGIORNATO ---
+# Queste classi sono state copiate dalla tua app di training Streamlit per corrispondere
+# esattamente all'architettura del modello salvato.
+
 class EncoderLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2):
+    def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2, bidirectional=True):
         super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
-                          batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+
+        self.input_proj = nn.Linear(input_size, hidden_size)
+        self.lstm = nn.LSTM(
+            hidden_size,
+            hidden_size,
+            num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional
+        )
+        self.layer_norm = nn.LayerNorm(hidden_size * self.num_directions)
+
+        if bidirectional:
+            self.hidden_proj = nn.Linear(hidden_size * 2, hidden_size)
+            self.cell_proj = nn.Linear(hidden_size * 2, hidden_size)
 
     def forward(self, x):
+        x = self.input_proj(x)
         outputs, (hidden, cell) = self.lstm(x)
+        outputs = self.layer_norm(outputs)
+        if self.bidirectional:
+            hidden = hidden.view(self.num_layers, 2, -1, self.hidden_size)
+            cell = cell.view(self.num_layers, 2, -1, self.hidden_size)
+            hidden = self.hidden_proj(torch.cat([hidden[:, 0, :, :], hidden[:, 1, :, :]], dim=-1))
+            cell = self.cell_proj(torch.cat([cell[:, 0, :, :], cell[:, 1, :, :]], dim=-1))
         return outputs, hidden, cell
 
+# NOTA: Questa è la classe 'ImprovedAttention' dalla tua app, rinominata in 'Attention' per compatibilità.
 class Attention(nn.Module):
-    def __init__(self, hidden_size):
-        super(Attention, self).__init__()
-        self.attn = nn.Linear(hidden_size * 2, hidden_size)
-        self.v = nn.Parameter(torch.rand(hidden_size))
+    def __init__(self, hidden_size, attention_type='additive'):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.attention_type = attention_type
+        # Questa implementazione corrisponde a quella che ha generato le chiavi nel file .pth
+        self.W_decoder = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.W_encoder = nn.Linear(hidden_size * 2, hidden_size, bias=False) # *2 per encoder bidirezionale
+        self.v = nn.Linear(hidden_size, 1, bias=False)
+        self.softmax = nn.Softmax(dim=1)
 
-    def forward(self, hidden, encoder_outputs):
-        hidden_repeated = hidden[-1].unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)
-        energy = torch.tanh(self.attn(torch.cat([hidden_repeated, encoder_outputs], dim=2)))
-        energy = energy.permute(0, 2, 1)
-        v_exp = self.v.repeat(encoder_outputs.size(0), 1).unsqueeze(1)
-        scores = torch.bmm(v_exp, energy).squeeze(1)
-        return torch.softmax(scores, dim=1)
+    def forward(self, decoder_hidden, encoder_outputs, mask=None):
+        batch_size, seq_len, _ = encoder_outputs.shape
+        decoder_proj = self.W_decoder(decoder_hidden).unsqueeze(1).expand(-1, seq_len, -1)
+        encoder_proj = self.W_encoder(encoder_outputs)
+        energy = torch.tanh(decoder_proj + encoder_proj)
+        scores = self.v(energy).squeeze(-1)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e10)
+        attn_weights = self.softmax(scores)
+        context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)
+        return context, attn_weights
 
 class DecoderLSTMWithAttention(nn.Module):
-    def __init__(self, forecast_input_size, hidden_size, output_size, num_layers=2, dropout=0.2):
+    def __init__(self, forecast_input_size, hidden_size, output_size,
+                 num_layers=2, dropout=0.2, num_quantiles=1, attention_type='additive'):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.forecast_input_size = forecast_input_size
         self.output_size = output_size
-        self.attention = Attention(hidden_size)
-        self.lstm = nn.LSTM(forecast_input_size + hidden_size, hidden_size, num_layers,
-                          batch_first=True, dropout=dropout if num_layers > 1 else 0)
-        self.fc = nn.Linear(hidden_size, output_size)
+        self.num_quantiles = num_quantiles
+        self.attention = Attention(hidden_size, attention_type)
+
+        # L'input LSTM ora include forecast features + context vector (da encoder bidirezionale)
+        self.lstm = nn.LSTM(
+            forecast_input_size + hidden_size * 2,
+            hidden_size,
+            num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0
+        )
+        # Questi layer ora esistono e corrispondono al file .pth
+        self.gate = nn.Sequential(
+            nn.Linear(forecast_input_size + hidden_size * 2 + hidden_size, hidden_size), # Corretto per includere output
+            nn.Sigmoid()
+        )
+        self.context_proj = nn.Linear(hidden_size * 2, hidden_size)
+        self.fc = nn.Linear(hidden_size, output_size * num_quantiles)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
-        attn_weights = self.attention(hidden, encoder_outputs).unsqueeze(1)
-        context_vector = torch.bmm(attn_weights, encoder_outputs)
-        lstm_input = torch.cat([x_forecast_step, context_vector], dim=2)
+        decoder_hidden = hidden[-1]
+        context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
+        
+        lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
+        
         output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
-        prediction = self.fc(output.squeeze(1))
+        output = output.squeeze(1)
+        
+        projected_context = self.context_proj(context)
+        gate_input = torch.cat([
+            x_forecast_step.squeeze(1),
+            projected_context,
+            output
+        ], dim=1)
+        
+        gate_value = self.gate(gate_input)
+        
+        gated_output = gate_value * output + (1 - gate_value) * projected_context
+        gated_output = self.dropout(gated_output)
+        
+        prediction = self.fc(gated_output)
+        
         return prediction, hidden, cell, attn_weights
 
 class Seq2SeqWithAttention(nn.Module):
@@ -69,21 +140,36 @@ class Seq2SeqWithAttention(nn.Module):
         self.decoder = decoder
         self.output_window = output_window_steps
 
-    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0):
+    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0, target_sequence=None):
         batch_size = x_past.shape[0]
         target_output_size = self.decoder.output_size
-        outputs = torch.zeros(batch_size, self.output_window, target_output_size).to(x_past.device)
+        num_quantiles = self.decoder.num_quantiles
+        decoder_output_dim = target_output_size * num_quantiles
+        
+        outputs = torch.zeros(batch_size, self.output_window, decoder_output_dim).to(x_past.device)
+        attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(x_past.device)
+        
         encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
+        
         decoder_input_step = x_future_forecast[:, 0:1, :]
+        
         for t in range(self.output_window):
             decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
                 decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
             )
             outputs[:, t, :] = decoder_output_step
+            attention_weights_history[:, t, :] = attn_weights.squeeze(0) # Squeeze per rimuovere la dimensione batch che è sempre 1
+
             if t < self.output_window - 1:
+                # Per l'inferenza, usiamo sempre l'input futuro fornito (no teacher forcing o autoregressione complessa)
                 decoder_input_step = x_future_forecast[:, t+1:t+2, :]
-        return outputs, attn_weights
+
+        # Non è necessario fare il reshape qui per l'inferenza, la funzione chiamante lo gestisce.
+        return outputs, attention_weights_history
+
+# --- FINE BLOCCO MODELLO AGGIORNATO ---
+
 
 # --- Costanti ---
 MODELS_DIR = "models"
@@ -140,26 +226,32 @@ def load_model_and_scalers(model_base_name, models_dir):
     dec_input_size = len(config["forecast_input_columns"])
     
     quantiles = config.get("quantiles")
+    num_quantiles = 1
     if quantiles and isinstance(quantiles, list):
         num_quantiles = len(quantiles)
         print(f"Rilevato modello a quantili. Quantili: {quantiles}")
     else:
-        num_quantiles = 1
         print("Rilevato modello con output singolo (non a quantili).")
     
-    dec_output_size = len(config["target_columns"]) * num_quantiles
-    print(f"Dimensione output del decoder impostata a: {dec_output_size}")
+    dec_output_size = len(config["target_columns"])
+    # NOTA: La dimensione di output del decoder è solo il numero di target. I quantili sono gestiti internamente.
+    final_output_dim = dec_output_size * num_quantiles
+    print(f"Dimensione output del decoder impostata a: {final_output_dim}")
     
     hidden = config["hidden_size"]
     layers = config["num_layers"]
     drop = config["dropout"]
     out_win = config["output_window_steps"]
     
+    # Istanziazione delle classi del modello NUOVE E CORRETTE
     encoder = EncoderLSTM(enc_input_size, hidden, layers, drop)
-    decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop)
+    # Passiamo num_quantiles al decoder
+    decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop, num_quantiles=num_quantiles)
     model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
     
     model_state = torch.load(model_path, map_location=device)
+    
+    # Caricamento dello state_dict. Questo ora dovrebbe funzionare.
     model.load_state_dict(model_state)
     model.eval()
     
@@ -169,6 +261,8 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     print("Modello e scaler caricati con successo.")
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
+
+# --- Il resto dello script (da qui in poi) rimane invariato ---
 
 def fetch_and_prepare_data(gc, sheet_id, config):
     print(f"\n=== CARICAMENTO E PREPARAZIONE DATI ===")
@@ -197,16 +291,12 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
 
-    # --- INIZIO BLOCCO AGGIORNATO: Rinomina aggressiva e gestione duplicati ---
     print("Avvio rinomina aggressiva per standardizzare le colonne...")
-
-    # Rinomina in modo da standardizzare sia 'Giornaliera' che i suffissi come '_cumulata_30min'
     hist_rename_map = {
         col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
         for col in df_historical_raw.columns
         if 'Giornaliera ' in col or '_cumulata_30min' in col
     }
-
     fcst_rename_map = {
         col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
         for col in df_forecast_raw.columns
@@ -216,17 +306,13 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     if hist_rename_map:
         df_historical_raw.rename(columns=hist_rename_map, inplace=True)
         print(f"Rinominate {len(hist_rename_map)} colonne nel set di dati storici.")
-
     if fcst_rename_map:
         df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
         print(f"Rinominate {len(fcst_rename_map)} colonne nel set di dati previsionali.")
 
-    # Rimuove le colonne duplicate create dalla ridenominazione,
-    # mantenendo l'ULTIMA occorrenza (es. la colonna _cumulata_30min).
     df_historical_raw = df_historical_raw.loc[:, ~df_historical_raw.columns.duplicated(keep='last')]
     df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='last')]
     print("✓ Eventuali colonne duplicate rimosse, mantenendo l'ultima occorrenza (keep='last').")
-    # --- FINE BLOCCO AGGIORNATO ---
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], 
@@ -289,9 +375,11 @@ def make_prediction(model, scalers, config, data_inputs, device):
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     
     original_shape = predictions_np.shape
-    if predictions_np.ndim > 1 and predictions_np.shape[1] > 1 and hasattr(scaler_targets, 'n_features_in_') and scaler_targets.n_features_in_ == 1:
-        print(f"Rilevato output multi-colonna ({original_shape[1]} colonne) per un singolo target. Appiattimento per lo scaling.")
-        predictions_np_flat = predictions_np.reshape(-1, 1)
+    num_targets = len(config["target_columns"])
+    
+    if predictions_np.ndim > 1 and predictions_np.shape[1] > num_targets:
+        print(f"Rilevato output multi-colonna ({original_shape[1]} colonne) per {num_targets} target(s). Appiattimento per lo scaling.")
+        predictions_np_flat = predictions_np.reshape(-1, num_targets)
         predictions_scaled_back_flat = scaler_targets.inverse_transform(predictions_np_flat)
         predictions_scaled_back = predictions_scaled_back_flat.reshape(original_shape)
     else:
@@ -345,8 +433,13 @@ def main():
     try:
         log_environment_info()
         
-        credentials = Credentials.from_service_account_file(
-            "credentials.json", 
+        credentials_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+        if not credentials_json:
+            raise ValueError("La variabile d'ambiente GOOGLE_CREDENTIALS_JSON non è impostata.")
+        
+        credentials_info = json.loads(credentials_json)
+        credentials = Credentials.from_service_account_info(
+            credentials_info,
             scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         )
         gc = gspread.authorize(credentials)
