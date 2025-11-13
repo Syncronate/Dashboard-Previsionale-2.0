@@ -3214,9 +3214,10 @@ with st.sidebar:
             if not model_ready: caption = "Richiede Modello attivo"; disabled = True
             else: caption = f"Esegui previsioni ({active_config_sess.get('model_type', 'LSTM')})"
         elif opt == 'Test Modello su Storico':
-            if not model_ready: caption = "Richiede Modello attivo"; disabled = True
-            elif not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
-            else: caption = "Testa modello su CSV"
+            # if not model_ready: caption = "Richiede Modello attivo"; disabled = True
+            # elif not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
+            # else: caption = "Testa modello su CSV"
+            caption = "Testa modello su CSV"
         elif opt == 'Analisi Dati Storici':
             if not data_ready_csv: caption = "Richiede Dati CSV"; disabled = True
             else: caption = "Esplora dati CSV"
@@ -3262,7 +3263,7 @@ date_col_name_csv = st.session_state.date_col_name_csv
 if page == 'Dashboard':
     st.header('Dashboard Monitoraggio Idrologico')
     # ... (Il resto della pagina Dashboard rimane invariato) ...
-    if "GOOGLE_CREDENTIALS" not in st.secrets: st.error("Errore Configurazione: Credenziali Google mancanti."); st.stop()
+    # if "GOOGLE_CREDENTIALS" not in st.secrets: st.error("Errore Configurazione: Credenziali Google mancanti."); st.stop()
     st.checkbox("Visualizza intervallo di date personalizzato", key="dash_custom_range_check", value=st.session_state.dash_custom_range_check)
     df_dashboard = None; error_msg = None; actual_fetch_time = None; data_source_mode = ""
     if st.session_state.dash_custom_range_check:
@@ -3655,49 +3656,69 @@ elif page == 'Simulazione':
 # --- PAGINA TEST MODELLO SU STORICO ---
 elif page == 'Test Modello su Storico':
     st.header('Test Modello su Dati Storici CSV (Walk-Forward Evaluation)')
-    if not model_ready:
-        st.warning("Seleziona un Modello attivo dalla sidebar per eseguire questo test.")
-        st.stop()
-    if not data_ready_csv:
-        st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar.")
-        st.stop()
+    # if not model_ready:
+    #     st.warning("Seleziona un Modello attivo dalla sidebar per eseguire questo test.")
+    #     st.stop()
+    # if not data_ready_csv:
+    #     st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar.")
+    #     st.stop()
 
     st.info(f"Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
     
-    target_columns_model_test = active_config['target_columns']
-    if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
-        input_steps_model_test = active_config['input_window_steps']
-        output_steps_model_test = active_config['output_window_steps']
-        past_feature_cols_model_test = active_config['all_past_feature_columns']
-        forecast_feature_cols_model_test = active_config['forecast_input_columns']
-        required_len_for_test = input_steps_model_test + output_steps_model_test
-    elif active_model_type == "SpatioTemporalGNN":
-        input_steps_model_test = active_config['input_window_steps']
-        output_steps_model_test = active_config['output_window_steps']
-        node_columns_model_test = active_config['node_order']
-        required_len_for_test = input_steps_model_test + output_steps_model_test
-    else: # LSTM
-        feature_columns_model_test = active_config.get("feature_columns", [])
-        input_steps_model_test = active_config['input_window']
-        output_steps_model_test = active_config['output_window']
-        required_len_for_test = input_steps_model_test + output_steps_model_test
+    if active_config:
+        target_columns_model_test = active_config.get('target_columns', [])
+        if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
+            input_steps_model_test = active_config.get('input_window_steps', 1)
+            output_steps_model_test = active_config.get('output_window_steps', 1)
+            past_feature_cols_model_test = active_config.get('all_past_feature_columns', [])
+            forecast_feature_cols_model_test = active_config.get('forecast_input_columns', [])
+            required_len_for_test = input_steps_model_test + output_steps_model_test
+        elif active_model_type == "SpatioTemporalGNN":
+            input_steps_model_test = active_config.get('input_window_steps', 1)
+            output_steps_model_test = active_config.get('output_window_steps', 1)
+            node_columns_model_test = active_config.get('node_order', [])
+            required_len_for_test = input_steps_model_test + output_steps_model_test
+        else:  # LSTM
+            feature_columns_model_test = active_config.get("feature_columns", [])
+            input_steps_model_test = active_config.get('input_window', 1)
+            output_steps_model_test = active_config.get('output_window', 1)
+            required_len_for_test = input_steps_model_test + output_steps_model_test
+    else:
+        # Provide default values for verification when no model is loaded
+        target_columns_model_test = []
+        input_steps_model_test = 1
+        output_steps_model_test = 1
+        required_len_for_test = 2
+        past_feature_cols_model_test = []
+        forecast_feature_cols_model_test = []
+        node_columns_model_test = []
+        feature_columns_model_test = []
 
     st.subheader("Configurazione Walk-Forward Evaluation")
-    col_wf1, col_wf2, col_wf3, col_wf4 = st.columns(4)
+    col_wf1, col_wf2, col_wf3, col_wf4, col_wf5, col_wf6, col_wf7, col_wf8 = st.columns(8)
     with col_wf1:
         num_evaluation_periods = st.number_input("Numero di Periodi di Test:", min_value=1, value=3, step=1, key="wf_num_periods")
     with col_wf2:
-        max_start_idx = len(df_current_csv) - required_len_for_test
+        max_start_idx = len(df_current_csv) - required_len_for_test if df_current_csv is not None else 0
         first_input_start_index = st.number_input("Primo Indice di Inizio per Input nel CSV:", min_value=0, max_value=max(0, max_start_idx), value=0, step=1, key="wf_first_start_idx")
     with col_wf3:
         stride_between_periods = st.number_input("Passo tra Periodi di Test (righe):", min_value=1, value=output_steps_model_test, step=1, key="wf_stride")
     with col_wf4:
-        is_quantile_model_test = active_config.get("training_mode") == "quantile"
+        is_quantile_model_test = active_config.get("training_mode") == "quantile" if active_config else False
         if is_quantile_model_test:
             st.info("Modello Quantile: no MC Dropout.")
             num_passes_test = 1
         else:
             num_passes_test = st.number_input("Passaggi per Incertezza:", min_value=1, max_value=100, value=25, step=1, key="wf_num_passes")
+    with col_wf5:
+        rain_increase_percentage = st.number_input("Incremento Pioggia (%):", min_value=0, value=0, step=5, key="wf_rain_increase")
+    with col_wf6:
+        level_increase_percentage = st.number_input("Incremento Livello (%):", min_value=0, value=0, step=5, key="wf_level_increase")
+    with col_wf7:
+        dev_std_spaziale_increase_percentage = st.number_input("Incremento Dev_Std_Spaziale_Pioggia (%):", min_value=0, value=0, step=5, key="wf_dev_std_spaziale_increase")
+    with col_wf8:
+        max_intensita_spaziale_increase_percentage = st.number_input("Incremento Max_Intensita_Spaziale_Pioggia (%):", min_value=0, value=0, step=5, key="wf_max_intensita_spaziale_increase")
+
 
     st.markdown("---")
     
@@ -3724,15 +3745,62 @@ elif page == 'Test Modello su Storico':
                 st.warning(f"Periodo {i_period+1} saltato: dati insufficienti nel CSV.")
                 continue
 
+            # Fetch original data for ground truth BEFORE modifications
+            original_actual_df_slice = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx]
+            actual_data_np = original_actual_df_slice[target_columns_model_test].values.copy()
+            start_time_prediction_period = original_actual_df_slice[date_col_name_csv].iloc[0]
+
+            # Create copies of data slices for modification
             input_df_period_slice = df_current_csv.iloc[current_input_start_index:input_data_end_index].copy()
-            actual_df_period_slice = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx].copy()
             
-            if input_df_period_slice.empty or actual_df_period_slice.empty:
+            # For Seq2Seq models, the "actual" slice is used for future *inputs*, so it also needs to be modified.
+            future_inputs_df_slice = df_current_csv.iloc[actual_data_start_idx:actual_data_end_idx].copy()
+
+            # Apply percentage increases to the copies
+            if rain_increase_percentage > 0:
+                rain_factor = 1 + rain_increase_percentage / 100.0
+                rain_cols = [c for c in df_current_csv.columns if 'cumulata' in c.lower() or 'dev_std' in c.lower() or 'media' in c.lower()]
+
+                input_cols_to_modify = list(set(rain_cols) & set(input_df_period_slice.columns))
+                if input_cols_to_modify:
+                    input_df_period_slice[input_cols_to_modify] *= rain_factor
+
+                future_input_cols_to_modify = list(set(rain_cols) & set(future_inputs_df_slice.columns))
+                if future_input_cols_to_modify:
+                    future_inputs_df_slice[future_input_cols_to_modify] *= rain_factor
+
+            if dev_std_spaziale_increase_percentage > 0:
+                dev_std_factor = 1 + dev_std_spaziale_increase_percentage / 100.0
+                if 'Dev_Std_Spaziale_Pioggia' in input_df_period_slice.columns:
+                    input_df_period_slice['Dev_Std_Spaziale_Pioggia'] *= dev_std_factor
+                if 'Dev_Std_Spaziale_Pioggia' in future_inputs_df_slice.columns:
+                    future_inputs_df_slice['Dev_Std_Spaziale_Pioggia'] *= dev_std_factor
+
+            if max_intensita_spaziale_increase_percentage > 0:
+                max_intensita_factor = 1 + max_intensita_spaziale_increase_percentage / 100.0
+                if 'Max_Intensita_Spaziale_Pioggia' in input_df_period_slice.columns:
+                    input_df_period_slice['Max_Intensita_Spaziale_Pioggia'] *= max_intensita_factor
+                if 'Max_Intensita_Spaziale_Pioggia' in future_inputs_df_slice.columns:
+                    future_inputs_df_slice['Max_Intensita_Spaziale_Pioggia'] *= max_intensita_factor
+
+            if level_increase_percentage > 0:
+                level_factor = 1 + level_increase_percentage / 100.0
+                level_cols = [c for c in df_current_csv.columns if 'livello idrometrico' in c.lower()]
+
+                input_cols_to_modify = list(set(level_cols) & set(input_df_period_slice.columns))
+                if input_cols_to_modify:
+                    input_df_period_slice[input_cols_to_modify] *= level_factor
+
+                # For Seq2Seq, we might need to modify future level *inputs* as well, but NOT the targets.
+                if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
+                    # Modify only the level columns that are part of the *forecast features*
+                    future_level_inputs_to_modify = list(set(level_cols) & set(forecast_feature_cols_model_test) & set(future_inputs_df_slice.columns))
+                    if future_level_inputs_to_modify:
+                         future_inputs_df_slice[future_level_inputs_to_modify] *= level_factor
+
+            if input_df_period_slice.empty or future_inputs_df_slice.empty:
                 st.warning(f"Periodo {i_period+1} saltato: slice di dati vuoto.")
                 continue
-
-            actual_data_np = actual_df_period_slice[target_columns_model_test].values
-            start_time_prediction_period = actual_df_period_slice[date_col_name_csv].iloc[0]
 
             predictions_period = None
             uncertainty_period = None
@@ -3741,7 +3809,7 @@ elif page == 'Test Modello su Storico':
             # ... (la logica di predizione rimane invariata)
             if active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
                 past_input_np_raw = input_df_period_slice[past_feature_cols_model_test].values
-                future_input_np_raw = actual_df_period_slice[forecast_feature_cols_model_test].values
+                future_input_np_raw = future_inputs_df_slice[forecast_feature_cols_model_test].values
                 input_cols_for_display = past_feature_cols_model_test
                 if num_passes_test > 1 and not is_quantile_model_test:
                     predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(active_model, past_input_np_raw, future_input_np_raw, active_scalers, active_config, active_device, num_passes=num_passes_test)
