@@ -24,6 +24,7 @@ import mimetypes # Per indovinare i tipi MIME per i download
 from streamlit_js_eval import streamlit_js_eval # Per forzare refresh periodico
 import pytz # Per gestione timezone
 import math # Per calcoli matematici (potenza)
+import torch.nn.functional as F
 from sklearn.model_selection import TimeSeriesSplit # NEW: For Time-Series Cross-Validation
 from dilate_loss_src import dilate_loss
 from numpy.lib.stride_tricks import sliding_window_view
@@ -476,18 +477,10 @@ class Seq2SeqHydro(nn.Module):
             )
             outputs[:, t, :] = decoder_output_step
 
-            # Prepara l'input per il prossimo step
             if t < self.output_window - 1:
-                use_teacher_forcing = random.random() < teacher_forcing_ratio
-
-                if use_teacher_forcing:
-                    # Teacher forcing: Usa il prossimo input reale dalla sequenza di forecast
-                    # (che include implicitamente i valori target reali, se sono feature)
-                    decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+                if teacher_forcing_ratio > 0 and random.random() < teacher_forcing_ratio :
+                     pass
                 else:
-                    # Autoregressive: In questo modello base, non avendo la mappatura per
-                    # sostituire i valori predetti, usiamo comunque il prossimo input di forecast.
-                    # Questo è meno accurato ma è il comportamento atteso per questo modello S2S semplice.
                     decoder_input_step = x_future_forecast[:, t+1:t+2, :]
         
         if num_quantiles > 1:
@@ -496,19 +489,11 @@ class Seq2SeqHydro(nn.Module):
         return outputs, None
 
 class Seq2SeqWithAttention(nn.Module):
-    def __init__(self, encoder, decoder, output_window_steps, target_columns, forecast_feature_cols):
+    def __init__(self, encoder, decoder, output_window_steps):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.output_window = output_window_steps
-        # --- NUOVA LOGICA: Mappatura esplicita ---
-        self.target_columns = target_columns
-        self.forecast_feature_cols = forecast_feature_cols
-        self.target_to_forecast_idx = {
-            target_col: self.forecast_feature_cols.index(target_col)
-            for target_col in self.target_columns
-            if target_col in self.forecast_feature_cols
-        }
 
     def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0,
                 target_sequence=None):
@@ -546,31 +531,37 @@ class Seq2SeqWithAttention(nn.Module):
 
             # Prepara input per prossimo step
             if t < self.output_window - 1:
-                # --- LOGICA CORRETTA (FIX Punti 1 & 4) ---
                 use_teacher_forcing = random.random() < teacher_forcing_ratio
 
                 if use_teacher_forcing and target_sequence is not None:
-                    # Teacher Forcing: Usa le vere forecast features del prossimo step,
-                    # che implicitamente contengono i valori reali del target.
+                    # Teacher forcing: usa target reale
+                    # Nota: devi avere le forecast features associate al target reale
                     decoder_input_step = x_future_forecast[:, t+1:t+2, :]
                 else:
-                    # Autoregressive: Usa la predizione precedente per costruire le features.
-                    next_forecast_features = x_future_forecast[:, t+1, :].clone()
+                    # Autoregressive: usa predizione precedente
+                    # CRITICO: devi integrare la predizione nelle forecast features
 
-                    # Estrai i valori predetti (mediana se quantile)
+                    # Reshape predizione per ottenere i target
                     if num_quantiles > 1:
+                        # Usa la mediana (quantile centrale)
                         pred_reshaped = decoder_output_step.view(batch_size, target_output_size, num_quantiles)
-                        pred_targets = pred_reshaped[:, :, 1]  # Mediana
+                        pred_targets = pred_reshaped[:, :, 1] # Mediana
                     else:
                         pred_targets = decoder_output_step.view(batch_size, target_output_size)
 
-                    # Usa la mappatura per sostituire i valori corretti
-                    for target_idx, target_col in enumerate(self.target_columns):
-                        if target_col in self.target_to_forecast_idx:
-                            forecast_idx = self.target_to_forecast_idx[target_col]
-                            next_forecast_features[:, forecast_idx] = pred_targets[:, target_idx]
-                    
+                    # OPZIONE 1: Sostituisci i livelli predetti nelle forecast features
+                    next_forecast_features = x_future_forecast[:, t+1, :].clone()
+
+                    # Identifica quali feature sono livelli (da sostituire)
+                    # Questa logica dipende dal tuo ordine delle feature!
+                    # Esempio: se le ultime N feature sono i livelli target
+                    num_target_features = target_output_size
+                    next_forecast_features[:, -num_target_features:] = pred_targets
+
                     decoder_input_step = next_forecast_features.unsqueeze(1)
+
+                    # OPZIONE 2 (più semplice ma meno accurata): usa solo forecast features
+                    # decoder_input_step = x_future_forecast[:, t+1:t+2, :]
 
         if num_quantiles > 1:
             outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
@@ -610,26 +601,12 @@ class HydroTransformer(nn.Module):
                  num_decoder_layers: int = 3,
                  dim_feedforward: int = 512,
                  dropout: float = 0.1,
-                 num_quantiles: int = 1,
-                 target_columns: list = None,
-                 forecast_feature_cols: list = None):
+                 num_quantiles: int = 1):
         super().__init__()
         self.d_model = d_model
         self.num_quantiles = num_quantiles
         self.output_dim = output_dim
         self.input_dim_decoder = input_dim_decoder
-
-        # --- NUOVA LOGICA: Mappatura esplicita ---
-        self.target_columns = target_columns
-        self.forecast_feature_cols = forecast_feature_cols
-        if self.target_columns and self.forecast_feature_cols:
-            self.target_to_forecast_idx = {
-                target_col: self.forecast_feature_cols.index(target_col)
-                for target_col in self.target_columns
-                if target_col in self.forecast_feature_cols
-            }
-        else:
-            self.target_to_forecast_idx = {}
         
         self.encoder_embedding = nn.Linear(input_dim_encoder, d_model)
         self.decoder_embedding = nn.Linear(input_dim_decoder, d_model)
@@ -704,21 +681,18 @@ class HydroTransformer(nn.Module):
                     # Usa le forecast features del prossimo step
                     next_forecast_features = tgt[:, t+1:t+2, :]
                     
-                    # **INTEGRA LA PREDIZIONE NELLE FEATURES (FIX PUNTO 1)**
-                    next_input = next_forecast_features.clone()
-                    
+                    # **INTEGRA LA PREDIZIONE NELLE FEATURES**
+                    # Assumendo che le ultime output_dim features siano i livelli da sostituire
                     if self.num_quantiles > 1:
-                        pred_reshaped = step_prediction.view(batch_size, self.output_dim, self.num_quantiles)
-                        pred_targets = pred_reshaped[:, :, 1]
+                        # Usa la mediana (quantile centrale) per modelli quantile
+                        pred_reshaped = step_prediction.view(batch_size, 1, self.output_dim, self.num_quantiles)
+                        pred_targets = pred_reshaped[:, :, :, 1]  # Mediana
                     else:
-                        pred_targets = step_prediction.view(batch_size, self.output_dim)
-
-                    # Usa la mappatura per sostituire i valori corretti
-                    for target_idx, target_col in enumerate(self.target_columns):
-                        if target_col in self.target_to_forecast_idx:
-                            forecast_idx = self.target_to_forecast_idx[target_col]
-                            # next_input ha shape (batch, 1, features)
-                            next_input[:, 0, forecast_idx] = pred_targets[:, target_idx]
+                        pred_targets = step_prediction.view(batch_size, 1, self.output_dim)
+                    
+                    # Sostituisci gli ultimi output_dim valori con le predizioni
+                    next_input = next_forecast_features.clone()
+                    next_input[:, :, -self.output_dim:] = pred_targets
                     
                     # Concatena all'input decoder per il prossimo step
                     decoder_input = torch.cat([decoder_input, next_input], dim=1)
@@ -790,6 +764,161 @@ class SpatioTemporalGNN(nn.Module):
             out = out.view(batch_size, self.output_window, self.output_dim)
 
         return out, None
+
+class SpatioTemporalAGCLSTM(nn.Module):
+    """
+    Modello ibrido GCN-GRU con meccanismo di attenzione.
+    
+    Flusso dati: Input → GCN (per ogni t) → Aggregazione Nodi → GRU → 
+                 Attention → Concatenazione → FC → Output
+    """
+    def __init__(self, num_nodes, num_features, hidden_dim, rnn_layers, 
+                 output_window, output_dim, num_quantiles=1, dropout=0.2):
+        super().__init__()
+        # Validazione parametri
+        assert num_nodes > 0, "num_nodes must be positive"
+        assert num_features > 0, "num_features must be positive"
+        assert hidden_dim > 0, "hidden_dim must be positive"
+        assert rnn_layers >= 1, "rnn_layers must be at least 1"
+        assert output_window > 0, "output_window must be positive"
+        assert output_dim >= 1, "output_dim must be at least 1"
+        assert num_quantiles >= 1, "num_quantiles must be at least 1"
+        assert 0.0 <= dropout < 1.0, "dropout must be between 0.0 and 1.0"
+
+        self.num_nodes = num_nodes
+        self.num_features = num_features
+        self.hidden_dim = hidden_dim
+        self.output_window = output_window
+        self.output_dim = output_dim
+        self.num_quantiles = num_quantiles
+
+        # Layer GCN
+        self.gcn = GCNConv(num_features, hidden_dim)
+
+        # Layer GRU
+        self.rnn = nn.GRU(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=rnn_layers,
+            batch_first=True,
+            dropout=dropout if rnn_layers > 1 else 0.0
+        )
+
+        # Meccanismo di Attenzione (classe interna)
+        self.attention = self.Attention(hidden_dim)
+
+        # Layer di Output
+        self.fc = nn.Linear(
+            hidden_dim * 2,  # GRU output + context vector
+            output_window * output_dim * num_quantiles
+        )
+
+        # Dropout aggiuntivo
+        self.dropout = nn.Dropout(dropout)
+
+    class Attention(nn.Module):
+        """
+        Meccanismo di attenzione Bahdanau per pesare gli output temporali del GRU.
+        """
+        def __init__(self, hidden_dim):
+            super().__init__()
+            self.attn = nn.Linear(hidden_dim * 2, hidden_dim)
+            self.v = nn.Linear(hidden_dim, 1, bias=False)
+            
+        def forward(self, hidden, encoder_outputs):
+            """
+            Args:
+                hidden: (batch_size, hidden_dim) - Ultimo stato nascosto GRU
+                encoder_outputs: (batch_size, seq_len, hidden_dim) - Tutti output GRU
+            
+            Returns:
+                context_vector: (batch_size, hidden_dim)
+                attention_weights: (batch_size, seq_len)
+            """
+            seq_len = encoder_outputs.size(1)
+            
+            # Ripeti hidden per ogni time-step
+            hidden = hidden.unsqueeze(1).repeat(1, seq_len, 1)  # (B, seq_len, H)
+            
+            # Concatena e calcola score
+            energy = torch.tanh(self.attn(torch.cat([hidden, encoder_outputs], dim=2)))
+            attention = self.v(energy).squeeze(2)  # (B, seq_len)
+            
+            # Softmax per ottenere pesi
+            attention_weights = F.softmax(attention, dim=1)
+            
+            # Calcola context vector come somma pesata
+            context_vector = torch.bmm(
+                attention_weights.unsqueeze(1),  # (B, 1, seq_len)
+                encoder_outputs  # (B, seq_len, H)
+            ).squeeze(1)  # (B, H)
+            
+            return context_vector, attention_weights
+
+    def forward(self, x, edge_index, edge_weight=None):
+        """
+        Args:
+            x: (batch_size, seq_len, num_nodes, num_features)
+            edge_index: (2, num_edges)
+            edge_weight: (num_edges,) o None
+        
+        Returns:
+            output: (batch_size, output_window, output_dim, num_quantiles) or (B, OW, OD)
+            attention_weights: (batch_size, seq_len)
+        """
+        # STEP 1: Estrai dimensioni
+        batch_size, seq_len, num_nodes, num_features = x.shape
+        
+        gcn_outputs = []
+        # --- INIZIO BLOCCO DA SOSTITUIRE ---
+        for t in range(seq_len):
+            x_t = x[:, t, :, :]  # (batch_size, num_nodes, num_features)
+            x_t_flat = x_t.reshape(batch_size * self.num_nodes, self.num_features)
+
+            # !! LOGICA CORRETTA PER IL BATCHING DELL'EDGE_INDEX !!
+            edge_index_batch = edge_index.repeat(1, batch_size) + torch.arange(
+                batch_size, device=x.device
+            ).repeat_interleave(edge_index.size(1)) * self.num_nodes
+            
+            edge_weight_batch = edge_weight.repeat(batch_size) if edge_weight is not None else None
+
+            gcn_out = self.gcn(x_t_flat, edge_index_batch, edge_weight=edge_weight_batch)
+            gcn_out = F.relu(gcn_out) # Aggiungi una non-linearità qui
+            
+            gcn_out_reshaped = gcn_out.view(batch_size, self.num_nodes, self.hidden_dim)
+            gcn_outputs.append(gcn_out_reshaped)
+        # --- FINE BLOCCO DA SOSTITUIRE ---
+
+        # Stack temporale
+        x_gcn_seq = torch.stack(gcn_outputs, dim=1)
+        
+        # STEP 3: Aggregazione nodi (media)
+        rnn_input = x_gcn_seq.mean(dim=2)  # (B, seq_len, hidden_dim)
+
+        # STEP 4: Elaborazione temporale (GRU)
+        rnn_outputs, rnn_hidden = self.rnn(rnn_input)
+        # rnn_outputs: (B, seq_len, hidden_dim)
+        # rnn_hidden: (num_layers, B, hidden_dim)
+
+        # STEP 5: Attenzione
+        last_hidden = rnn_hidden[-1]  # (B, hidden_dim) - ultimo layer
+        context_vector, attention_weights = self.attention(last_hidden, rnn_outputs)
+        # context_vector: (B, hidden_dim)
+        # attention_weights: (B, seq_len)
+
+        # STEP 6: Predizione finale
+        last_rnn_output = rnn_outputs[:, -1, :]  # (B, hidden_dim)
+        combined = torch.cat([last_rnn_output, context_vector], dim=1)  # (B, hidden_dim*2)
+        combined = self.dropout(combined)
+        output = self.fc(combined)  # (B, output_window * output_dim * num_quantiles)
+
+        # STEP 7: Reshape output
+        if self.num_quantiles > 1:
+            output = output.reshape(batch_size, self.output_window, self.output_dim, self.num_quantiles)
+        else:
+            output = output.reshape(batch_size, self.output_window, self.output_dim)
+
+        return output, attention_weights
 
 # --- Loss Functions ---
 class QuantileLoss(nn.Module):
@@ -1339,23 +1468,21 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
 
     from sklearn.model_selection import train_test_split
     weights_train, weights_val = None, None
-    X_enc_train, X_enc_val, X_dec_train, X_dec_val, y_tar_train, y_tar_val = [None] * 6
+    X_train, X_val, y_train, y_val = [None] * 4
 
     if "Temporale" in split_method:
         st.info(f"Suddivisione temporale: {int((1-validation_percentage_temporal)*100)}% training, {int(validation_percentage_temporal*100)}% validazione.")
         
-        split_idx = int(len(X_enc_scaled_full) * (1 - validation_percentage_temporal))
+        split_idx = int(len(X_scaled_full) * (1 - validation_percentage_temporal))
         
         train_indices = range(0, split_idx)
-        val_indices = range(split_idx, len(X_enc_scaled_full))
+        val_indices = range(split_idx, len(X_scaled_full))
 
-        X_enc_train = X_enc_scaled_full[train_indices]
-        X_dec_train = X_dec_scaled_full[train_indices]
-        y_tar_train = y_tar_scaled_full[train_indices]
+        X_train = X_scaled_full[train_indices]
+        y_train = y_scaled_full[train_indices]
         
-        X_enc_val = X_enc_scaled_full[val_indices]
-        X_dec_val = X_dec_scaled_full[val_indices]
-        y_tar_val = y_tar_scaled_full[val_indices]
+        X_val = X_scaled_full[val_indices]
+        y_val = y_scaled_full[val_indices]
 
         if use_weighted_loss and sample_weights_full is not None:
             weights_train = sample_weights_full[train_indices]
@@ -1364,7 +1491,7 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
     else: # Logica Casuale
         st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
         
-        arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full]
+        arrays_to_split = [X_scaled_full, y_scaled_full]
         if use_weighted_loss and sample_weights_full is not None:
             arrays_to_split.append(sample_weights_full)
 
@@ -1375,14 +1502,11 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
             random_state=42
         )
         
-        X_enc_train, X_enc_val = split_results[0], split_results[1]
-        X_dec_train, X_dec_val = split_results[2], split_results[3]
-        y_tar_train, y_tar_val = split_results[4], split_results[5]
+        X_train, X_val = split_results[0], split_results[1]
+        y_train, y_val = split_results[2], split_results[3]
         
         if use_weighted_loss and sample_weights_full is not None:
-            weights_train, weights_val = split_results[6], split_results[7]
-
-    # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
+            weights_train, weights_val = split_results[4], split_results[5]
 
     train_loader = DataLoader(TimeSeriesDataset(X_train, y_train, weights_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size) if len(X_val) > 0 else None
@@ -1418,7 +1542,11 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
             
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
-            outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
+            
+            if isinstance(model, SpatioTemporalAGCLSTM):
+                outputs, attention_weights = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
+            else:
+                outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
 
             with torch.no_grad():
                 preds_scaled = outputs.cpu().numpy()
@@ -1491,7 +1619,10 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
             with torch.no_grad():
                 for X_batch, y_batch in val_loader:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                    outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
+                    if isinstance(model, SpatioTemporalAGCLSTM):
+                        outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
+                    else:
+                        outputs, _ = model(X_batch, edge_index_tensor, edge_weight=edge_weights_tensor)
                     loss_per_sample_val = criterion(outputs, y_batch)
                     val_loss_unweighted = loss_per_sample_val.mean()
                     epoch_val_loss_sum += val_loss_unweighted.item() * X_batch.size(0)
@@ -1576,6 +1707,7 @@ def predict_gnn(model, input_data_multi_feature, scalers, config, device, uncert
     num_features = config.get("num_features", 1)
     
     predictions_list = []
+    attention_list = []
     
     with torch.no_grad():
         for _ in range(uncertainty_passes):
@@ -1585,7 +1717,10 @@ def predict_gnn(model, input_data_multi_feature, scalers, config, device, uncert
             inp_reshaped = inp_norm.reshape(input_data_multi_feature.shape)
             inp_tens = torch.FloatTensor(inp_reshaped).unsqueeze(0).to(device)
             
-            output, _ = model(inp_tens, edge_index, edge_weight=edge_weights)
+            output, attention_weights = model(inp_tens, edge_index, edge_weight=edge_weights)
+            if attention_weights is not None:
+                attention_list.append(attention_weights.cpu().numpy().squeeze(0))
+            
             out_np = output.cpu().numpy().squeeze(0)
             
             # Gestione Quantile vs Standard
@@ -1603,10 +1738,14 @@ def predict_gnn(model, input_data_multi_feature, scalers, config, device, uncert
     predictions_array = np.array(predictions_list)
     mean_pred = np.mean(predictions_array, axis=0)
     std_pred = np.std(predictions_array, axis=0) if uncertainty_passes > 1 and config.get("training_mode") != "quantile" else None
+    
+    mean_attention = None
+    if attention_list:
+        mean_attention = np.mean(np.array(attention_list), axis=0)
 
     # Ensure model is back in eval mode if it was changed
     model.eval()
-    return mean_pred, std_pred
+    return mean_pred, std_pred, mean_attention
 
 # --- Funzioni Caricamento Modello/Scaler (Aggiornate) ---
 @st.cache_data(show_spinner="Ricerca modelli disponibili...")
@@ -1671,6 +1810,13 @@ def find_available_models(models_dir=MODELS_DIR):
                 if all(k in config_data for k in required_keys) and os.path.exists(scf_p) and os.path.exists(sct_p):
                      model_info.update({"scaler_features_path": scf_p, "scaler_targets_path": sct_p, "model_type": "SpatioTemporalGNN"})
                      valid_model = True
+            elif model_type == "AGCLSTM":
+                required_keys = ["input_window_steps", "output_window_steps", "hidden_dim", "rnn_layers", "node_order", "edge_index", "target_columns"]
+                scf_p = os.path.join(models_dir, f"{base}_features.joblib")
+                sct_p = os.path.join(models_dir, f"{base}_targets.joblib")
+                if all(k in config_data for k in required_keys) and os.path.exists(scf_p) and os.path.exists(sct_p):
+                        model_info.update({"scaler_features_path": scf_p, "scaler_targets_path": sct_p, "model_type": "AGCLSTM"})
+                        valid_model = True
             else: # LSTM Standard
                 required_keys = ["input_window", "output_window", "hidden_size", "num_layers", "dropout", "target_columns", "feature_columns"]
                 scf_p = os.path.join(models_dir, f"{base}_features.joblib")
@@ -1734,11 +1880,7 @@ def load_specific_model(_model_path, config):
             out_win = config["output_window_steps"]
             encoder = EncoderLSTM(enc_input_size, hidden, layers, drop).to(device)
             decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop, num_quantiles=num_quantiles).to(device)
-            model = Seq2SeqWithAttention(
-                encoder, decoder, out_win,
-                target_columns=config["target_columns"],
-                forecast_feature_cols=config["forecast_input_columns"]
-            ).to(device)
+            model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
         elif model_type == "Transformer":
             enc_input_size = len(config["all_past_feature_columns"])
             dec_input_size = len(config["forecast_input_columns"])
@@ -1754,9 +1896,7 @@ def load_specific_model(_model_path, config):
                 num_decoder_layers=config["num_decoder_layers"],
                 dim_feedforward=config["dim_feedforward"],
                 dropout=config["dropout"],
-                num_quantiles=num_quantiles,
-                target_columns=config["target_columns"],
-                forecast_feature_cols=config["forecast_input_columns"]
+                num_quantiles=num_quantiles
             ).to(device)
         elif model_type == "SpatioTemporalGNN":
             if not PYG_AVAILABLE: raise RuntimeError("PyTorch Geometric non trovato.")
@@ -1769,6 +1909,21 @@ def load_specific_model(_model_path, config):
                 num_features=num_features_from_config, # <-- Usa il valore dalla config
                 hidden_dim=config["hidden_dim"],
                 num_layers=config["num_layers"],
+                output_window=config["output_window_steps"],
+                output_dim=len(config["target_columns"]),
+                num_quantiles=num_quantiles,
+                dropout=config.get("dropout", 0.2)
+            ).to(device)
+        elif model_type == "AGCLSTM":
+            if not PYG_AVAILABLE: raise RuntimeError("PyTorch Geometric non trovato.")
+            
+            num_features_from_config = config.get("num_features", 1)
+            
+            model = SpatioTemporalAGCLSTM(
+                num_nodes=len(config["node_order"]),
+                num_features=num_features_from_config,
+                hidden_dim=config["hidden_dim"],
+                rnn_layers=config["rnn_layers"],
                 output_window=config["output_window_steps"],
                 output_dim=len(config["target_columns"]),
                 num_quantiles=num_quantiles,
@@ -3661,7 +3816,7 @@ elif page == 'Simulazione':
                                 input_array[t, node_idx, 1 + feat_idx] = historical_df[feat_col].iloc[t]
 
                     # Chiama la funzione di predizione con il nuovo array
-                    predictions, uncertainty = predict_gnn(active_model, input_array, active_scalers, active_config, active_device, uncertainty_passes=num_passes_sim)
+                    predictions, uncertainty, _ = predict_gnn(active_model, input_array, active_scalers, active_config, active_device, uncertainty_passes=num_passes_sim)
                     
                     start_pred_time = st.session_state.imported_sim_start_time_gs_gnn
                     
@@ -3868,7 +4023,7 @@ elif page == 'Test Modello su Storico':
                             if feat_col in input_df_period_slice.columns:
                                 raw_input_data_multi_feature[t, node_idx, 1 + feat_idx] = input_df_period_slice[feat_col].iloc[t]
 
-                predictions_period, uncertainty_period = predict_gnn(active_model, raw_input_data_multi_feature, active_scalers, active_config, active_device, uncertainty_passes=num_passes_test)
+                    predictions_period, uncertainty_period, attention_weights_period = predict_gnn(active_model, raw_input_data_multi_feature, active_scalers, active_config, active_device, uncertainty_passes=num_passes_test)
             else: # LSTM Standard
                 input_np_raw = input_df_period_slice[feature_columns_model_test].values
                 input_cols_for_display = feature_columns_model_test
@@ -3991,7 +4146,7 @@ elif page == 'Allenamento Modello':
     
     # La definizione del tipo di modello
     if PYG_AVAILABLE:
-        model_options = ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer", "Spatio-Temporal GNN"]
+        model_options = ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer", "Spatio-Temporal GNN", "GNN Spazio-Temporale (AGCLSTM)"]
     else:
         model_options = ["LSTM Standard", "Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"]
     train_model_type = st.radio("Tipo di Modello da Allenare:", model_options, key="train_select_type", horizontal=True)
@@ -4227,16 +4382,12 @@ elif page == 'Allenamento Modello':
                         input_dim_encoder=X_enc_scaled.shape[2], input_dim_decoder=X_dec_scaled.shape[2],
                         output_dim=len(selected_targets), d_model=d_model, nhead=nhead,
                         num_encoder_layers=num_enc_l, num_decoder_layers=num_dec_l,
-                        dim_feedforward=dim_ff, dropout=dr, num_quantiles=num_quantiles_train,
-                        target_columns=selected_targets,
-                        forecast_feature_cols=selected_forecast_features)
+                        dim_feedforward=dim_ff, dropout=dr, num_quantiles=num_quantiles_train)
                 else:
                     encoder = EncoderLSTM(X_enc_scaled.shape[2], hs, nl, dr)
                     if train_model_type == "Seq2Seq con Attenzione":
                         decoder = DecoderLSTMWithAttention(X_dec_scaled.shape[2], hs, len(selected_targets), nl, dr, num_quantiles=num_quantiles_train)
-                        model_instance = Seq2SeqWithAttention(encoder, decoder, ow_steps,
-                                                              target_columns=selected_targets,
-                                                              forecast_feature_cols=selected_forecast_features)
+                        model_instance = Seq2SeqWithAttention(encoder, decoder, ow_steps)
                     else:
                         decoder = DecoderLSTM(X_dec_scaled.shape[2], hs, len(selected_targets), nl, dr, num_quantiles=num_quantiles_train)
                         model_instance = Seq2SeqHydro(encoder, decoder, ow_steps)
@@ -4281,39 +4432,91 @@ elif page == 'Allenamento Modello':
                     find_available_models.clear()
             else:
                 st.error(f"Preparazione dati {train_model_type} fallita.")
-
-    elif train_model_type == "Spatio-Temporal GNN":
+    elif train_model_type == "Spatio-Temporal GNN" or train_model_type == "GNN Spazio-Temporale (AGCLSTM)":
+        # --- INIZIO BLOCCO GNN UNIFICATO ---
+        
         st.markdown(f"**1. Definizione del Grafo e Selezione Feature ({train_model_type})**")
-        # ... (UI per GNN invariata) ...
+
+        # Gestione defaults
         all_level_sensors = [f for f in df_current_csv.columns if 'livello' in f.lower() or '[m]' in f.lower()]
-        node_order = st.multiselect("Nodi del Grafo (Idrometri - l'ordine è importante!):", options=all_level_sensors, default=all_level_sensors, key="train_gnn_nodes")
+        
+        DEFAULT_GNN_NODE_ORDER = [
+            'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
+            'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
+            'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
+            'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
+            'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
+        ]
+        # Assicurati che i default siano presenti nel DF corrente
+        default_nodes_for_ui = [node for node in DEFAULT_GNN_NODE_ORDER if node in all_level_sensors]
+        
+        DEFAULT_GNN_EDGE_LIST_STR = "0,1,15.5\n1,3,8.2\n2,3,5.0\n3,4,12.0"
+        
+        default_target_for_ui = [node for node in DEFAULT_GNN_NODE_ORDER if "3405" in node and node in all_level_sensors]
+
+        node_order = st.multiselect(
+            "Nodi del Grafo (Idrometri - l'ordine è importante!):", 
+            options=all_level_sensors, 
+            default=default_nodes_for_ui, 
+            key=f"train_{train_model_type}_nodes"
+        )
+        
         st.markdown("**Associa Feature Aggiuntive ai Nodi**")
         all_other_features = [f for f in df_current_csv.columns if f not in all_level_sensors and f != date_col_name_csv]
         node_feature_mapping = {}
+        
         if node_order:
-            global_feature_keywords = ['progressivo', 'dummy', 'seasonality_sin', 'seasonality_cos', 'umidita', 'soil moisture']
-            specific_node_feature_map = {'serra dei conti': '1295', 'bettolelle': '2637', 'pianello': '2858', 'corinaldo/nevola': '2964'}
+            # Calcolo dei default per le feature basato sui nodi selezionati
             for i, node_name in enumerate(node_order):
                 default_features_for_node = []
-                for keyword in global_feature_keywords:
+                # Logica per feature globali
+                global_keywords = ['dev_std_spaziale', 'max_intensita_spaziale', 'dummy', 'seasonality_sin', 'seasonality_cos', 'umidita']
+                for keyword in global_keywords:
                     for feature in all_other_features:
                         if keyword in feature.lower():
                             default_features_for_node.append(feature)
+                
+                # Logica per feature specifiche (pioggia locale)
                 node_name_lower = node_name.lower()
-                for hydro_keyword, rain_keyword in specific_node_feature_map.items():
+                rain_map = {
+                    'serra dei conti': '1295', 'bettolelle': '2637', 
+                    'pianello': '2858', 'corinaldo/nevola': '2964', 'ponte garibaldi': '2637' 
+                }
+                for hydro_keyword, rain_sensor_code in rain_map.items():
                     if hydro_keyword in node_name_lower:
-                        rain_features = [f for f in all_other_features if rain_keyword in f and 'cumulata' in f.lower()]
+                        rain_features = [f for f in all_other_features if rain_sensor_code in f and 'cumulata' in f.lower()]
                         default_features_for_node.extend(rain_features)
+
                 default_features_for_node = sorted(list(set(default_features_for_node)))
+                
                 short_name_match = re.search(r'\((.*?)\)', node_name)
                 short_name = short_name_match.group(1).strip() if short_name_match else node_name
-                selected_features_for_node = st.multiselect(f"Feature aggiuntive per Nodo {i} ({short_name}):", options=all_other_features, default=default_features_for_node, key=f"train_gnn_features_node_{i}")
+                selected_features_for_node = st.multiselect(
+                    f"Feature aggiuntive per Nodo {i} ({short_name}):", 
+                    options=all_other_features, 
+                    default=default_features_for_node, 
+                    key=f"train_{train_model_type}_features_node_{i}"
+                )
                 node_feature_mapping[node_name] = selected_features_for_node
+
         st.caption("Definisci le connessioni del grafo. Ogni riga è `sorgente,destinazione,peso`.")
         node_mapping_help = {i: name for i, name in enumerate(node_order)}
         st.json(node_mapping_help, expanded=False)
-        edge_list_str = st.text_area("Lista Archi (formato: 'sorgente,destinazione,peso')", "0,1,15.5\n1,2,8.2\n2,3,12.0", key="train_gnn_edges", height=100)
-        selected_targets_gnn = st.multiselect("Target Output (Nodi da predire):", options=node_order, default=node_order[-1:] if node_order else [], key="train_gnn_target")
+        
+        edge_list_str = st.text_area(
+            "Lista Archi (formato: 'sorgente,destinazione,peso')", 
+            DEFAULT_GNN_EDGE_LIST_STR, 
+            key=f"train_{train_model_type}_edges", 
+            height=100
+        )
+        
+        selected_targets_gnn = st.multiselect(
+            "Target Output (Nodi da predire):", 
+            options=node_order, 
+            default=default_target_for_ui, 
+            key=f"train_{train_model_type}_target"
+        )
+
         edge_index, edge_weights = None, None
         try:
             s, t, w = [], [], []
@@ -4323,29 +4526,32 @@ elif page == 'Allenamento Modello':
             if s: edge_index, edge_weights = [s, t], w; st.success(f"Grafo definito con {len(node_order)} nodi e {len(s)} archi.")
         except Exception: st.error("Formato archi non valido.")
 
-        st.markdown(f"**2. Parametri Modello e Training**")
-        with st.expander("Impostazioni Allenamento GNN", expanded=True):
-            # ... (UI per parametri GNN invariata) ...
+        st.markdown(f"**2. Parametri Modello e Training ({train_model_type})**")
+        with st.expander(f"Impostazioni Allenamento {train_model_type}", expanded=True):
             c1, c2, c3 = st.columns(3)
             with c1:
-                iw_steps = st.number_input("Input Window (steps)", min_value=2, value=48, key="t_gnn_in")
-                ow_steps = st.number_input("Output Window (steps)", min_value=1, value=6, key="t_gnn_out")
-                hs = st.number_input("Hidden Dimension", min_value=8, value=64, key="t_gnn_hs")
+                iw_steps = st.number_input("Input Window (steps)", min_value=2, value=48, key=f"t_{train_model_type}_in")
+                ow_steps = st.number_input("Output Window (steps)", min_value=1, value=6, key=f"t_{train_model_type}_out")
+                hs = st.number_input("Hidden Dimension", min_value=8, value=64, key=f"t_{train_model_type}_hs")
             with c2:
-                nl = st.number_input("Numero Layers (GRU)", min_value=1, value=2, key="t_gnn_nl")
-                dr = st.slider("Dropout", 0.0, 0.7, 0.2, key="t_gnn_dr")
-                lr = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", key="t_gnn_lr")
+                # Parametri specifici per modello
+                if "AGCLSTM" in train_model_type:
+                    nl = st.number_input("Numero Layers (GRU)", min_value=1, value=2, key=f"t_{train_model_type}_nl")
+                else: # GNN Originale
+                    nl = st.number_input("Numero Layers", min_value=1, value=2, key=f"t_{train_model_type}_nl_orig")
+                
+                dr = st.slider("Dropout", 0.0, 0.7, 0.2, key=f"t_{train_model_type}_dr")
+                lr = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", key=f"t_{train_model_type}_lr")
             with c3:
-                bs = st.select_slider("Batch Size", [8,16,32,64], 32, key="t_gnn_bs")
-                ep = st.number_input("Numero Epoche", min_value=1, value=50, key="t_gnn_ep")
+                bs = st.select_slider("Batch Size", [8,16,32,64], 32, key=f"t_{train_model_type}_bs")
+                ep = st.number_input("Numero Epoche", min_value=1, value=50, key=f"t_{train_model_type}_ep")
 
-        if st.button("Avvia Addestramento GNN", type="primary", key="train_run_gnn"):
+        if st.button(f"Avvia Addestramento {train_model_type}", type="primary", key=f"train_run_{train_model_type}"):
             if not all([save_name, node_order, selected_targets_gnn, edge_index, edge_weights]):
                 st.error("Completa tutti i campi per l'addestramento GNN.")
             else:
-                st.info(f"Avvio addestramento GNN per '{save_name}'...")
+                st.info(f"Avvio addestramento {train_model_type} per '{save_name}'...")
                 with st.spinner("Preparazione dati GNN..."):
-                    # <<< MODIFICA 6: Passaggio parametri e unpacking corretto
                     data_tuple = prepare_training_data_gnn(
                         df_current_csv.copy(), node_order, selected_targets_gnn, node_feature_mapping,
                         iw_steps, ow_steps,
@@ -4360,13 +4566,21 @@ elif page == 'Allenamento Modello':
                 
                 if X_scaled is not None:
                     num_q = len(quantiles_list) if training_mode == "Quantile Regression" else 1
-                    model = SpatioTemporalGNN(
-                        num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs, 
-                        num_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn), 
-                        num_quantiles=num_q, dropout=dr
-                    )
                     
-                    # <<< MODIFICA 7: Passaggio parametri al trainer
+                    # Istanzia il modello corretto
+                    if "AGCLSTM" in train_model_type:
+                        model = SpatioTemporalAGCLSTM(
+                            num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs, 
+                            rnn_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn), 
+                            num_quantiles=num_q, dropout=dr
+                        )
+                    else:
+                        model = SpatioTemporalGNN(
+                            num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs, 
+                            num_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn), 
+                            num_quantiles=num_q, dropout=dr
+                        )
+
                     trained_model, _, _ = train_model_gnn(
                         X_scaled, y_scaled, sample_weights, sc_t,
                         model, edge_index, edge_weights, ep, bs, lr,
@@ -4382,16 +4596,24 @@ elif page == 'Allenamento Modello':
                     )
                     
                     if trained_model:
-                        st.success("Addestramento GNN completato!")
+                        st.success(f"Addestramento {train_model_type} completato!")
+                        
+                        model_type_save = "AGCLSTM" if "AGCLSTM" in train_model_type else "SpatioTemporalGNN"
                         config = {
-                            "model_type": "SpatioTemporalGNN", "display_name": save_name, "node_order": node_order,
+                            "model_type": model_type_save, "display_name": save_name, "node_order": node_order,
                             "edge_index": edge_index, "edge_weights": edge_weights, "target_columns": selected_targets_gnn,
                             "input_window_steps": iw_steps, "output_window_steps": ow_steps, "hidden_dim": hs,
-                            "num_layers": nl, "dropout": dr, "training_mode": training_mode.split()[0].lower(),
+                            "dropout": dr, "training_mode": training_mode.split()[0].lower(),
                             "loss_function": loss_choice, "node_feature_mapping": node_feature_mapping,
                             "num_features": num_features_detected
                         }
+                        if "AGCLSTM" in train_model_type:
+                            config["rnn_layers"] = nl
+                        else:
+                            config["num_layers"] = nl
+
                         if config["training_mode"] == "quantile": config["quantiles"] = quantiles_list
+                        
                         base_path = os.path.join(MODELS_DIR, save_name)
                         torch.save(trained_model.state_dict(), f"{base_path}.pth")
                         joblib.dump(sc_f, f"{base_path}_features.joblib")
@@ -4401,7 +4623,7 @@ elif page == 'Allenamento Modello':
                         find_available_models.clear()
                 else:
                     st.error("Preparazione dati GNN fallita.")
-
+        # --- FINE BLOCCO GNN UNIFICATO ---
 # --- PAGINA POST-TRAINING MODELLO ---
 elif page == 'Post-Training Modello':
     st.header('Post-Training Modello Esistente')
@@ -4504,7 +4726,62 @@ elif page == 'Post-Training Modello':
         else:
             st.error(f"Tipo modello '{active_model_type}' non supportato per il post-training.")
             st.stop()
+    elif train_model_type == "GNN Spazio-Temporale (AGCLSTM)":
+        st.markdown(f"**1. Definizione del Grafo e Selezione Feature ({train_model_type})**")
+        # ... (UI per GNN invariata) ...
+        all_level_sensors = [f for f in df_current_csv.columns if 'livello' in f.lower() or '[m]' in f.lower()]
+        node_order = st.multiselect("Nodi del Grafo (Idrometri - l'ordine è importante!):", options=all_level_sensors, default=all_level_sensors, key="train_gnn_nodes")
+        st.markdown("**Associa Feature Aggiuntive ai Nodi**")
+        all_other_features = [f for f in df_current_csv.columns if f not in all_level_sensors and f != date_col_name_csv]
+        node_feature_mapping = {}
+        if node_order:
+            global_feature_keywords = ['progressivo', 'dummy', 'seasonality_sin', 'seasonality_cos', 'umidita', 'soil moisture']
+            specific_node_feature_map = {'serra dei conti': '1295', 'bettolelle': '2637', 'pianello': '2858', 'corinaldo/nevola': '2964'}
+            for i, node_name in enumerate(node_order):
+                default_features_for_node = []
+                for keyword in global_feature_keywords:
+                    for feature in all_other_features:
+                        if keyword in feature.lower():
+                            default_features_for_node.append(feature)
+                node_name_lower = node_name.lower()
+                for hydro_keyword, rain_keyword in specific_node_feature_map.items():
+                    if hydro_keyword in node_name_lower:
+                        rain_features = [f for f in all_other_features if rain_keyword in f and 'cumulata' in f.lower()]
+                        default_features_for_node.extend(rain_features)
+                default_features_for_node = sorted(list(set(default_features_for_node)))
+                short_name_match = re.search(r'\((.*?)\)', node_name)
+                short_name = short_name_match.group(1).strip() if short_name_match else node_name
+                selected_features_for_node = st.multiselect(f"Feature aggiuntive per Nodo {i} ({short_name}):", options=all_other_features, default=default_features_for_node, key=f"train_gnn_features_node_{i}")
+                node_feature_mapping[node_name] = selected_features_for_node
+        st.caption("Definisci le connessioni del grafo. Ogni riga è `sorgente,destinazione,peso`.")
+        node_mapping_help = {i: name for i, name in enumerate(node_order)}
+        st.json(node_mapping_help, expanded=False)
+        edge_list_str = st.text_area("Lista Archi (formato: 'sorgente,destinazione,peso')", "0,1,15.5\n1,2,8.2\n2,3,12.0", key="train_gnn_edges", height=100)
+        selected_targets_gnn = st.multiselect("Target Output (Nodi da predire):", options=node_order, default=node_order[-1:] if node_order else [], key="train_gnn_target")
+        edge_index, edge_weights = None, None
+        try:
+            s, t, w = [], [], []
+            for line in edge_list_str.split('\n'):
+                if line.strip():
+                    parts = [p.strip() for p in line.split(',')]; s.append(int(parts[0])); t.append(int(parts[1])); w.append(float(parts[2]))
+            if s: edge_index, edge_weights = [s, t], w; st.success(f"Grafo definito con {len(node_order)} nodi e {len(s)} archi.")
+        except Exception: st.error("Formato archi non valido.")
 
+        st.markdown(f"**2. Parametri Modello e Training**")
+        with st.expander("Impostazioni Allenamento GNN", expanded=True):
+            # ... (UI per parametri GNN invariata) ...
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                iw_steps = st.number_input("Input Window (steps)", min_value=2, value=48, key="t_gnn_in")
+                ow_steps = st.number_input("Output Window (steps)", min_value=1, value=6, key="t_gnn_out")
+                hs = st.number_input("Hidden Dimension", min_value=8, value=64, key="t_gnn_hs")
+            with c2:
+                nl = st.number_input("Numero Layers (GRU)", min_value=1, value=2, key="t_gnn_nl")
+                dr = st.slider("Dropout", 0.0, 0.7, 0.2, key="t_gnn_dr")
+                lr = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", key="t_gnn_lr")
+            with c3:
+                bs = st.select_slider("Batch Size", [8,16,32,64], 32, key="t_gnn_bs")
+                ep = st.number_input("Numero Epoche", min_value=1, value=50, key="t_gnn_ep")
 # --- Footer ---
 st.sidebar.divider()
 st.sidebar.caption(f'Modello Predittivo Idrologico © {datetime.now().year}')
