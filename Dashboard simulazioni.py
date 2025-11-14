@@ -476,10 +476,18 @@ class Seq2SeqHydro(nn.Module):
             )
             outputs[:, t, :] = decoder_output_step
 
+            # Prepara l'input per il prossimo step
             if t < self.output_window - 1:
-                if teacher_forcing_ratio > 0 and random.random() < teacher_forcing_ratio :
-                     pass
+                use_teacher_forcing = random.random() < teacher_forcing_ratio
+
+                if use_teacher_forcing:
+                    # Teacher forcing: Usa il prossimo input reale dalla sequenza di forecast
+                    # (che include implicitamente i valori target reali, se sono feature)
+                    decoder_input_step = x_future_forecast[:, t+1:t+2, :]
                 else:
+                    # Autoregressive: In questo modello base, non avendo la mappatura per
+                    # sostituire i valori predetti, usiamo comunque il prossimo input di forecast.
+                    # Questo è meno accurato ma è il comportamento atteso per questo modello S2S semplice.
                     decoder_input_step = x_future_forecast[:, t+1:t+2, :]
         
         if num_quantiles > 1:
@@ -488,11 +496,19 @@ class Seq2SeqHydro(nn.Module):
         return outputs, None
 
 class Seq2SeqWithAttention(nn.Module):
-    def __init__(self, encoder, decoder, output_window_steps):
+    def __init__(self, encoder, decoder, output_window_steps, target_columns, forecast_feature_cols):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.output_window = output_window_steps
+        # --- NUOVA LOGICA: Mappatura esplicita ---
+        self.target_columns = target_columns
+        self.forecast_feature_cols = forecast_feature_cols
+        self.target_to_forecast_idx = {
+            target_col: self.forecast_feature_cols.index(target_col)
+            for target_col in self.target_columns
+            if target_col in self.forecast_feature_cols
+        }
 
     def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0,
                 target_sequence=None):
@@ -530,37 +546,31 @@ class Seq2SeqWithAttention(nn.Module):
 
             # Prepara input per prossimo step
             if t < self.output_window - 1:
+                # --- LOGICA CORRETTA (FIX Punti 1 & 4) ---
                 use_teacher_forcing = random.random() < teacher_forcing_ratio
 
                 if use_teacher_forcing and target_sequence is not None:
-                    # Teacher forcing: usa target reale
-                    # Nota: devi avere le forecast features associate al target reale
+                    # Teacher Forcing: Usa le vere forecast features del prossimo step,
+                    # che implicitamente contengono i valori reali del target.
                     decoder_input_step = x_future_forecast[:, t+1:t+2, :]
                 else:
-                    # Autoregressive: usa predizione precedente
-                    # CRITICO: devi integrare la predizione nelle forecast features
+                    # Autoregressive: Usa la predizione precedente per costruire le features.
+                    next_forecast_features = x_future_forecast[:, t+1, :].clone()
 
-                    # Reshape predizione per ottenere i target
+                    # Estrai i valori predetti (mediana se quantile)
                     if num_quantiles > 1:
-                        # Usa la mediana (quantile centrale)
                         pred_reshaped = decoder_output_step.view(batch_size, target_output_size, num_quantiles)
-                        pred_targets = pred_reshaped[:, :, 1] # Mediana
+                        pred_targets = pred_reshaped[:, :, 1]  # Mediana
                     else:
                         pred_targets = decoder_output_step.view(batch_size, target_output_size)
 
-                    # OPZIONE 1: Sostituisci i livelli predetti nelle forecast features
-                    next_forecast_features = x_future_forecast[:, t+1, :].clone()
-
-                    # Identifica quali feature sono livelli (da sostituire)
-                    # Questa logica dipende dal tuo ordine delle feature!
-                    # Esempio: se le ultime N feature sono i livelli target
-                    num_target_features = target_output_size
-                    next_forecast_features[:, -num_target_features:] = pred_targets
+                    # Usa la mappatura per sostituire i valori corretti
+                    for target_idx, target_col in enumerate(self.target_columns):
+                        if target_col in self.target_to_forecast_idx:
+                            forecast_idx = self.target_to_forecast_idx[target_col]
+                            next_forecast_features[:, forecast_idx] = pred_targets[:, target_idx]
 
                     decoder_input_step = next_forecast_features.unsqueeze(1)
-
-                    # OPZIONE 2 (più semplice ma meno accurata): usa solo forecast features
-                    # decoder_input_step = x_future_forecast[:, t+1:t+2, :]
 
         if num_quantiles > 1:
             outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
@@ -600,12 +610,26 @@ class HydroTransformer(nn.Module):
                  num_decoder_layers: int = 3,
                  dim_feedforward: int = 512,
                  dropout: float = 0.1,
-                 num_quantiles: int = 1):
+                 num_quantiles: int = 1,
+                 target_columns: list = None,
+                 forecast_feature_cols: list = None):
         super().__init__()
         self.d_model = d_model
         self.num_quantiles = num_quantiles
         self.output_dim = output_dim
         self.input_dim_decoder = input_dim_decoder
+
+        # --- NUOVA LOGICA: Mappatura esplicita ---
+        self.target_columns = target_columns
+        self.forecast_feature_cols = forecast_feature_cols
+        if self.target_columns and self.forecast_feature_cols:
+            self.target_to_forecast_idx = {
+                target_col: self.forecast_feature_cols.index(target_col)
+                for target_col in self.target_columns
+                if target_col in self.forecast_feature_cols
+            }
+        else:
+            self.target_to_forecast_idx = {}
         
         self.encoder_embedding = nn.Linear(input_dim_encoder, d_model)
         self.decoder_embedding = nn.Linear(input_dim_decoder, d_model)
@@ -680,18 +704,21 @@ class HydroTransformer(nn.Module):
                     # Usa le forecast features del prossimo step
                     next_forecast_features = tgt[:, t+1:t+2, :]
                     
-                    # **INTEGRA LA PREDIZIONE NELLE FEATURES**
-                    # Assumendo che le ultime output_dim features siano i livelli da sostituire
-                    if self.num_quantiles > 1:
-                        # Usa la mediana (quantile centrale) per modelli quantile
-                        pred_reshaped = step_prediction.view(batch_size, 1, self.output_dim, self.num_quantiles)
-                        pred_targets = pred_reshaped[:, :, :, 1]  # Mediana
-                    else:
-                        pred_targets = step_prediction.view(batch_size, 1, self.output_dim)
-                    
-                    # Sostituisci gli ultimi output_dim valori con le predizioni
+                    # **INTEGRA LA PREDIZIONE NELLE FEATURES (FIX PUNTO 1)**
                     next_input = next_forecast_features.clone()
-                    next_input[:, :, -self.output_dim:] = pred_targets
+
+                    if self.num_quantiles > 1:
+                        pred_reshaped = step_prediction.view(batch_size, self.output_dim, self.num_quantiles)
+                        pred_targets = pred_reshaped[:, :, 1]
+                    else:
+                        pred_targets = step_prediction.view(batch_size, self.output_dim)
+
+                    # Usa la mappatura per sostituire i valori corretti
+                    for target_idx, target_col in enumerate(self.target_columns):
+                        if target_col in self.target_to_forecast_idx:
+                            forecast_idx = self.target_to_forecast_idx[target_col]
+                            # next_input ha shape (batch, 1, features)
+                            next_input[:, 0, forecast_idx] = pred_targets[:, target_idx]
                     
                     # Concatena all'input decoder per il prossimo step
                     decoder_input = torch.cat([decoder_input, next_input], dim=1)
@@ -1707,7 +1734,11 @@ def load_specific_model(_model_path, config):
             out_win = config["output_window_steps"]
             encoder = EncoderLSTM(enc_input_size, hidden, layers, drop).to(device)
             decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop, num_quantiles=num_quantiles).to(device)
-            model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
+            model = Seq2SeqWithAttention(
+                encoder, decoder, out_win,
+                target_columns=config["target_columns"],
+                forecast_feature_cols=config["forecast_input_columns"]
+            ).to(device)
         elif model_type == "Transformer":
             enc_input_size = len(config["all_past_feature_columns"])
             dec_input_size = len(config["forecast_input_columns"])
@@ -1723,7 +1754,9 @@ def load_specific_model(_model_path, config):
                 num_decoder_layers=config["num_decoder_layers"],
                 dim_feedforward=config["dim_feedforward"],
                 dropout=config["dropout"],
-                num_quantiles=num_quantiles
+                num_quantiles=num_quantiles,
+                target_columns=config["target_columns"],
+                forecast_feature_cols=config["forecast_input_columns"]
             ).to(device)
         elif model_type == "SpatioTemporalGNN":
             if not PYG_AVAILABLE: raise RuntimeError("PyTorch Geometric non trovato.")
@@ -4194,12 +4227,16 @@ elif page == 'Allenamento Modello':
                         input_dim_encoder=X_enc_scaled.shape[2], input_dim_decoder=X_dec_scaled.shape[2],
                         output_dim=len(selected_targets), d_model=d_model, nhead=nhead,
                         num_encoder_layers=num_enc_l, num_decoder_layers=num_dec_l,
-                        dim_feedforward=dim_ff, dropout=dr, num_quantiles=num_quantiles_train)
+                        dim_feedforward=dim_ff, dropout=dr, num_quantiles=num_quantiles_train,
+                        target_columns=selected_targets,
+                        forecast_feature_cols=selected_forecast_features)
                 else:
                     encoder = EncoderLSTM(X_enc_scaled.shape[2], hs, nl, dr)
                     if train_model_type == "Seq2Seq con Attenzione":
                         decoder = DecoderLSTMWithAttention(X_dec_scaled.shape[2], hs, len(selected_targets), nl, dr, num_quantiles=num_quantiles_train)
-                        model_instance = Seq2SeqWithAttention(encoder, decoder, ow_steps)
+                        model_instance = Seq2SeqWithAttention(encoder, decoder, ow_steps,
+                                                              target_columns=selected_targets,
+                                                              forecast_feature_cols=selected_forecast_features)
                     else:
                         decoder = DecoderLSTM(X_dec_scaled.shape[2], hs, len(selected_targets), nl, dr, num_quantiles=num_quantiles_train)
                         model_instance = Seq2SeqHydro(encoder, decoder, ow_steps)
