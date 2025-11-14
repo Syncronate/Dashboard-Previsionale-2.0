@@ -3017,6 +3017,9 @@ if 'full_gsheet_data_cache' not in st.session_state: st.session_state.full_gshee
 st.title('Modello Predittivo Idrologico')
 st.caption('Applicazione per monitoraggio, simulazione e addestramento di modelli LSTM e Seq2Seq.')
 
+# Carica l'elenco dei modelli una sola volta all'inizio
+available_models_dict = find_available_models(MODELS_DIR)
+
 # --- Sidebar ---
 with st.sidebar:
     try:
@@ -3140,7 +3143,6 @@ with st.sidebar:
     st.divider()
 
     st.subheader("Modello Predittivo (per Simulazione/Test)")
-    available_models_dict = find_available_models(MODELS_DIR)
     model_display_names = sorted(list(available_models_dict.keys()))
     MODEL_CHOICE_UPLOAD = "Carica File Manualmente (Solo LSTM)"; MODEL_CHOICE_NONE = "-- Nessun Modello Selezionato --"
     selection_options = [MODEL_CHOICE_NONE] + model_display_names
@@ -3695,6 +3697,8 @@ elif page == 'Test Modello su Storico':
     # if not data_ready_csv:
     #     st.warning("Dati Storici CSV non disponibili. Caricane uno dalla sidebar.")
     #     st.stop()
+
+    available_models_dict = find_available_models(MODELS_DIR)
 
     st.info(f"Modello Attivo: **{st.session_state.active_model_name}** ({active_model_type})")
     
@@ -4339,6 +4343,26 @@ elif page == 'Allenamento Modello':
                 bs = st.select_slider("Batch Size", [8,16,32,64], 32, key="t_gnn_bs")
                 ep = st.number_input("Numero Epoche", min_value=1, value=50, key="t_gnn_ep")
 
+            c4, c5 = st.columns(2)
+            with c4:
+                device_option = st.radio(
+                    "Device:",
+                    ['Auto', 'CPU'],
+                    index=0,
+                    key='train_dev_gnn',  # Usa una chiave unica per i modelli GNN
+                    horizontal=True,
+                    help="Seleziona 'Auto' per usare la GPU (CUDA) se disponibile, altrimenti la CPU."
+                )
+            with c5:
+                save_choice = st.radio(
+                    "Salvataggio:",
+                    ['Migliore', 'Finale'],
+                    index=0,
+                    key='train_save_gnn', # Usa una chiave unica per i modelli GNN
+                    horizontal=True,
+                    help="'Migliore': Salva il modello con la più bassa validation loss. 'Finale': Salva il modello dell'ultima epoca."
+                )
+
         if st.button("Avvia Addestramento GNN", type="primary", key="train_run_gnn"):
             if not all([save_name, node_order, selected_targets_gnn, edge_index, edge_weights]):
                 st.error("Completa tutti i campi per l'addestramento GNN.")
@@ -4357,19 +4381,21 @@ elif page == 'Allenamento Modello':
                         X_scaled, y_scaled, sample_weights, sc_f, sc_t, num_features_detected = data_tuple
                     else:
                         X_scaled = None
-                
+
                 if X_scaled is not None:
                     num_q = len(quantiles_list) if training_mode == "Quantile Regression" else 1
                     model = SpatioTemporalGNN(
-                        num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs, 
-                        num_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn), 
+                        num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs,
+                        num_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn),
                         num_quantiles=num_q, dropout=dr
                     )
-                    
+
                     # <<< MODIFICA 7: Passaggio parametri al trainer
                     trained_model, _, _ = train_model_gnn(
                         X_scaled, y_scaled, sample_weights, sc_t,
                         model, edge_index, edge_weights, ep, bs, lr,
+                        save_strategy='migliore' if 'Migliore' in save_choice else 'finale',
+                        preferred_device='auto' if 'Auto' in device_option else 'cpu',
                         training_mode=training_mode.split()[0].lower(),
                         quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
                         split_method=split_method,
@@ -4380,7 +4406,7 @@ elif page == 'Allenamento Modello':
                         target_threshold=target_threshold_scaled,
                         weight_exponent=weight_exponent
                     )
-                    
+
                     if trained_model:
                         st.success("Addestramento GNN completato!")
                         config = {
