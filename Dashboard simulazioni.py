@@ -3366,7 +3366,7 @@ with st.sidebar:
         # Gestisce i modelli che usano le chiavi con "_steps"
         if model_type_sess in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
             st.caption(f"Input: {cfg['input_window_steps']}s | Forecast: {cfg.get('forecast_window_steps', 'N/A')}s | Output: {cfg['output_window_steps']}s")
-        elif model_type_sess == "SpatioTemporalGNN":
+        elif model_type_sess in ["SpatioTemporalGNN", "AGCLSTM"]:
             # Caso specifico per GNN che usa le chiavi corrette
             st.caption(f"Input: {cfg['input_window_steps']}s | Output: {cfg['output_window_steps']}s")
         # Gestisce il modello LSTM standard che usa chiavi diverse
@@ -3861,7 +3861,7 @@ elif page == 'Test Modello su Storico':
             past_feature_cols_model_test = active_config.get('all_past_feature_columns', [])
             forecast_feature_cols_model_test = active_config.get('forecast_input_columns', [])
             required_len_for_test = input_steps_model_test + output_steps_model_test
-        elif active_model_type == "SpatioTemporalGNN":
+        elif active_model_type in ["SpatioTemporalGNN", "AGCLSTM"]:
             input_steps_model_test = active_config.get('input_window_steps', 1)
             output_steps_model_test = active_config.get('output_window_steps', 1)
             node_columns_model_test = active_config.get('node_order', [])
@@ -4003,7 +4003,7 @@ elif page == 'Test Modello su Storico':
                     predictions_period, uncertainty_period, _ = predict_seq2seq_with_uncertainty(active_model, past_input_np_raw, future_input_np_raw, active_scalers, active_config, active_device, num_passes=num_passes_test)
                 else:
                     predictions_period, _ = predict_seq2seq(active_model, past_input_np_raw, future_input_np_raw, active_scalers, active_config, active_device)
-            elif active_model_type == "SpatioTemporalGNN":
+            elif active_model_type in ["SpatioTemporalGNN", "AGCLSTM"]:
                 node_columns_test = active_config['node_order']
                 feature_mapping_test = active_config['node_feature_mapping']
                 num_features_test = active_config['num_features']
