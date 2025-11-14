@@ -3366,7 +3366,7 @@ with st.sidebar:
         # Gestisce i modelli che usano le chiavi con "_steps"
         if model_type_sess in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
             st.caption(f"Input: {cfg['input_window_steps']}s | Forecast: {cfg.get('forecast_window_steps', 'N/A')}s | Output: {cfg['output_window_steps']}s")
-        elif model_type_sess == "SpatioTemporalGNN":
+        elif model_type_sess in ["SpatioTemporalGNN", "AGCLSTM"]:
             # Caso specifico per GNN che usa le chiavi corrette
             st.caption(f"Input: {cfg['input_window_steps']}s | Output: {cfg['output_window_steps']}s")
         # Gestisce il modello LSTM standard che usa chiavi diverse
