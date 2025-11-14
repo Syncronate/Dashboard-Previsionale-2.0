@@ -4432,38 +4432,91 @@ elif page == 'Allenamento Modello':
                     find_available_models.clear()
             else:
                 st.error(f"Preparazione dati {train_model_type} fallita.")
-    elif train_model_type == "GNN Spazio-Temporale (AGCLSTM)":
+    elif train_model_type == "Spatio-Temporal GNN" or train_model_type == "GNN Spazio-Temporale (AGCLSTM)":
+        # --- INIZIO BLOCCO GNN UNIFICATO ---
+
         st.markdown(f"**1. Definizione del Grafo e Selezione Feature ({train_model_type})**")
-        # ... (UI per GNN invariata) ...
+
+        # Gestione defaults
         all_level_sensors = [f for f in df_current_csv.columns if 'livello' in f.lower() or '[m]' in f.lower()]
-        node_order = st.multiselect("Nodi del Grafo (Idrometri - l'ordine è importante!):", options=all_level_sensors, default=all_level_sensors, key="train_gnn_nodes")
+
+        DEFAULT_GNN_NODE_ORDER = [
+            'Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)',
+            'Livello Idrometrico Sensore 1112 [m] (Bettolelle)',
+            'Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)',
+            'Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)',
+            'Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)'
+        ]
+        # Assicurati che i default siano presenti nel DF corrente
+        default_nodes_for_ui = [node for node in DEFAULT_GNN_NODE_ORDER if node in all_level_sensors]
+
+        DEFAULT_GNN_EDGE_LIST_STR = "0,1,15.5\n1,3,8.2\n2,3,5.0\n3,4,12.0"
+
+        default_target_for_ui = [node for node in DEFAULT_GNN_NODE_ORDER if "3405" in node and node in all_level_sensors]
+
+        node_order = st.multiselect(
+            "Nodi del Grafo (Idrometri - l'ordine è importante!):",
+            options=all_level_sensors,
+            default=default_nodes_for_ui,
+            key=f"train_{train_model_type}_nodes"
+        )
+
         st.markdown("**Associa Feature Aggiuntive ai Nodi**")
         all_other_features = [f for f in df_current_csv.columns if f not in all_level_sensors and f != date_col_name_csv]
         node_feature_mapping = {}
+
         if node_order:
-            global_feature_keywords = ['progressivo', 'dummy', 'seasonality_sin', 'seasonality_cos', 'umidita', 'soil moisture']
-            specific_node_feature_map = {'serra dei conti': '1295', 'bettolelle': '2637', 'pianello': '2858', 'corinaldo/nevola': '2964'}
+            # Calcolo dei default per le feature basato sui nodi selezionati
             for i, node_name in enumerate(node_order):
                 default_features_for_node = []
-                for keyword in global_feature_keywords:
+                # Logica per feature globali
+                global_keywords = ['dev_std_spaziale', 'max_intensita_spaziale', 'dummy', 'seasonality_sin', 'seasonality_cos', 'umidita']
+                for keyword in global_keywords:
                     for feature in all_other_features:
                         if keyword in feature.lower():
                             default_features_for_node.append(feature)
+
+                # Logica per feature specifiche (pioggia locale)
                 node_name_lower = node_name.lower()
-                for hydro_keyword, rain_keyword in specific_node_feature_map.items():
+                rain_map = {
+                    'serra dei conti': '1295', 'bettolelle': '2637',
+                    'pianello': '2858', 'corinaldo/nevola': '2964', 'ponte garibaldi': '2637'
+                }
+                for hydro_keyword, rain_sensor_code in rain_map.items():
                     if hydro_keyword in node_name_lower:
-                        rain_features = [f for f in all_other_features if rain_keyword in f and 'cumulata' in f.lower()]
+                        rain_features = [f for f in all_other_features if rain_sensor_code in f and 'cumulata' in f.lower()]
                         default_features_for_node.extend(rain_features)
+
                 default_features_for_node = sorted(list(set(default_features_for_node)))
+
                 short_name_match = re.search(r'\((.*?)\)', node_name)
                 short_name = short_name_match.group(1).strip() if short_name_match else node_name
-                selected_features_for_node = st.multiselect(f"Feature aggiuntive per Nodo {i} ({short_name}):", options=all_other_features, default=default_features_for_node, key=f"train_gnn_features_node_{i}")
+                selected_features_for_node = st.multiselect(
+                    f"Feature aggiuntive per Nodo {i} ({short_name}):",
+                    options=all_other_features,
+                    default=default_features_for_node,
+                    key=f"train_{train_model_type}_features_node_{i}"
+                )
                 node_feature_mapping[node_name] = selected_features_for_node
+
         st.caption("Definisci le connessioni del grafo. Ogni riga è `sorgente,destinazione,peso`.")
         node_mapping_help = {i: name for i, name in enumerate(node_order)}
         st.json(node_mapping_help, expanded=False)
-        edge_list_str = st.text_area("Lista Archi (formato: 'sorgente,destinazione,peso')", "0,1,15.5\n1,2,8.2\n2,3,12.0", key="train_gnn_edges", height=100)
-        selected_targets_gnn = st.multiselect("Target Output (Nodi da predire):", options=node_order, default=node_order[-1:] if node_order else [], key="train_gnn_target")
+
+        edge_list_str = st.text_area(
+            "Lista Archi (formato: 'sorgente,destinazione,peso')",
+            DEFAULT_GNN_EDGE_LIST_STR,
+            key=f"train_{train_model_type}_edges",
+            height=100
+        )
+
+        selected_targets_gnn = st.multiselect(
+            "Target Output (Nodi da predire):",
+            options=node_order,
+            default=default_target_for_ui,
+            key=f"train_{train_model_type}_target"
+        )
+
         edge_index, edge_weights = None, None
         try:
             s, t, w = [], [], []
@@ -4473,29 +4526,32 @@ elif page == 'Allenamento Modello':
             if s: edge_index, edge_weights = [s, t], w; st.success(f"Grafo definito con {len(node_order)} nodi e {len(s)} archi.")
         except Exception: st.error("Formato archi non valido.")
 
-        st.markdown(f"**2. Parametri Modello e Training**")
-        with st.expander("Impostazioni Allenamento GNN", expanded=True):
-            # ... (UI per parametri GNN invariata) ...
+        st.markdown(f"**2. Parametri Modello e Training ({train_model_type})**")
+        with st.expander(f"Impostazioni Allenamento {train_model_type}", expanded=True):
             c1, c2, c3 = st.columns(3)
             with c1:
-                iw_steps = st.number_input("Input Window (steps)", min_value=2, value=48, key="t_gnn_in")
-                ow_steps = st.number_input("Output Window (steps)", min_value=1, value=6, key="t_gnn_out")
-                hs = st.number_input("Hidden Dimension", min_value=8, value=64, key="t_gnn_hs")
+                iw_steps = st.number_input("Input Window (steps)", min_value=2, value=48, key=f"t_{train_model_type}_in")
+                ow_steps = st.number_input("Output Window (steps)", min_value=1, value=6, key=f"t_{train_model_type}_out")
+                hs = st.number_input("Hidden Dimension", min_value=8, value=64, key=f"t_{train_model_type}_hs")
             with c2:
-                nl = st.number_input("Numero Layers (GRU)", min_value=1, value=2, key="t_gnn_nl")
-                dr = st.slider("Dropout", 0.0, 0.7, 0.2, key="t_gnn_dr")
-                lr = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", key="t_gnn_lr")
-            with c3:
-                bs = st.select_slider("Batch Size", [8,16,32,64], 32, key="t_gnn_bs")
-                ep = st.number_input("Numero Epoche", min_value=1, value=50, key="t_gnn_ep")
+                # Parametri specifici per modello
+                if "AGCLSTM" in train_model_type:
+                    nl = st.number_input("Numero Layers (GRU)", min_value=1, value=2, key=f"t_{train_model_type}_nl")
+                else: # GNN Originale
+                    nl = st.number_input("Numero Layers", min_value=1, value=2, key=f"t_{train_model_type}_nl_orig")
 
-        if st.button("Avvia Addestramento GNN", type="primary", key="train_run_gnn"):
+                dr = st.slider("Dropout", 0.0, 0.7, 0.2, key=f"t_{train_model_type}_dr")
+                lr = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", key=f"t_{train_model_type}_lr")
+            with c3:
+                bs = st.select_slider("Batch Size", [8,16,32,64], 32, key=f"t_{train_model_type}_bs")
+                ep = st.number_input("Numero Epoche", min_value=1, value=50, key=f"t_{train_model_type}_ep")
+
+        if st.button(f"Avvia Addestramento {train_model_type}", type="primary", key=f"train_run_{train_model_type}"):
             if not all([save_name, node_order, selected_targets_gnn, edge_index, edge_weights]):
                 st.error("Completa tutti i campi per l'addestramento GNN.")
             else:
-                st.info(f"Avvio addestramento GNN per '{save_name}'...")
+                st.info(f"Avvio addestramento {train_model_type} per '{save_name}'...")
                 with st.spinner("Preparazione dati GNN..."):
-                    # <<< MODIFICA 6: Passaggio parametri e unpacking corretto
                     data_tuple = prepare_training_data_gnn(
                         df_current_csv.copy(), node_order, selected_targets_gnn, node_feature_mapping,
                         iw_steps, ow_steps,
@@ -4507,16 +4563,24 @@ elif page == 'Allenamento Modello':
                         X_scaled, y_scaled, sample_weights, sc_f, sc_t, num_features_detected = data_tuple
                     else:
                         X_scaled = None
-                
+
                 if X_scaled is not None:
                     num_q = len(quantiles_list) if training_mode == "Quantile Regression" else 1
-                    model = SpatioTemporalGNN(
-                        num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs, 
-                        num_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn), 
-                        num_quantiles=num_q, dropout=dr
-                    )
-                    
-                    # <<< MODIFICA 7: Passaggio parametri al trainer
+
+                    # Istanzia il modello corretto
+                    if "AGCLSTM" in train_model_type:
+                        model = SpatioTemporalAGCLSTM(
+                            num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs,
+                            rnn_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn),
+                            num_quantiles=num_q, dropout=dr
+                        )
+                    else:
+                        model = SpatioTemporalGNN(
+                            num_nodes=len(node_order), num_features=num_features_detected, hidden_dim=hs,
+                            num_layers=nl, output_window=ow_steps, output_dim=len(selected_targets_gnn),
+                            num_quantiles=num_q, dropout=dr
+                        )
+
                     trained_model, _, _ = train_model_gnn(
                         X_scaled, y_scaled, sample_weights, sc_t,
                         model, edge_index, edge_weights, ep, bs, lr,
@@ -4530,18 +4594,26 @@ elif page == 'Allenamento Modello':
                         target_threshold=target_threshold_scaled,
                         weight_exponent=weight_exponent
                     )
-                    
+
                     if trained_model:
-                        st.success("Addestramento GNN completato!")
+                        st.success(f"Addestramento {train_model_type} completato!")
+
+                        model_type_save = "AGCLSTM" if "AGCLSTM" in train_model_type else "SpatioTemporalGNN"
                         config = {
-                            "model_type": "SpatioTemporalGNN", "display_name": save_name, "node_order": node_order,
+                            "model_type": model_type_save, "display_name": save_name, "node_order": node_order,
                             "edge_index": edge_index, "edge_weights": edge_weights, "target_columns": selected_targets_gnn,
                             "input_window_steps": iw_steps, "output_window_steps": ow_steps, "hidden_dim": hs,
-                            "num_layers": nl, "dropout": dr, "training_mode": training_mode.split()[0].lower(),
+                            "dropout": dr, "training_mode": training_mode.split()[0].lower(),
                             "loss_function": loss_choice, "node_feature_mapping": node_feature_mapping,
                             "num_features": num_features_detected
                         }
+                        if "AGCLSTM" in train_model_type:
+                            config["rnn_layers"] = nl
+                        else:
+                            config["num_layers"] = nl
+
                         if config["training_mode"] == "quantile": config["quantiles"] = quantiles_list
+
                         base_path = os.path.join(MODELS_DIR, save_name)
                         torch.save(trained_model.state_dict(), f"{base_path}.pth")
                         joblib.dump(sc_f, f"{base_path}_features.joblib")
@@ -4551,62 +4623,7 @@ elif page == 'Allenamento Modello':
                         find_available_models.clear()
                 else:
                     st.error("Preparazione dati GNN fallita.")
-    elif train_model_type == "GNN Spazio-Temporale (AGCLSTM)":
-        st.markdown(f"**1. Definizione del Grafo e Selezione Feature ({train_model_type})**")
-        # ... (UI per GNN invariata) ...
-        all_level_sensors = [f for f in df_current_csv.columns if 'livello' in f.lower() or '[m]' in f.lower()]
-        node_order = st.multiselect("Nodi del Grafo (Idrometri - l'ordine è importante!):", options=all_level_sensors, default=all_level_sensors, key="train_gnn_nodes")
-        st.markdown("**Associa Feature Aggiuntive ai Nodi**")
-        all_other_features = [f for f in df_current_csv.columns if f not in all_level_sensors and f != date_col_name_csv]
-        node_feature_mapping = {}
-        if node_order:
-            global_feature_keywords = ['progressivo', 'dummy', 'seasonality_sin', 'seasonality_cos', 'umidita', 'soil moisture']
-            specific_node_feature_map = {'serra dei conti': '1295', 'bettolelle': '2637', 'pianello': '2858', 'corinaldo/nevola': '2964'}
-            for i, node_name in enumerate(node_order):
-                default_features_for_node = []
-                for keyword in global_feature_keywords:
-                    for feature in all_other_features:
-                        if keyword in feature.lower():
-                            default_features_for_node.append(feature)
-                node_name_lower = node_name.lower()
-                for hydro_keyword, rain_keyword in specific_node_feature_map.items():
-                    if hydro_keyword in node_name_lower:
-                        rain_features = [f for f in all_other_features if rain_keyword in f and 'cumulata' in f.lower()]
-                        default_features_for_node.extend(rain_features)
-                default_features_for_node = sorted(list(set(default_features_for_node)))
-                short_name_match = re.search(r'\((.*?)\)', node_name)
-                short_name = short_name_match.group(1).strip() if short_name_match else node_name
-                selected_features_for_node = st.multiselect(f"Feature aggiuntive per Nodo {i} ({short_name}):", options=all_other_features, default=default_features_for_node, key=f"train_gnn_features_node_{i}")
-                node_feature_mapping[node_name] = selected_features_for_node
-        st.caption("Definisci le connessioni del grafo. Ogni riga è `sorgente,destinazione,peso`.")
-        node_mapping_help = {i: name for i, name in enumerate(node_order)}
-        st.json(node_mapping_help, expanded=False)
-        edge_list_str = st.text_area("Lista Archi (formato: 'sorgente,destinazione,peso')", "0,1,15.5\n1,2,8.2\n2,3,12.0", key="train_gnn_edges", height=100)
-        selected_targets_gnn = st.multiselect("Target Output (Nodi da predire):", options=node_order, default=node_order[-1:] if node_order else [], key="train_gnn_target")
-        edge_index, edge_weights = None, None
-        try:
-            s, t, w = [], [], []
-            for line in edge_list_str.split('\n'):
-                if line.strip():
-                    parts = [p.strip() for p in line.split(',')]; s.append(int(parts[0])); t.append(int(parts[1])); w.append(float(parts[2]))
-            if s: edge_index, edge_weights = [s, t], w; st.success(f"Grafo definito con {len(node_order)} nodi e {len(s)} archi.")
-        except Exception: st.error("Formato archi non valido.")
-
-        st.markdown(f"**2. Parametri Modello e Training**")
-        with st.expander("Impostazioni Allenamento GNN", expanded=True):
-            # ... (UI per parametri GNN invariata) ...
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                iw_steps = st.number_input("Input Window (steps)", min_value=2, value=48, key="t_gnn_in")
-                ow_steps = st.number_input("Output Window (steps)", min_value=1, value=6, key="t_gnn_out")
-                hs = st.number_input("Hidden Dimension", min_value=8, value=64, key="t_gnn_hs")
-            with c2:
-                nl = st.number_input("Numero Layers (GRU)", min_value=1, value=2, key="t_gnn_nl")
-                dr = st.slider("Dropout", 0.0, 0.7, 0.2, key="t_gnn_dr")
-                lr = st.number_input("Learning Rate", min_value=1e-6, value=0.001, format="%.5f", key="t_gnn_lr")
-            with c3:
-                bs = st.select_slider("Batch Size", [8,16,32,64], 32, key="t_gnn_bs")
-                ep = st.number_input("Numero Epoche", min_value=1, value=50, key="t_gnn_ep")
+        # --- FINE BLOCCO GNN UNIFICATO ---
 
         if st.button("Avvia Addestramento GNN", type="primary", key="train_run_gnn"):
             if not all([save_name, node_order, selected_targets_gnn, edge_index, edge_weights]):
