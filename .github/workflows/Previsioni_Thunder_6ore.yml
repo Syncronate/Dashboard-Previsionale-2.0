@@ -78,13 +78,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           
-          # Installa da requirementsgit_2.txt se esiste
+          # ⚠️ MODIFICATO: Cerca requirementsgit_2.txt, poi requirementsgit.txt, poi requirements.txt
           if [ -f "requirementsgit_2.txt" ]; then
             echo "📥 Installazione da requirementsgit_2.txt..."
             pip install -r requirementsgit_2.txt
+          elif [ -f "requirementsgit.txt" ]; then
+            echo "📥 Installazione da requirementsgit.txt..."
+            pip install -r requirementsgit.txt
           elif [ -f "requirements.txt" ]; then
-            echo "📥 Installazione da requirements_2.txt..."
-            pip install -r requirements_2.txt
+            echo "📥 Installazione da requirements.txt..."
+            pip install -r requirements.txt
           else
             echo "⚠️  Nessun file requirements trovato. Installo dipendenze base..."
             pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
@@ -146,6 +149,14 @@ with open('config_bettolelle_final.yaml') as f:
             echo "   Valore: ID del tuo Google Sheet"
             exit 1
           fi
+          
+          echo -e "\n=== VERIFICA SCRIPT PREVISIONI ==="
+          if [ -f "predict_from_gsheets.py" ]; then
+            echo "✅ Script predict_from_gsheets.py trovato"
+          else
+            echo "❌ predict_from_gsheets.py non trovato!"
+            exit 1
+          fi
       
       # ========================================
       # 7. TEST IMPORT MODULI (OPZIONALE)
@@ -183,8 +194,8 @@ print('✅ Tutti i moduli importati correttamente')
           echo "🔮 AVVIO PREVISIONI - $(date +'%Y-%m-%d %H:%M:%S %Z')"
           echo "=========================================="
           
-          # Esegui lo script
-          python predict.py
+          # ✅ CORRETTO: Esegui predict_from_gsheets.py invece di predict.py
+          python predict_from_gsheets.py
           
           # Cattura exit code
           EXIT_CODE=$?
