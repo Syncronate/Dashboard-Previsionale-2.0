@@ -1,0 +1,364 @@
+# ==============================================================================
+# Configurazione Bettolelle - Run 3: Spatial Features + 3 Quantiles
+# Feature Engineering: ATTIVO (Rainfall Multi-scale 1h/3h/6h/12h)
+# Ottimizzazioni: Input window aumentata a 48 (24h) per catturare volume pioggia
+# NUOVO: Quantile Regression (P10, P50, P90) per intervalli predittivi
+# SPEED: Parallel data loading (num_workers=8, persistent_workers=True)
+# ==============================================================================
+
+# === PROGETTO ===
+project:
+  name: "Bettolelle TCN - Spatial Features + Quantile Regression"
+  description: "TCN + Upstream Velocities + Multi-scale Rainfall + Uncertainty Quantification"
+  target_node: "Bettolelle"
+  basin: "Nevola (affluente Misa)"
+  
+  flood_threshold_m: 2.00
+  attention_threshold_m: 1.70
+  regime_shift_date: "2023-12-31"
+  
+  # ✅ Info Run
+  run_version: "v3-quantile-multiscale"
+  expected_improvement: "Eliminazione ritardo (Lag) grazie a piogge 6h/12h"
+  key_changes:
+    - "Rainfall: Added 1h (trigger), 6h & 12h (volume) features"
+    - "Input window: Increased to 48 steps (24h) to capture rainfall history"
+    - "3 Quantiles: P10, P50, P90 (intervalli predittivi)"
+    - "Loss: Asymmetric Penalty (Weighted MSE + Quantile)"
+    - "Features: Upstream velocities + cumulative rainfalls"
+
+# === DATI ===
+data:
+  csv_path: "dati_idro_aggiornato14_10_25.csv"
+  
+  separator: ";"
+  decimal: ","
+  encoding: "utf-8"
+  
+  timestamp_column: "Data e Ora"
+  timestamp_format: "%d/%m/%Y %H:%M"
+  format: "wide"
+  
+  # ====================================================================
+  # FEATURE ENGINEERING TOGGLE
+  # ====================================================================
+  derived_features:
+    enable: true  # ✅ ATTIVO: Calcola derivate e processa colonne
+  
+  # ====================================================================
+  # ⚡ DATALOADER OPTIMIZATIONS - SPEED BOOST
+  # ====================================================================
+  num_workers: 8                    # ✅ Parallel data loading
+  persistent_workers: true          # ✅ Keep workers alive
+  pin_memory: true                  # ✅ Faster GPU transfer
+  prefetch_factor: 4                # ✅ Prefetch batches
+  
+  # ===================================================================
+  # MAPPING NODI → COLONNE (AGGIORNATO CON PIOGGE MULTI-SCALA)
+  # ===================================================================
+  node_columns:
+    # =================================================================
+    # BETTOLELLE (Nodo Target)
+    # =================================================================
+    Bettolelle:
+      livello: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)"
+      
+      # ✅ SPATIAL - Pioggia Locale (Multi-scala dal CSV)
+      # 1h = Trigger rapido | 3h-12h = Volume piena
+      pluvio_bett_1h: "Cumulata Sensore 2637 (Bettolelle)_cumulata_1h"
+      pluvio_bett_3h: "Cumulata Sensore 2637 (Bettolelle)_cumulata_3h"
+      pluvio_bett_6h: "Cumulata Sensore 2637 (Bettolelle)_cumulata_6h"
+      pluvio_bett_12h: "Cumulata Sensore 2637 (Bettolelle)_cumulata_12h"
+
+      # ✅ SPATIAL - Livelli a monte
+      livello_serra: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)"
+      livello_pianello: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)"
+      livello_corinaldo: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)"
+      
+      # ✅ SPATIAL - Velocità a monte (Anticipo Picco)
+      livello_serra_velocity: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)_velocity"
+      livello_pianello_velocity: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)_velocity"
+      livello_corinaldo_velocity: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)_velocity"
+      
+      # ✅ TEMPORAL - Derivate Locali
+      livello_velocity: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)_velocity"
+      livello_accel: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)_accel"
+      
+      # ✅ INTERACTIONS
+      pluvio_x_soil: "pluvio_x_soil_moisture"
+      pluvio_x_regime: "pluvio_x_regime_dummy"
+      livello_x_vel: "livello_x_velocity"
+    
+    # =================================================================
+    # SERRA DEI CONTI - Pluvio Arcevia (Sensore 1295)
+    # =================================================================
+    Serra_dei_Conti:
+      livello: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)"
+      
+      # Piogge Multi-scala
+      pluvio_cumul_1h: "Cumulata Sensore 1295 (Arcevia)_cumulata_1h"
+      pluvio_cumul_3h: "Cumulata Sensore 1295 (Arcevia)_cumulata_3h"
+      pluvio_cumul_6h: "Cumulata Sensore 1295 (Arcevia)_cumulata_6h"
+      pluvio_cumul_12h: "Cumulata Sensore 1295 (Arcevia)_cumulata_12h"
+      
+      # Derivate
+      livello_velocity: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)_velocity"
+      livello_accel: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)_accel"
+      pluvio_std: "Cumulata Sensore 1295 (Arcevia)_dev_std_3h"
+    
+    # =================================================================
+    # PIANELLO DI OSTRA - Pluvio Barbara (Sensore 2858)
+    # =================================================================
+    Pianello_di_Ostra:
+      livello: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)"
+      
+      # Piogge Multi-scala
+      pluvio_cumul_1h: "Cumulata Sensore 2858 (Barbara)_cumulata_1h"
+      pluvio_cumul_3h: "Cumulata Sensore 2858 (Barbara)_cumulata_3h"
+      pluvio_cumul_6h: "Cumulata Sensore 2858 (Barbara)_cumulata_6h"
+      pluvio_cumul_12h: "Cumulata Sensore 2858 (Barbara)_cumulata_12h"
+      
+      # Derivate
+      livello_velocity: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)_velocity"
+      livello_accel: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)_accel"
+      livello_serra: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)"
+    
+    # =================================================================
+    # CORINALDO - Pluvio Corinaldo (Sensore 2964)
+    # =================================================================
+    Corinaldo:
+      livello: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)"
+      
+      # Piogge Multi-scala
+      pluvio_cumul_1h: "Cumulata Sensore 2964 (Corinaldo)_cumulata_1h"
+      pluvio_cumul_3h: "Cumulata Sensore 2964 (Corinaldo)_cumulata_3h"
+      pluvio_cumul_6h: "Cumulata Sensore 2964 (Corinaldo)_cumulata_6h"
+      pluvio_cumul_12h: "Cumulata Sensore 2964 (Corinaldo)_cumulata_12h"
+      
+      # Derivate
+      livello_velocity: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)_velocity"
+      livello_accel: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)_accel"
+    
+    # =================================================================
+    # PONTE GARIBALDI - Downstream
+    # =================================================================
+    Ponte_Garibaldi:
+      livello: "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)"
+      livello_velocity: "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)_velocity"
+      livello_bettolelle: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)"
+      livello_bett_lag2: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)_lag2"
+  
+  # Globali (broadcast a tutti i nodi)
+  global_features:
+    - "soil_moisture_28_to_100cm (m³/m³)"
+    - "Seasonality_Sin"
+    - "Seasonality_Cos"
+    - "Variabile Dummy"
+  
+  target_node: "Bettolelle"
+  target_feature: "livello"
+  
+  # Finestre temporali
+  input_window: 48   # ✅ AUMENTATO A 24H (per vedere la pioggia 12h prima)
+  output_window: 12   # 3 ore
+  
+  # Event-based validation
+  validation_strategy: "event_based"
+  
+  validation_event:
+    name: "Piena 15 Dicembre 2024"
+    start_row: 86861   # Include già margini
+    end_row: 86933
+    description: "Evento piena POST-intervento (picco 3.71m alle 14:30)"
+    margin_before: 0   # Già inclusi in start/end
+    margin_after: 0
+  
+  exclude_corrupted_data:
+    enabled: false
+    start_row: 102410
+    end_row: null
+    reason: "Sedimento/erba (non usato)"
+  
+  # Preprocessing
+  normalize: true
+  normalization_method: "standard"
+  fill_missing: "forward"
+
+# === TRAINING ===
+training:
+  # ====================================================================
+  # OPTIMIZATION
+  # ====================================================================
+  batch_size: 32
+  max_epochs: 32
+  accumulate_grad_batches: 1
+  
+  # Optimizer
+  optimizer: "adamw"
+  learning_rate: 0.0005
+  weight_decay: 0.001           # ✅ Regolarizzazione L2
+  betas: [0.9, 0.999]
+  
+  # Scheduler
+  scheduler: "reduce_on_plateau"
+  scheduler_patience: 5
+  scheduler_factor: 0.5
+  scheduler_min_lr: 1.0e-6
+  
+  # ====================================================================
+  # WEIGHTED LOSS CONFIGURATION
+  # ====================================================================
+  loss_function: "weighted_mse"
+  
+  # Flood events weighting
+  flood_threshold: 2.00         # ✅ Soglia piene (m)
+  flood_weight: 4.0             # ✅ Penalità errori > 2m
+  
+  # Post-intervention weighting
+  regime_shift_date: "2023-12-31"  # ✅ Data cambio regime idraulico
+  post_2024_weight: 3.0         # ✅ Peso maggiore per dati recenti
+  
+  # Rising limb weighting
+  use_rising_limb_weighting: true   # ✅ Penalizza errori in fase di salita
+  rising_limb_weight: 2.0       # ✅ Peso fase crescente
+  rising_limb_slope_threshold: 0.05  # ✅ Soglia pendenza m/30min
+  
+  # ====================================================================
+  # REGULARIZATION
+  # ====================================================================
+  input_noise_std: 0.01         # ✅ Input augmentation per robustezza
+  label_smoothing: 0.0
+  
+  # ====================================================================
+  # EARLY STOPPING
+  # ====================================================================
+  early_stopping_enabled: true
+  early_stopping_monitor: "val_event_peak_error"
+  early_stopping_patience: 10
+  early_stopping_mode: "min"
+  early_stopping_min_delta: 0.01
+  
+  # ====================================================================
+  # VALIDATION
+  # ====================================================================
+  val_check_interval: 1.0      # Ogni epoca
+  limit_val_batches: 1.0       # 100% validation set
+
+# === MODELLO ===
+model:
+  temporal_encoder: "simple_tcn"  # o "tcn" o "lstm"
+  
+  hidden_dim: 256
+  rnn_layers: 3
+  dropout: 0.20
+  attention_heads: 8
+  
+  # Quantile Regression
+  num_quantiles: 3
+  quantile_levels: [0.1, 0.5, 0.9]
+
+  tcn:
+    num_blocks: 5
+    kernel_size: 3
+    use_temporal_attention: true
+    prediction_mode: "autoregressive"
+    teacher_forcing_ratio: 0.7
+    
+  scheduler_factor: 0.5
+
+# === GRAFO ===
+graph:
+  type: "custom"
+  directed: true
+  
+  nodes:
+    0: "Serra_dei_Conti"
+    1: "Pianello_di_Ostra"
+    2: "Corinaldo"
+    3: "Bettolelle"
+    4: "Ponte_Garibaldi"
+  
+  edge_list:
+    - [0, 1]  # Serra → Pianello (11.67km, 2h)
+    - [1, 3]  # Pianello → Bettolelle (5.22km, 1h)
+    - [2, 3]  # Corinaldo → Bettolelle (7.57km, 1.5h)
+    - [3, 4]  # Bettolelle → Garibaldi (7.05km, 1h)
+  
+  edge_attributes:
+    distances_km: [11.67, 5.22, 7.57, 7.05]
+    corrivation_times_h: [2.00, 1.00, 1.50, 1.00]
+    corrivation_timesteps: [4, 2, 3, 2]
+  
+  edge_weight_strategy: "time_based"
+  
+  coordinates:
+    0: [43.54778, 13.02806]   # Serra
+    1: [43.62444, 13.12694]   # Pianello
+    2: [43.63833, 13.07667]   # Corinaldo
+  
+  event_metrics:
+    - "peak_level_error"
+    - "time_to_peak_error"
+    - "rising_limb_mae"
+    - "falling_limb_mae"
+    - "pod"
+    - "far"
+    - "csi"
+
+# === GPU ===
+gpu:
+  use_gpu: true
+  precision: "16-mixed"        # ✅ Ottimizzazione velocità
+  gradient_clip: 1.0
+  torch_matmul_precision: "high"
+
+# === W&B ===
+wandb:
+  enabled: true
+  project: "bettolelle-flood-forecast"
+  name: "tcn-spatial-v3-quantile-multiscale"   # ✅ Nome aggiornato
+  
+  tags:
+    - "tcn"
+    - "autoregressive"
+    - "spatial_features"
+    - "multiscale_rainfall"    # ✅ Tag aggiornato
+    - "upstream_velocity"
+    - "robust"
+    - "quantile_regression"
+    - "parallel_loading"
+    - "v3"
+  
+  log_event_predictions: true
+  
+  notes: |
+    Run 3b - Spatial Features + Quantile Regression + Multi-scale Rainfall
+    
+    CHANGES:
+    - Mapped correct rainfall columns (1h, 3h, 6h, 12h) from CSV
+    - Increased input_window to 48 (24 hours) for better context
+    - Enabled feature engineering for derivatives
+    
+    TARGET:
+    - Eliminate LAG using 6h/12h rainfall volume
+    - Better peak timing
+    - Uncertainty quantification
+
+# === CHECKPOINT ===
+checkpoint:
+  save_dir: "checkpoints"
+  save_top_k: 3
+  monitor: "val_event_peak_error"
+  mode: "min"
+  save_last: true
+  
+  filename: "bettolelle-rain-{epoch:02d}-{val_event_peak_error:.3f}"
+
+# === ROUTING ===
+routing:
+  enabled: false
+  mode: "gnn_only"
+  warmup_gnn_epochs: 0
+
+# === SEED ===
+seed: 42
