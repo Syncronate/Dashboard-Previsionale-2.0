@@ -1,38 +1,89 @@
-name: Update Google Sheet
+name: Previsioni Bettolelle SimpleTCN
 
 on:
   schedule:
-    # - cron: '30 * * * *'  # Eseguito ai 30 minuti di ogni ora (Vecchio valore)
-    - cron: '*/30 * * * *' # Eseguito ogni 30 minuti (es. 00:00, 00:30, 01:00, 01:30, ecc.)
-  workflow_dispatch:     # Permette l'avvio manuale
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Debug mode'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 jobs:
-  update-sheet:
+  predict:
+    name: Genera Previsioni
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    env:
+      GSHEET_ID: ${{ secrets.GSHEET_ID }}
+      PYTHONUNBUFFERED: "1"
+    
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Set up Python 3.9
+        with:
+          lfs: true
+      
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-
-      - name: Install dependencies
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Verifica Files
+        run: |
+          echo "=== FILE PYTHON ==="
+          ls -lh *.py
+          echo ""
+          echo "=== CHECKPOINT ==="
+          ls -lh checkpoints/
+          echo ""
+          echo "=== CONFIG ==="
+          ls -lh *.yaml
+      
+      - name: Installa Dipendenze
         run: |
           python -m pip install --upgrade pip
-          # *** AGGIUNTO pytz ALLA LISTA DELLE DIPENDENZE ***
-          pip install requests gspread oauth2client google-auth urllib3 pytz
-
-      # Nuovo step: Crea il file credentials.json dal secret
-      # Assicurati che il nome del secret 'GCP_CREDENTIALS_JSON' sia corretto
-      # nelle impostazioni del tuo repository GitHub.
-      - name: Create credentials file
+          
+          if [ -f "requirementsgit_2.txt" ]; then
+            pip install -r requirementsgit_2.txt
+          elif [ -f "requirementsgit.txt" ]; then
+            pip install -r requirementsgit.txt
+          elif [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          else
+            echo "Installing base dependencies..."
+            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+            pip install pytorch-lightning==2.1.0
+            pip install pandas numpy pyyaml gspread google-auth scikit-learn
+          fi
+          
+          pip list | grep -E "torch|lightning|pandas|gspread"
+      
+      - name: Crea Credenziali
         run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
-        shell: bash # Assicura che echo funzioni come previsto
-
-      - name: Run weather data extraction script
-        # Assicurati che 'estrai_dati_meteo.py' sia nel percorso corretto
-        run: python estrai_dati_meteo.py
-        # Non è più necessario passare GCP_CREDENTIALS_JSON come env var
-        # perché lo script ora legge da 'credentials.json' creato nello step precedente.
+      
+      - name: Test Import
+        run: |
+          python -c "
+import sys
+sys.path.append('.')
+from models.lightning_wrapper import LitSpatioTemporalGNN
+from data.event_based_data_module import EventBasedDataModule
+print('✅ Import OK')
+          "
+      
+      - name: Esegui Previsioni
+        run: python predict_from_gsheets.py
+        env:
+          GSHEET_ID: ${{ secrets.GSHEET_ID }}
+      
+      - name: Cleanup
+        if: always()
+        run: rm -f credentials.json
