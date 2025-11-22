@@ -1,5 +1,6 @@
 """
-Script di predizione SimpleTCN - DEBUG VERSION
+Script di predizione SimpleTCN - Solo da Google Sheets
+Fix: Selezione esplicita delle 20 features corrette per il checkpoint
 """
 
 import os
@@ -160,35 +161,47 @@ def prepare_data(df_hist, df_fcst, config):
 def extract_features(df, config):
     feature_cols = get_feature_columns(config)
     
-    print("\n🔍 DEBUG FEATURES:")
-    print(f"   Totale features nel config: {len(feature_cols)}")
-    for i, f in enumerate(feature_cols):
-        print(f"   [{i+1}] {f}")
-
-    # --- TENTATIVO DI FILTRO ---
+    # --- FILTRO INTELLIGENTE PER LE 20 FEATURES DEL CHECKPOINT ---
+    # Il checkpoint usa: Livelli (5), Piogge 1h/3h (8), Velocità (5), Stagionalità (2)
+    
     filtered_cols = []
+    
     for col in feature_cols:
-        is_new = False
-        # Logica di filtro (da aggiustare in base all'output)
-        if "_cumulata_6h" in col and "Bettolelle" not in col: is_new = True
-        if "_cumulata_12h" in col and "Bettolelle" not in col: is_new = True
-        # if "_velocity" in col and "Bettolelle" not in col: is_new = True 
+        keep = False
         
-        if not is_new:
+        # 1. Livelli (ma non accel, lag, etc.)
+        if "Livello Idrometrico" in col and "_accel" not in col and "_lag" not in col and "_velocity" not in col:
+            keep = True
+            
+        # 2. Piogge 1h e 3h (ma non 6h, 12h, std, etc.)
+        if "_cumulata_1h" in col or "_cumulata_3h" in col:
+            keep = True
+            
+        # 3. Velocità
+        if "_velocity" in col and "livello_x_velocity" not in col:
+            keep = True
+            
+        # 4. Stagionalità
+        if "Seasonality" in col:
+            keep = True
+            
+        if keep:
             filtered_cols.append(col)
             
-    print(f"\n✂️  Features dopo filtro ({len(filtered_cols)}):")
-    for i, f in enumerate(filtered_cols):
-        print(f"   [{i+1}] {f}")
-        
-    # ---------------------------
+    # Verifica finale
+    if len(filtered_cols) != 20:
+        print(f"   ⚠️  Attenzione: Il filtro ha trovato {len(filtered_cols)} features invece di 20.")
+        print("       Uso fallback alfabetico (rischioso).")
+        filtered_cols = feature_cols[:20]
+    else:
+        print(f"   ✅ Selezionate le 20 features corrette per il checkpoint.")
     
     available_cols = [c for c in filtered_cols if c in df.columns]
     return df[available_cols].values, available_cols
 
 # ==================== MODELLO ====================
 def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, feature_names):
-    print("\n🧠 Caricamento modello (DEBUG MODE)...")
+    print("\n🧠 Caricamento modello...")
     config = load_config(config_path)
     
     scaler = StandardScaler()
@@ -196,7 +209,6 @@ def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, fea
     
     print(f"   🔧 Checkpoint: {checkpoint_path}")
     
-    # Inizializza con il numero di features FILTRATO
     model = LitSpatioTemporalGNN(
         num_nodes=5,  
         num_features=len(feature_names), 
@@ -212,7 +224,6 @@ def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, fea
     ckpt = torch.load(checkpoint_path, map_location=device)
     state_dict = ckpt['state_dict']
     
-    # Fix chiavi
     new_state_dict = {}
     for k, v in state_dict.items():
         if "edge_index" in k or "edge_weight" in k: continue
@@ -222,27 +233,25 @@ def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, fea
         
     try:
         model.load_state_dict(new_state_dict, strict=False)
-        print("   ✅ Pesi caricati!")
-    except RuntimeError as e:
-        print("\n❌ ERRORE CARICAMENTO PESI:")
-        print(e)
-        print("\n💡 ANALISI:")
-        print(f"   Il modello attuale ha {len(feature_names)} features.")
-        print(f"   Il checkpoint ne aspetta un numero diverso (vedi size mismatch).")
-        print("   Controlla l'elenco features sopra e dimmi quali rimuovere/aggiungere.")
+        print("   ✅ Pesi caricati con successo!")
+    except Exception as e:
+        print(f"   ❌ Errore caricamento pesi: {e}")
         sys.exit(1)
 
     model.eval()
     return model, scaler, config
 
 def predict(model, scaler, input_data, config):
+    print("\n🔮 Generazione previsioni...")
     input_normalized = scaler.transform(input_data)
     num_nodes = 5
     input_reshaped = np.stack([input_normalized] * num_nodes, axis=1)
     input_reshaped = input_reshaped[np.newaxis, :, :, :]
     input_tensor = torch.FloatTensor(input_reshaped)
+    
     with torch.no_grad():
         output = model(input_tensor)
+    
     target_node_idx = 3
     pred_bett = output[0, :, target_node_idx, 0, :]
     scaler_mean = scaler.mean_[0]
@@ -251,7 +260,7 @@ def predict(model, scaler, input_data, config):
     return pred_denorm
 
 def save_to_gsheet(gc, sheet_id, predictions, start_time, config):
-    print(f"\n💾 Salvataggio...")
+    print(f"\n💾 Salvataggio su '{SHEET_OUTPUT}'...")
     sh = gc.open_by_key(sheet_id)
     try: ws = sh.worksheet(SHEET_OUTPUT)
     except: ws = sh.add_worksheet(title=SHEET_OUTPUT, rows=100, cols=20)
@@ -265,11 +274,11 @@ def save_to_gsheet(gc, sheet_id, predictions, start_time, config):
         vals = [f"{v:.3f}".replace('.', ',') for v in predictions[i]]
         rows.append([ts_str] + vals)
     ws.update(rows, value_input_option='USER_ENTERED')
-    print(f"   ✅ Fatto")
+    print(f"   ✅ Salvate {len(rows)-1} previsioni")
 
 def main():
     print("=" * 70)
-    print(f"🚀 DEBUG PREVISIONI - {datetime.now(ITALY_TZ)}")
+    print(f"🚀 PREVISIONI BETTOLELLE - {datetime.now(ITALY_TZ)}")
     print("=" * 70)
     
     try:
@@ -280,7 +289,6 @@ def main():
         df_hist, df_fcst = fetch_gsheet_data(gc, sheet_id)
         df_hist, df_fcst, last_date = prepare_data(df_hist, df_fcst, config)
         
-        # ESTRAZIONE E DEBUG
         historical_features, feature_names = extract_features(df_hist, config)
         
         model, scaler, config = load_model_and_fit_scaler(
@@ -291,12 +299,19 @@ def main():
         )
         
         input_window = config['data']['input_window']
+        if len(historical_features) < input_window:
+            raise ValueError(f"Dati insufficienti: {len(historical_features)} < {input_window}")
+            
         input_data = historical_features[-input_window:]
         predictions = predict(model, scaler, input_data, config)
         save_to_gsheet(gc, sheet_id, predictions, last_date, config)
         
+        print("\n" + "=" * 70)
+        print("✨ ESECUZIONE COMPLETATA")
+        print("=" * 70)
+        
     except Exception as e:
-        print(f"\n❌ ERRORE GENERALE: {e}")
+        print(f"\n❌ ERRORE: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
