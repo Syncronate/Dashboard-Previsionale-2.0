@@ -1,6 +1,6 @@
 """
 Script di predizione SimpleTCN - Solo da Google Sheets
-Fix: Selezione esplicita delle 20 features corrette per il checkpoint
+Fix: Lista HARDCODED delle 20 features per garantire compatibilità col checkpoint
 """
 
 import os
@@ -131,17 +131,6 @@ def convert_to_numeric(df, exclude_cols):
         except: pass
     return df
 
-def get_feature_columns(config):
-    node_cols = config['data']['node_columns']
-    global_feats = config['data'].get('global_features', [])
-    all_cols = set()
-    for node_name, features in node_cols.items():
-        for feat_name, col_name in features.items():
-            all_cols.add(col_name)
-    for gf in global_feats:
-        all_cols.add(gf)
-    return sorted(list(all_cols))
-
 def prepare_data(df_hist, df_fcst, config):
     print("\n⚙️  Preprocessing dati...")
     df_hist = clean_column_names(df_hist)
@@ -159,45 +148,53 @@ def prepare_data(df_hist, df_fcst, config):
 
 # ==================== ESTRAZIONE FEATURES ====================
 def extract_features(df, config):
-    feature_cols = get_feature_columns(config)
-    
-    # --- FILTRO INTELLIGENTE PER LE 20 FEATURES DEL CHECKPOINT ---
-    # Il checkpoint usa: Livelli (5), Piogge 1h/3h (8), Velocità (5), Stagionalità (2)
-    
-    filtered_cols = []
-    
-    for col in feature_cols:
-        keep = False
+    # --- LISTA ESPLICITA DELLE 20 FEATURES ---
+    # Questa lista deve corrispondere esattamente a quella usata nel training del checkpoint
+    target_features = [
+        # 1. LIVELLI (5)
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)",
         
-        # 1. Livelli (ma non accel, lag, etc.)
-        if "Livello Idrometrico" in col and "_accel" not in col and "_lag" not in col and "_velocity" not in col:
-            keep = True
-            
-        # 2. Piogge 1h e 3h (ma non 6h, 12h, std, etc.)
-        if "_cumulata_1h" in col or "_cumulata_3h" in col:
-            keep = True
-            
-        # 3. Velocità
-        if "_velocity" in col and "livello_x_velocity" not in col:
-            keep = True
-            
-        # 4. Stagionalità
-        if "Seasonality" in col:
-            keep = True
-            
-        if keep:
-            filtered_cols.append(col)
-            
-    # Verifica finale
-    if len(filtered_cols) != 20:
-        print(f"   ⚠️  Attenzione: Il filtro ha trovato {len(filtered_cols)} features invece di 20.")
-        print("       Uso fallback alfabetico (rischioso).")
-        filtered_cols = feature_cols[:20]
-    else:
-        print(f"   ✅ Selezionate le 20 features corrette per il checkpoint.")
+        # 2. PIOGGE 1h (4)
+        "Cumulata Sensore 2637 (Bettolelle)_cumulata_1h",
+        "Cumulata Sensore 1295 (Arcevia)_cumulata_1h",
+        "Cumulata Sensore 2858 (Barbara)_cumulata_1h",
+        "Cumulata Sensore 2964 (Corinaldo)_cumulata_1h",
+        
+        # 3. PIOGGE 3h (4)
+        "Cumulata Sensore 2637 (Bettolelle)_cumulata_3h",
+        "Cumulata Sensore 1295 (Arcevia)_cumulata_3h",
+        "Cumulata Sensore 2858 (Barbara)_cumulata_3h",
+        "Cumulata Sensore 2964 (Corinaldo)_cumulata_3h",
+        
+        # 4. VELOCITÀ (5)
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)_velocity",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)_velocity",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)_velocity",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)_velocity",
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)_velocity",
+        
+        # 5. STAGIONALITÀ (2)
+        "Seasonality_Sin",
+        "Seasonality_Cos"
+    ]
     
-    available_cols = [c for c in filtered_cols if c in df.columns]
-    return df[available_cols].values, available_cols
+    # Ordiniamo per coerenza
+    target_features.sort()
+    
+    print(f"   🎯 Target features: {len(target_features)}")
+    
+    # Verifica presenza
+    missing = [c for c in target_features if c not in df.columns]
+    if missing:
+        print(f"   ⚠️  MANCANO {len(missing)} COLONNE NEL DATAFRAME:")
+        for m in missing: print(f"      - {m}")
+        raise ValueError("Colonne mancanti nel DataFrame. Impossibile procedere.")
+        
+    return df[target_features].values, target_features
 
 # ==================== MODELLO ====================
 def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, feature_names):
