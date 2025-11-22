@@ -112,7 +112,7 @@ class LitSpatioTemporalGNN(pl.LightningModule):
         print(f"   - Quantiles: {self.quantile_levels}")
         
         # ✅ USA gnn_model (non model!) per compatibilità checkpoint
-        self.model = SimpleTCN(
+        self.gnnmodel = SimpleTCN(
             num_nodes=num_nodes,
             num_features=num_features,
             output_window=output_window,
