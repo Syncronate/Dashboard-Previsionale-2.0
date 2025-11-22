@@ -122,7 +122,7 @@ class LitSpatioTemporalGNN(pl.LightningModule):
             tcn_blocks=tcn_config['tcn_blocks'],
             tcn_kernel_size=tcn_config['tcn_kernel_size'],
             attention_heads=attention_heads,
-            use_temporal_attention=False,
+            use_temporal_attention=True,
             prediction_mode=tcn_config.get('prediction_mode', 'direct'),
             teacher_forcing_ratio=tcn_config.get('teacher_forcing_ratio', 0.5),
             dropout=dropout
