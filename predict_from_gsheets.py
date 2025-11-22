@@ -1,6 +1,6 @@
 """
 Script di predizione SimpleTCN - Solo da Google Sheets
-Fix: gestione robusta colonne duplicate, conversione numerica e caricamento checkpoint
+Fix: gestione robusta colonne duplicate, conversione numerica, caricamento checkpoint e mismatch features
 """
 
 import os
@@ -206,11 +206,43 @@ def prepare_data(df_hist, df_fcst, config):
 
 # ==================== ESTRAZIONE FEATURES ====================
 def extract_features(df, config):
-    """Estrae feature array dal dataframe"""
+    """Estrae feature array dal dataframe con filtro per compatibilità checkpoint"""
     feature_cols = get_feature_columns(config)
     
-    available_cols = [c for c in feature_cols if c in df.columns]
-    missing_cols = set(feature_cols) - set(available_cols)
+    # --- FIX: FILTRO FEATURES PER COMPATIBILITÀ CHECKPOINT (20 features) ---
+    # Il config ne ha 26, il checkpoint ne aspetta 20.
+    # Rimuoviamo le features "nuove" (6h, 12h, upstream velocity)
+    
+    filtered_cols = []
+    excluded_cols = []
+    
+    for col in feature_cols:
+        is_new = False
+        # Criteri per identificare le nuove features
+        if "_cumulata_6h" in col: is_new = True
+        if "_cumulata_12h" in col: is_new = True
+        if "_velocity" in col and "Bettolelle" not in col: is_new = True # Velocity upstream
+        
+        if is_new:
+            excluded_cols.append(col)
+        else:
+            filtered_cols.append(col)
+            
+    # Se il filtro è troppo aggressivo o non basta, fallback ai primi 20
+    if len(filtered_cols) != 20:
+        print(f"   ⚠️  Attenzione: Filtro euristico ha prodotto {len(filtered_cols)} features.")
+        print(f"       Checkpoint ne richiede 20. Uso i primi 20 in ordine alfabetico.")
+        filtered_cols = feature_cols[:20]
+        
+    print(f"   ✂️  Features selezionate: {len(filtered_cols)} (Originali: {len(feature_cols)})")
+    if excluded_cols:
+        print(f"   🗑️  Escluse {len(excluded_cols)} features (nuove):")
+        for c in excluded_cols[:3]: print(f"      - {c}")
+    
+    # -----------------------------------------------------------------------
+    
+    available_cols = [c for c in filtered_cols if c in df.columns]
+    missing_cols = set(filtered_cols) - set(available_cols)
     
     if missing_cols:
         print(f"   ⚠️  Colonne mancanti: {len(missing_cols)}")
@@ -240,10 +272,9 @@ def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, fea
     print(f"   🔧 Caricamento checkpoint: {checkpoint_path}")
     
     # 1. Inizializza il modello
-    # Nota: num_nodes=5 è hardcoded come nel main originale, assicurati sia corretto
     model = LitSpatioTemporalGNN(
         num_nodes=5,  
-        num_features=len(feature_names),
+        num_features=len(feature_names), # Deve essere 20
         hidden_dim=config['model']['hidden_dim'],
         rnn_layers=config['model'].get('rnn_layers', 3),
         output_window=config['data']['output_window'],
@@ -261,12 +292,10 @@ def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, fea
     new_state_dict = {}
     for k, v in state_dict.items():
         # Rimuovi buffer del grafo se non necessari (edge_index, edge_weight)
-        # Questi causano errore se il modello è inizializzato senza grafo
         if "edge_index" in k or "edge_weight" in k:
             continue
             
         # Rinomina 'model.' -> 'gnn_model.' se necessario
-        # Il codice attuale usa self.gnn_model, ma il checkpoint potrebbe avere self.model
         if k.startswith("model."):
             new_key = k.replace("model.", "gnn_model.", 1)
         else:
@@ -281,7 +310,6 @@ def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, fea
     except Exception as e:
         print(f"   ⚠️  Warning nel caricamento pesi: {e}")
         print("   Tentativo caricamento standard...")
-        # Fallback
         model.load_state_dict(state_dict, strict=False)
 
     model.eval()
