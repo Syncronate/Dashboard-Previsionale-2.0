@@ -1,15 +1,15 @@
 """
-TCN con Temporal Attention per serie temporali
+TCN con Temporal Attention - VERSIONE TRAINING (no input_proj)
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class TCNWithAttention(nn.Module):
     """
-    Temporal Convolutional Network con Self-Attention opzionale.
+    TCN compatibile con checkpoint training.
+    NO input_proj - il primo blocco prende num_features direttamente.
     """
     
     def __init__(
@@ -29,8 +29,7 @@ class TCNWithAttention(nn.Module):
         self.num_blocks = num_blocks
         self.use_attention = use_attention
         
-        # Input projection
-        self.input_proj = nn.Linear(num_features, hidden_dim)
+        # ✅ NO input_proj (come nel checkpoint!)
         
         # TCN network
         self.tcn = nn.ModuleDict()
@@ -38,9 +37,14 @@ class TCNWithAttention(nn.Module):
         
         for i in range(num_blocks):
             dilation = 2 ** i
+            
+            # ✅ Primo blocco prende num_features, altri hidden_dim
+            in_channels = num_features if i == 0 else hidden_dim
+            
             self.tcn['network'].append(
                 TCNBlock(
-                    hidden_dim=hidden_dim,
+                    in_channels=in_channels,
+                    out_channels=hidden_dim,
                     kernel_size=kernel_size,
                     dilation=dilation,
                     dropout=dropout
@@ -57,7 +61,7 @@ class TCNWithAttention(nn.Module):
             )
             self.attn_norm = nn.LayerNorm(hidden_dim)
         
-        # Calcola receptive field
+        # Receptive field
         self.receptive_field = 1 + sum([2 ** i * (kernel_size - 1) for i in range(num_blocks)])
     
     def forward(self, x, return_attention_weights=False):
@@ -68,8 +72,7 @@ class TCNWithAttention(nn.Module):
         Returns:
             (batch, timesteps, hidden_dim)
         """
-        # Input projection
-        x = self.input_proj(x)
+        # ✅ NO input projection - passa direttamente ai TCN blocks
         
         # TCN blocks
         for block in self.tcn['network']:
@@ -89,23 +92,27 @@ class TCNWithAttention(nn.Module):
 
 
 class TCNBlock(nn.Module):
-    """Blocco TCN con causal dilated convolution"""
+    """Blocco TCN con dimensioni configurabili"""
     
-    def __init__(self, hidden_dim, kernel_size, dilation, dropout):
+    def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout):
         super().__init__()
         
-        padding = (kernel_size - 1) * dilation
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         
         # Convolutional layers
-        self.conv1 = CausalConv1d(hidden_dim, hidden_dim, kernel_size, dilation)
-        self.conv2 = CausalConv1d(hidden_dim, hidden_dim, kernel_size, dilation)
+        self.conv1 = CausalConv1d(in_channels, out_channels, kernel_size, dilation)
+        self.conv2 = CausalConv1d(out_channels, out_channels, kernel_size, dilation)
         
         # Batch normalization
-        self.bn1 = nn.BatchNorm1d(hidden_dim)
-        self.bn2 = nn.BatchNorm1d(hidden_dim)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.bn2 = nn.BatchNorm1d(out_channels)
         
-        # Residual connection
-        self.residual = nn.Identity()
+        # Residual connection (se dimensioni cambiano)
+        if in_channels != out_channels:
+            self.residual = nn.Linear(in_channels, out_channels)
+        else:
+            self.residual = nn.Identity()
         
         self.dropout = nn.Dropout(dropout)
         self.relu = nn.ReLU()
@@ -113,19 +120,19 @@ class TCNBlock(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: (batch, timesteps, hidden_dim)
+            x: (batch, timesteps, in_channels)
         """
         residual = x
         
-        # Conv1 - BatchNorm - ReLU
+        # Conv1
         out = self.conv1(x)
-        out = out.transpose(1, 2)  # (batch, timesteps, hidden) -> (batch, hidden, timesteps)
+        out = out.transpose(1, 2)
         out = self.bn1(out)
-        out = out.transpose(1, 2)  # Back to (batch, timesteps, hidden)
+        out = out.transpose(1, 2)
         out = self.relu(out)
         out = self.dropout(out)
         
-        # Conv2 - BatchNorm
+        # Conv2
         out = self.conv2(out)
         out = out.transpose(1, 2)
         out = self.bn2(out)
@@ -139,7 +146,7 @@ class TCNBlock(nn.Module):
 
 
 class CausalConv1d(nn.Module):
-    """Causal 1D Convolution (no future leakage)"""
+    """Causal 1D Convolution"""
     
     def __init__(self, in_channels, out_channels, kernel_size, dilation):
         super().__init__()
@@ -158,20 +165,14 @@ class CausalConv1d(nn.Module):
         """
         Args:
             x: (batch, timesteps, channels)
-        Returns:
-            (batch, timesteps, channels)
         """
-        # Conv1d expects (batch, channels, timesteps)
         x = x.transpose(1, 2)
         
-        # Convolution
         out = self.conv(x)
         
-        # Remove future (causal)
         if self.padding > 0:
             out = out[:, :, :-self.padding]
         
-        # Back to (batch, timesteps, channels)
         out = out.transpose(1, 2)
         
         return out
