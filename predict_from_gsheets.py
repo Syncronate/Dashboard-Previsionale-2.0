@@ -1,6 +1,6 @@
 """
 Script di predizione SimpleTCN - Solo da Google Sheets
-Fix: Lista HARDCODED delle 20 features per garantire compatibilità col checkpoint
+Fix: Mapping corretto Variazione_Livello -> Velocity
 """
 
 import os
@@ -99,6 +99,10 @@ def fetch_gsheet_data(gc, sheet_id):
 
 # ==================== PREPROCESSING ====================
 def clean_column_names(df):
+    # 1. Strip whitespace
+    df.columns = df.columns.str.strip()
+    
+    # 2. Rinomina standard
     rename_map = {}
     for col in df.columns:
         new_col = col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
@@ -108,6 +112,7 @@ def clean_column_names(df):
     if rename_map:
         df.rename(columns=rename_map, inplace=True)
     
+    # 3. Rimuovi duplicati
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated(keep='last')]
     
@@ -131,25 +136,70 @@ def convert_to_numeric(df, exclude_cols):
         except: pass
     return df
 
+# ==================== FEATURE ENGINEERING ====================
+def add_computed_features(df, date_col):
+    """Calcola features derivate (Velocity, Seasonality) se mancanti"""
+    print("   ⚙️  Calcolo/Mapping features derivate...")
+    
+    # 1. Seasonality
+    if 'Seasonality_Sin' not in df.columns:
+        day_year = df[date_col].dt.dayofyear
+        df['Seasonality_Sin'] = np.sin(2 * np.pi * day_year / 365.0)
+        df['Seasonality_Cos'] = np.cos(2 * np.pi * day_year / 365.0)
+        print("      + Seasonality (Sin/Cos)")
+        
+    # 2. Velocity (Mapping da Variazione_Livello o Calcolo)
+    # Mappa ID sensore -> Nome colonna livello completo
+    sensor_map = {
+        "1112": "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "1008": "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "3072": "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "1283": "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "3405": "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)"
+    }
+    
+    for sensor_id, level_col_name in sensor_map.items():
+        target_vel_col = f"{level_col_name}_velocity"
+        source_var_col = f"Variazione_Livello_{sensor_id}"
+        
+        # Caso A: Esiste la colonna Variazione_Livello (dal foglio)
+        if source_var_col in df.columns:
+            df[target_vel_col] = df[source_var_col]
+            # print(f"      + Mapped {source_var_col} -> {target_vel_col}")
+            
+        # Caso B: Non esiste, ma esiste il livello -> Calcola diff
+        elif level_col_name in df.columns and target_vel_col not in df.columns:
+            df[target_vel_col] = df[level_col_name].diff().fillna(0)
+            print(f"      + Computed Velocity: {target_vel_col}")
+            
+    return df
+
 def prepare_data(df_hist, df_fcst, config):
     print("\n⚙️  Preprocessing dati...")
     df_hist = clean_column_names(df_hist)
     df_fcst = clean_column_names(df_fcst)
     date_col = config['data']['timestamp_column']
     date_fmt = config['data']['timestamp_format']
+    
     df_hist = parse_dates(df_hist, date_col, date_fmt)
     df_fcst = parse_dates(df_fcst, date_col, date_fmt)
+    
     last_hist_date = df_hist[date_col].iloc[-1]
+    
     df_hist = convert_to_numeric(df_hist, [date_col])
     df_fcst = convert_to_numeric(df_fcst, [date_col])
+    
     numeric_cols = df_hist.select_dtypes(include=[np.number]).columns
     df_hist[numeric_cols] = df_hist[numeric_cols].ffill().fillna(0)
+    
+    # --- CALCOLO/MAPPING FEATURES ---
+    df_hist = add_computed_features(df_hist, date_col)
+    
     return df_hist, df_fcst, last_hist_date
 
 # ==================== ESTRAZIONE FEATURES ====================
 def extract_features(df, config):
     # --- LISTA ESPLICITA DELLE 20 FEATURES ---
-    # Questa lista deve corrispondere esattamente a quella usata nel training del checkpoint
     target_features = [
         # 1. LIVELLI (5)
         "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
@@ -182,16 +232,18 @@ def extract_features(df, config):
         "Seasonality_Cos"
     ]
     
-    # Ordiniamo per coerenza
     target_features.sort()
-    
-    print(f"   🎯 Target features: {len(target_features)}")
     
     # Verifica presenza
     missing = [c for c in target_features if c not in df.columns]
     if missing:
         print(f"   ⚠️  MANCANO {len(missing)} COLONNE NEL DATAFRAME:")
         for m in missing: print(f"      - {m}")
+        # Debug: stampa colonne simili
+        print("\n   🔍 Colonne disponibili simili:")
+        for col in df.columns:
+            if "Livello" in col or "Variazione" in col:
+                print(f"      - {col}")
         raise ValueError("Colonne mancanti nel DataFrame. Impossibile procedere.")
         
     return df[target_features].values, target_features
