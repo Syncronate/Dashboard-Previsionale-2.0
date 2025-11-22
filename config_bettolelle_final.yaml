@@ -1,364 +1,353 @@
-# ==============================================================================
-# Configurazione Bettolelle - Run 3: Spatial Features + 3 Quantiles
-# Feature Engineering: ATTIVO (Rainfall Multi-scale 1h/3h/6h/12h)
-# Ottimizzazioni: Input window aumentata a 48 (24h) per catturare volume pioggia
-# NUOVO: Quantile Regression (P10, P50, P90) per intervalli predittivi
-# SPEED: Parallel data loading (num_workers=8, persistent_workers=True)
-# ==============================================================================
+"""
+Script di predizione SimpleTCN - Solo da Google Sheets
+Fix: Calcolo automatico features mancanti (Velocity, Seasonality) + Lista 20 features
+"""
 
-# === PROGETTO ===
-project:
-  name: "Bettolelle TCN - Spatial Features + Quantile Regression"
-  description: "TCN + Upstream Velocities + Multi-scale Rainfall + Uncertainty Quantification"
-  target_node: "Bettolelle"
-  basin: "Nevola (affluente Misa)"
-  
-  flood_threshold_m: 2.00
-  attention_threshold_m: 1.70
-  regime_shift_date: "2023-12-31"
-  
-  # ✅ Info Run
-  run_version: "v3-quantile-multiscale"
-  expected_improvement: "Eliminazione ritardo (Lag) grazie a piogge 6h/12h"
-  key_changes:
-    - "Rainfall: Added 1h (trigger), 6h & 12h (volume) features"
-    - "Input window: Increased to 48 steps (24h) to capture rainfall history"
-    - "3 Quantiles: P10, P50, P90 (intervalli predittivi)"
-    - "Loss: Asymmetric Penalty (Weighted MSE + Quantile)"
-    - "Features: Upstream velocities + cumulative rainfalls"
+import os
+import sys
+import yaml
+import glob
+import torch
+import pandas as pd
+import numpy as np
+import gspread
+from google.oauth2.service_account import Credentials
+from datetime import datetime, timedelta
+import pytz
+import warnings
+from sklearn.preprocessing import StandardScaler
 
-# === DATI ===
-data:
-  csv_path: "dati_idro_aggiornato14_10_25.csv"
-  
-  separator: ";"
-  decimal: ","
-  encoding: "utf-8"
-  
-  timestamp_column: "Data e Ora"
-  timestamp_format: "%d/%m/%Y %H:%M"
-  format: "wide"
-  
-  # ====================================================================
-  # FEATURE ENGINEERING TOGGLE
-  # ====================================================================
-  derived_features:
-    enable: true  # ✅ ATTIVO: Calcola derivate e processa colonne
-  
-  # ====================================================================
-  # ⚡ DATALOADER OPTIMIZATIONS - SPEED BOOST
-  # ====================================================================
-  num_workers: 8                    # ✅ Parallel data loading
-  persistent_workers: true          # ✅ Keep workers alive
-  pin_memory: true                  # ✅ Faster GPU transfer
-  prefetch_factor: 4                # ✅ Prefetch batches
-  
-  # ===================================================================
-  # MAPPING NODI → COLONNE (AGGIORNATO CON PIOGGE MULTI-SCALA)
-  # ===================================================================
-  node_columns:
-    # =================================================================
-    # BETTOLELLE (Nodo Target)
-    # =================================================================
-    Bettolelle:
-      livello: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)"
-      
-      # ✅ SPATIAL - Pioggia Locale (Multi-scala dal CSV)
-      # 1h = Trigger rapido | 3h-12h = Volume piena
-      pluvio_bett_1h: "Cumulata Sensore 2637 (Bettolelle)_cumulata_1h"
-      pluvio_bett_3h: "Cumulata Sensore 2637 (Bettolelle)_cumulata_3h"
-      pluvio_bett_6h: "Cumulata Sensore 2637 (Bettolelle)_cumulata_6h"
-      pluvio_bett_12h: "Cumulata Sensore 2637 (Bettolelle)_cumulata_12h"
+sys.path.append(os.getcwd())
 
-      # ✅ SPATIAL - Livelli a monte
-      livello_serra: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)"
-      livello_pianello: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)"
-      livello_corinaldo: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)"
-      
-      # ✅ SPATIAL - Velocità a monte (Anticipo Picco)
-      livello_serra_velocity: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)_velocity"
-      livello_pianello_velocity: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)_velocity"
-      livello_corinaldo_velocity: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)_velocity"
-      
-      # ✅ TEMPORAL - Derivate Locali
-      livello_velocity: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)_velocity"
-      livello_accel: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)_accel"
-      
-      # ✅ INTERACTIONS
-      pluvio_x_soil: "pluvio_x_soil_moisture"
-      pluvio_x_regime: "pluvio_x_regime_dummy"
-      livello_x_vel: "livello_x_velocity"
+from models.lightning_wrapper import LitSpatioTemporalGNN
+
+warnings.filterwarnings("ignore")
+
+# ==================== CONFIGURAZIONE ====================
+CONFIG_PATH = "config_bettolelle_final.yaml"
+CREDENTIALS_PATH = "credentials.json"
+CHECKPOINT_DIR = "checkpoints"
+
+SHEET_HISTORICAL = "DATI METEO CON FEATURE"
+SHEET_FORECAST = "Previsioni Cumulate Feature ICON"
+SHEET_OUTPUT = "Previsioni Idro-Bettolelle 6h"
+
+ITALY_TZ = pytz.timezone('Europe/Rome')
+
+# ==================== UTILITY ====================
+def load_config(path):
+    with open(path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+def find_best_checkpoint(checkpoint_dir):
+    files = glob.glob(os.path.join(checkpoint_dir, "*.ckpt"))
+    if not files:
+        raise FileNotFoundError(f"❌ Nessun checkpoint in {checkpoint_dir}")
     
-    # =================================================================
-    # SERRA DEI CONTI - Pluvio Arcevia (Sensore 1295)
-    # =================================================================
-    Serra_dei_Conti:
-      livello: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)"
-      
-      # Piogge Multi-scala
-      pluvio_cumul_1h: "Cumulata Sensore 1295 (Arcevia)_cumulata_1h"
-      pluvio_cumul_3h: "Cumulata Sensore 1295 (Arcevia)_cumulata_3h"
-      pluvio_cumul_6h: "Cumulata Sensore 1295 (Arcevia)_cumulata_6h"
-      pluvio_cumul_12h: "Cumulata Sensore 1295 (Arcevia)_cumulata_12h"
-      
-      # Derivate
-      livello_velocity: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)_velocity"
-      livello_accel: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)_accel"
-      pluvio_std: "Cumulata Sensore 1295 (Arcevia)_dev_std_3h"
+    files = [f for f in files if "last" not in os.path.basename(f).lower()]
     
-    # =================================================================
-    # PIANELLO DI OSTRA - Pluvio Barbara (Sensore 2858)
-    # =================================================================
-    Pianello_di_Ostra:
-      livello: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)"
-      
-      # Piogge Multi-scala
-      pluvio_cumul_1h: "Cumulata Sensore 2858 (Barbara)_cumulata_1h"
-      pluvio_cumul_3h: "Cumulata Sensore 2858 (Barbara)_cumulata_3h"
-      pluvio_cumul_6h: "Cumulata Sensore 2858 (Barbara)_cumulata_6h"
-      pluvio_cumul_12h: "Cumulata Sensore 2858 (Barbara)_cumulata_12h"
-      
-      # Derivate
-      livello_velocity: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)_velocity"
-      livello_accel: "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)_accel"
-      livello_serra: "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)"
+    best_ckpt = None
+    best_error = float('inf')
     
-    # =================================================================
-    # CORINALDO - Pluvio Corinaldo (Sensore 2964)
-    # =================================================================
-    Corinaldo:
-      livello: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)"
-      
-      # Piogge Multi-scala
-      pluvio_cumul_1h: "Cumulata Sensore 2964 (Corinaldo)_cumulata_1h"
-      pluvio_cumul_3h: "Cumulata Sensore 2964 (Corinaldo)_cumulata_3h"
-      pluvio_cumul_6h: "Cumulata Sensore 2964 (Corinaldo)_cumulata_6h"
-      pluvio_cumul_12h: "Cumulata Sensore 2964 (Corinaldo)_cumulata_12h"
-      
-      # Derivate
-      livello_velocity: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)_velocity"
-      livello_accel: "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)_accel"
+    for f in files:
+        try:
+            parts = os.path.basename(f).split("val_event_peak_error=")
+            if len(parts) > 1:
+                error_str = parts[1].replace(".ckpt", "")
+                error = float(error_str)
+                
+                if error < best_error:
+                    best_error = error
+                    best_ckpt = f
+        except:
+            continue
     
-    # =================================================================
-    # PONTE GARIBALDI - Downstream
-    # =================================================================
-    Ponte_Garibaldi:
-      livello: "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)"
-      livello_velocity: "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)_velocity"
-      livello_bettolelle: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)"
-      livello_bett_lag2: "Livello Idrometrico Sensore 1112 [m] (Bettolelle)_lag2"
-  
-  # Globali (broadcast a tutti i nodi)
-  global_features:
-    - "soil_moisture_28_to_100cm (m³/m³)"
-    - "Seasonality_Sin"
-    - "Seasonality_Cos"
-    - "Variabile Dummy"
-  
-  target_node: "Bettolelle"
-  target_feature: "livello"
-  
-  # Finestre temporali
-  input_window: 48   # ✅ AUMENTATO A 24H (per vedere la pioggia 12h prima)
-  output_window: 12   # 3 ore
-  
-  # Event-based validation
-  validation_strategy: "event_based"
-  
-  validation_event:
-    name: "Piena 15 Dicembre 2024"
-    start_row: 86861   # Include già margini
-    end_row: 86933
-    description: "Evento piena POST-intervento (picco 3.71m alle 14:30)"
-    margin_before: 0   # Già inclusi in start/end
-    margin_after: 0
-  
-  exclude_corrupted_data:
-    enabled: false
-    start_row: 102410
-    end_row: null
-    reason: "Sedimento/erba (non usato)"
-  
-  # Preprocessing
-  normalize: true
-  normalization_method: "standard"
-  fill_missing: "forward"
-
-# === TRAINING ===
-training:
-  # ====================================================================
-  # OPTIMIZATION
-  # ====================================================================
-  batch_size: 32
-  max_epochs: 32
-  accumulate_grad_batches: 1
-  
-  # Optimizer
-  optimizer: "adamw"
-  learning_rate: 0.0005
-  weight_decay: 0.001           # ✅ Regolarizzazione L2
-  betas: [0.9, 0.999]
-  
-  # Scheduler
-  scheduler: "reduce_on_plateau"
-  scheduler_patience: 5
-  scheduler_factor: 0.5
-  scheduler_min_lr: 1.0e-6
-  
-  # ====================================================================
-  # WEIGHTED LOSS CONFIGURATION
-  # ====================================================================
-  loss_function: "weighted_mse"
-  
-  # Flood events weighting
-  flood_threshold: 2.00         # ✅ Soglia piene (m)
-  flood_weight: 4.0             # ✅ Penalità errori > 2m
-  
-  # Post-intervention weighting
-  regime_shift_date: "2023-12-31"  # ✅ Data cambio regime idraulico
-  post_2024_weight: 3.0         # ✅ Peso maggiore per dati recenti
-  
-  # Rising limb weighting
-  use_rising_limb_weighting: true   # ✅ Penalizza errori in fase di salita
-  rising_limb_weight: 2.0       # ✅ Peso fase crescente
-  rising_limb_slope_threshold: 0.05  # ✅ Soglia pendenza m/30min
-  
-  # ====================================================================
-  # REGULARIZATION
-  # ====================================================================
-  input_noise_std: 0.01         # ✅ Input augmentation per robustezza
-  label_smoothing: 0.0
-  
-  # ====================================================================
-  # EARLY STOPPING
-  # ====================================================================
-  early_stopping_enabled: true
-  early_stopping_monitor: "val_event_peak_error"
-  early_stopping_patience: 10
-  early_stopping_mode: "min"
-  early_stopping_min_delta: 0.01
-  
-  # ====================================================================
-  # VALIDATION
-  # ====================================================================
-  val_check_interval: 1.0      # Ogni epoca
-  limit_val_batches: 1.0       # 100% validation set
-
-# === MODELLO ===
-model:
-  temporal_encoder: "simple_tcn"  # o "tcn" o "lstm"
-  
-  hidden_dim: 256
-  rnn_layers: 3
-  dropout: 0.20
-  attention_heads: 8
-  
-  # Quantile Regression
-  num_quantiles: 3
-  quantile_levels: [0.1, 0.5, 0.9]
-
-  tcn:
-    num_blocks: 5
-    kernel_size: 3
-    use_temporal_attention: true
-    prediction_mode: "autoregressive"
-    teacher_forcing_ratio: 0.7
+    if best_ckpt is None:
+        best_ckpt = max(files, key=os.path.getmtime)
+        print("⚠️  Uso checkpoint più recente")
+    else:
+        print(f"🏆 Best checkpoint: {os.path.basename(best_ckpt)} (error={best_error:.3f})")
     
-  scheduler_factor: 0.5
+    return best_ckpt
 
-# === GRAFO ===
-graph:
-  type: "custom"
-  directed: true
-  
-  nodes:
-    0: "Serra_dei_Conti"
-    1: "Pianello_di_Ostra"
-    2: "Corinaldo"
-    3: "Bettolelle"
-    4: "Ponte_Garibaldi"
-  
-  edge_list:
-    - [0, 1]  # Serra → Pianello (11.67km, 2h)
-    - [1, 3]  # Pianello → Bettolelle (5.22km, 1h)
-    - [2, 3]  # Corinaldo → Bettolelle (7.57km, 1.5h)
-    - [3, 4]  # Bettolelle → Garibaldi (7.05km, 1h)
-  
-  edge_attributes:
-    distances_km: [11.67, 5.22, 7.57, 7.05]
-    corrivation_times_h: [2.00, 1.00, 1.50, 1.00]
-    corrivation_timesteps: [4, 2, 3, 2]
-  
-  edge_weight_strategy: "time_based"
-  
-  coordinates:
-    0: [43.54778, 13.02806]   # Serra
-    1: [43.62444, 13.12694]   # Pianello
-    2: [43.63833, 13.07667]   # Corinaldo
-  
-  event_metrics:
-    - "peak_level_error"
-    - "time_to_peak_error"
-    - "rising_limb_mae"
-    - "falling_limb_mae"
-    - "pod"
-    - "far"
-    - "csi"
-
-# === GPU ===
-gpu:
-  use_gpu: true
-  precision: "16-mixed"        # ✅ Ottimizzazione velocità
-  gradient_clip: 1.0
-  torch_matmul_precision: "high"
-
-# === W&B ===
-wandb:
-  enabled: true
-  project: "bettolelle-flood-forecast"
-  name: "tcn-spatial-v3-quantile-multiscale"   # ✅ Nome aggiornato
-  
-  tags:
-    - "tcn"
-    - "autoregressive"
-    - "spatial_features"
-    - "multiscale_rainfall"    # ✅ Tag aggiornato
-    - "upstream_velocity"
-    - "robust"
-    - "quantile_regression"
-    - "parallel_loading"
-    - "v3"
-  
-  log_event_predictions: true
-  
-  notes: |
-    Run 3b - Spatial Features + Quantile Regression + Multi-scale Rainfall
+# ==================== GOOGLE SHEETS ====================
+def connect_gsheets(credentials_path):
+    if not os.path.exists(credentials_path):
+        raise FileNotFoundError(f"❌ {credentials_path} non trovato")
     
-    CHANGES:
-    - Mapped correct rainfall columns (1h, 3h, 6h, 12h) from CSV
-    - Increased input_window to 48 (24 hours) for better context
-    - Enabled feature engineering for derivatives
+    scopes = [
+        'https://spreadsheets.google.com/feeds',
+        'https://www.googleapis.com/auth/drive'
+    ]
+    creds = Credentials.from_service_account_file(credentials_path, scopes=scopes)
+    return gspread.authorize(creds)
+
+def fetch_gsheet_data(gc, sheet_id):
+    print("\n☁️  Caricamento dati da Google Sheets...")
     
-    TARGET:
-    - Eliminate LAG using 6h/12h rainfall volume
-    - Better peak timing
-    - Uncertainty quantification
+    sh = gc.open_by_key(sheet_id)
+    
+    print(f"   📥 {SHEET_HISTORICAL}")
+    ws_hist = sh.worksheet(SHEET_HISTORICAL)
+    df_hist = pd.DataFrame(ws_hist.get_all_records())
+    
+    print(f"   📥 {SHEET_FORECAST}")
+    ws_fcst = sh.worksheet(SHEET_FORECAST)
+    df_fcst = pd.DataFrame(ws_fcst.get_all_records())
+    
+    return df_hist, df_fcst
 
-# === CHECKPOINT ===
-checkpoint:
-  save_dir: "checkpoints"
-  save_top_k: 3
-  monitor: "val_event_peak_error"
-  mode: "min"
-  save_last: true
-  
-  filename: "bettolelle-rain-{epoch:02d}-{val_event_peak_error:.3f}"
+# ==================== PREPROCESSING ====================
+def clean_column_names(df):
+    rename_map = {}
+    for col in df.columns:
+        new_col = col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
+        if new_col != col:
+            rename_map[col] = new_col
+    
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+    
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated(keep='last')]
+    
+    return df
 
-# === ROUTING ===
-routing:
-  enabled: false
-  mode: "gnn_only"
-  warmup_gnn_epochs: 0
+def parse_dates(df, date_col, date_fmt):
+    df[date_col] = pd.to_datetime(df[date_col], format=date_fmt, errors='coerce')
+    df = df.dropna(subset=[date_col])
+    return df.sort_values(date_col).reset_index(drop=True)
 
-# === SEED ===
-seed: 42
+def convert_to_numeric(df, exclude_cols):
+    for col in df.columns:
+        if col in exclude_cols: continue
+        try:
+            col_data = df[col]
+            if isinstance(col_data, pd.DataFrame): continue
+            if pd.api.types.is_numeric_dtype(col_data): continue
+            if col_data.dtype == object:
+                df[col] = col_data.astype(str).str.replace(',', '.', regex=False)
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        except: pass
+    return df
+
+# ==================== FEATURE ENGINEERING ====================
+def add_computed_features(df, date_col):
+    """Calcola features derivate (Velocity, Seasonality) se mancanti"""
+    print("   ⚙️  Calcolo features derivate...")
+    
+    # 1. Seasonality
+    if 'Seasonality_Sin' not in df.columns:
+        day_year = df[date_col].dt.dayofyear
+        df['Seasonality_Sin'] = np.sin(2 * np.pi * day_year / 365.0)
+        df['Seasonality_Cos'] = np.cos(2 * np.pi * day_year / 365.0)
+        print("      + Seasonality (Sin/Cos)")
+        
+    # 2. Velocity (Differenza rispetto a t-1)
+    # Colonne target per velocity
+    level_cols = [
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)"
+    ]
+    
+    for col in level_cols:
+        if col in df.columns:
+            vel_col = f"{col}_velocity"
+            if vel_col not in df.columns:
+                # Calcola differenza e riempi NaN iniziale con 0
+                df[vel_col] = df[col].diff().fillna(0)
+                print(f"      + Velocity: {vel_col}")
+    
+    return df
+
+def prepare_data(df_hist, df_fcst, config):
+    print("\n⚙️  Preprocessing dati...")
+    df_hist = clean_column_names(df_hist)
+    df_fcst = clean_column_names(df_fcst)
+    date_col = config['data']['timestamp_column']
+    date_fmt = config['data']['timestamp_format']
+    
+    df_hist = parse_dates(df_hist, date_col, date_fmt)
+    df_fcst = parse_dates(df_fcst, date_col, date_fmt)
+    
+    last_hist_date = df_hist[date_col].iloc[-1]
+    
+    df_hist = convert_to_numeric(df_hist, [date_col])
+    df_fcst = convert_to_numeric(df_fcst, [date_col])
+    
+    numeric_cols = df_hist.select_dtypes(include=[np.number]).columns
+    df_hist[numeric_cols] = df_hist[numeric_cols].ffill().fillna(0)
+    
+    # --- NUOVO: CALCOLO FEATURES MANCANTI ---
+    df_hist = add_computed_features(df_hist, date_col)
+    
+    return df_hist, df_fcst, last_hist_date
+
+# ==================== ESTRAZIONE FEATURES ====================
+def extract_features(df, config):
+    # --- LISTA ESPLICITA DELLE 20 FEATURES ---
+    target_features = [
+        # 1. LIVELLI (5)
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)",
+        
+        # 2. PIOGGE 1h (4)
+        "Cumulata Sensore 2637 (Bettolelle)_cumulata_1h",
+        "Cumulata Sensore 1295 (Arcevia)_cumulata_1h",
+        "Cumulata Sensore 2858 (Barbara)_cumulata_1h",
+        "Cumulata Sensore 2964 (Corinaldo)_cumulata_1h",
+        
+        # 3. PIOGGE 3h (4)
+        "Cumulata Sensore 2637 (Bettolelle)_cumulata_3h",
+        "Cumulata Sensore 1295 (Arcevia)_cumulata_3h",
+        "Cumulata Sensore 2858 (Barbara)_cumulata_3h",
+        "Cumulata Sensore 2964 (Corinaldo)_cumulata_3h",
+        
+        # 4. VELOCITÀ (5)
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)_velocity",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)_velocity",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)_velocity",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)_velocity",
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)_velocity",
+        
+        # 5. STAGIONALITÀ (2)
+        "Seasonality_Sin",
+        "Seasonality_Cos"
+    ]
+    
+    target_features.sort()
+    
+    # Verifica presenza
+    missing = [c for c in target_features if c not in df.columns]
+    if missing:
+        print(f"   ⚠️  MANCANO {len(missing)} COLONNE NEL DATAFRAME:")
+        for m in missing: print(f"      - {m}")
+        raise ValueError("Colonne mancanti nel DataFrame. Impossibile procedere.")
+        
+    return df[target_features].values, target_features
+
+# ==================== MODELLO ====================
+def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, feature_names):
+    print("\n🧠 Caricamento modello...")
+    config = load_config(config_path)
+    
+    scaler = StandardScaler()
+    scaler.fit(historical_data)
+    
+    print(f"   🔧 Checkpoint: {checkpoint_path}")
+    
+    model = LitSpatioTemporalGNN(
+        num_nodes=5,  
+        num_features=len(feature_names), 
+        hidden_dim=config['model']['hidden_dim'],
+        rnn_layers=config['model'].get('rnn_layers', 3),
+        output_window=config['data']['output_window'],
+        output_dim=1,
+        num_quantiles=config['model']['num_quantiles'],
+        config=config
+    )
+    
+    device = torch.device('cpu')
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    state_dict = ckpt['state_dict']
+    
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if "edge_index" in k or "edge_weight" in k: continue
+        if k.startswith("model."): new_key = k.replace("model.", "gnn_model.", 1)
+        else: new_key = k
+        new_state_dict[new_key] = v
+        
+    try:
+        model.load_state_dict(new_state_dict, strict=False)
+        print("   ✅ Pesi caricati con successo!")
+    except Exception as e:
+        print(f"   ❌ Errore caricamento pesi: {e}")
+        sys.exit(1)
+
+    model.eval()
+    return model, scaler, config
+
+def predict(model, scaler, input_data, config):
+    print("\n🔮 Generazione previsioni...")
+    input_normalized = scaler.transform(input_data)
+    num_nodes = 5
+    input_reshaped = np.stack([input_normalized] * num_nodes, axis=1)
+    input_reshaped = input_reshaped[np.newaxis, :, :, :]
+    input_tensor = torch.FloatTensor(input_reshaped)
+    
+    with torch.no_grad():
+        output = model(input_tensor)
+    
+    target_node_idx = 3
+    pred_bett = output[0, :, target_node_idx, 0, :]
+    scaler_mean = scaler.mean_[0]
+    scaler_scale = scaler.scale_[0]
+    pred_denorm = pred_bett.numpy() * scaler_scale + scaler_mean
+    return pred_denorm
+
+def save_to_gsheet(gc, sheet_id, predictions, start_time, config):
+    print(f"\n💾 Salvataggio su '{SHEET_OUTPUT}'...")
+    sh = gc.open_by_key(sheet_id)
+    try: ws = sh.worksheet(SHEET_OUTPUT)
+    except: ws = sh.add_worksheet(title=SHEET_OUTPUT, rows=100, cols=20)
+    ws.clear()
+    quantiles = config['model']['quantile_levels']
+    header = ["Data e Ora"] + [f"Q{int(q*100)}" for q in quantiles]
+    rows = [header]
+    for i in range(len(predictions)):
+        ts = start_time + timedelta(minutes=30 * (i + 1))
+        ts_str = ts.strftime("%d/%m/%Y %H:%M")
+        vals = [f"{v:.3f}".replace('.', ',') for v in predictions[i]]
+        rows.append([ts_str] + vals)
+    ws.update(rows, value_input_option='USER_ENTERED')
+    print(f"   ✅ Salvate {len(rows)-1} previsioni")
+
+def main():
+    print("=" * 70)
+    print(f"🚀 PREVISIONI BETTOLELLE - {datetime.now(ITALY_TZ)}")
+    print("=" * 70)
+    
+    try:
+        config = load_config(CONFIG_PATH)
+        ckpt_path = find_best_checkpoint(CHECKPOINT_DIR)
+        sheet_id = os.environ.get("GSHEET_ID")
+        gc = connect_gsheets(CREDENTIALS_PATH)
+        df_hist, df_fcst = fetch_gsheet_data(gc, sheet_id)
+        df_hist, df_fcst, last_date = prepare_data(df_hist, df_fcst, config)
+        
+        historical_features, feature_names = extract_features(df_hist, config)
+        
+        model, scaler, config = load_model_and_fit_scaler(
+            CONFIG_PATH, 
+            ckpt_path, 
+            historical_features,
+            feature_names
+        )
+        
+        input_window = config['data']['input_window']
+        if len(historical_features) < input_window:
+            raise ValueError(f"Dati insufficienti: {len(historical_features)} < {input_window}")
+            
+        input_data = historical_features[-input_window:]
+        predictions = predict(model, scaler, input_data, config)
+        save_to_gsheet(gc, sheet_id, predictions, last_date, config)
+        
+        print("\n" + "=" * 70)
+        print("✨ ESECUZIONE COMPLETATA")
+        print("=" * 70)
+        
+    except Exception as e:
+        print(f"\n❌ ERRORE: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
