@@ -211,7 +211,7 @@ def extract_features(df, config):
     
     # --- FIX: FILTRO FEATURES PER COMPATIBILITÀ CHECKPOINT (20 features) ---
     # Il config ne ha 26, il checkpoint ne aspetta 20.
-    # Rimuoviamo le features "nuove" (6h, 12h, upstream velocity)
+    # Rimuoviamo le features "nuove" (6h, 12h) MA teniamo quelle di Bettolelle
     
     filtered_cols = []
     excluded_cols = []
@@ -219,9 +219,16 @@ def extract_features(df, config):
     for col in feature_cols:
         is_new = False
         # Criteri per identificare le nuove features
-        if "_cumulata_6h" in col: is_new = True
-        if "_cumulata_12h" in col: is_new = True
-        if "_velocity" in col and "Bettolelle" not in col: is_new = True # Velocity upstream
+        # Rimuovi 6h/12h SOLO SE NON sono di Bettolelle
+        if "_cumulata_6h" in col and "Bettolelle" not in col: is_new = True
+        if "_cumulata_12h" in col and "Bettolelle" not in col: is_new = True
+        
+        # Rimuovi velocità upstream (se non sono di Bettolelle - ma queste sono mappate su Bettolelle?)
+        # Le velocità upstream sono "Livello ... (Serra)_velocity". NON contengono Bettolelle.
+        # Se il checkpoint le aveva, non dobbiamo rimuoverle.
+        # Se il checkpoint aveva 20 features, e noi ne abbiamo 26.
+        # Rimuovendo 6h/12h upstream (3 nodi * 2 = 6 features) arriviamo a 20.
+        # Questo sembra il calcolo corretto!
         
         if is_new:
             excluded_cols.append(col)
