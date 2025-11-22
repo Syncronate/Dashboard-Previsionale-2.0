@@ -1,10 +1,6 @@
 """
 Simple TCN Model for Spatio-Temporal Forecasting.
-Flattens spatial dimension (nodes) into features.
-Supports:
-- Temporal Attention
-- Autoregressive Prediction (with Teacher Forcing)
-- Quantile Output
+VERSIONE CON DEFAULT per backward compatibility
 """
 
 import torch
@@ -15,20 +11,24 @@ from .temporal_convolution import TCNWithAttention
 class SimpleTCN(nn.Module):
     """
     Simplified TCN model that treats all nodes as a single feature vector.
-    
-    Input: (batch, timesteps, num_nodes, num_features)
-    Internal: Flattens to (batch, timesteps, num_nodes * num_features)
-    Output: (batch, output_window, num_nodes, output_dim, num_quantiles)
     """
     
-    def __init__(self, num_nodes, num_features, hidden_dim, 
-                 output_window, output_dim=1, num_quantiles=1,
+    def __init__(self, 
+                 # ✅ AGGIUNTI DEFAULT
+                 num_nodes=5, 
+                 num_features=20, 
+                 hidden_dim=256, 
+                 output_window=12, 
+                 output_dim=1, 
+                 num_quantiles=1,
                  # TCN params
-                 tcn_blocks=5, tcn_kernel_size=3,
+                 tcn_blocks=5, 
+                 tcn_kernel_size=3,
                  # Attention params
-                 attention_heads=4, use_temporal_attention=True,
+                 attention_heads=4, 
+                 use_temporal_attention=True,
                  # Prediction mode
-                 prediction_mode='direct',  # 'direct' or 'autoregressive'
+                 prediction_mode='direct',
                  teacher_forcing_ratio=0.5,
                  # Regularization
                  dropout=0.1,
@@ -74,10 +74,8 @@ class SimpleTCN(nn.Module):
         # ====================================================================
         
         if prediction_mode == 'direct':
-            # Predict ALL output steps at once
             output_size = output_window * num_nodes * output_dim * num_quantiles
-        else:  # autoregressive
-            # Predict ONE step at a time
+        else:
             output_size = num_nodes * output_dim * num_quantiles
         
         self.output_net = nn.Sequential(
@@ -90,7 +88,6 @@ class SimpleTCN(nn.Module):
             nn.Linear(hidden_dim // 2, output_size)
         )
         
-        # For autoregressive: project prediction back to feature space
         if prediction_mode == 'autoregressive':
             self.pred_to_features = nn.Linear(output_dim, num_features)
 
@@ -98,9 +95,7 @@ class SimpleTCN(nn.Module):
         """
         Args:
             x: (batch, timesteps, num_nodes, num_features)
-            target: (batch, output_window, num_nodes, output_dim) - for teacher forcing
         """
-        # Flatten nodes into features: (batch, timesteps, num_nodes * num_features)
         batch_size, timesteps, num_nodes, num_features = x.shape
         x_flat = x.reshape(batch_size, timesteps, num_nodes * num_features)
         
@@ -117,13 +112,9 @@ class SimpleTCN(nn.Module):
             h = self.temporal_encoder(x_flat)
             attn_weights = None
             
-        # Take last timestep embedding
-        emb = h[:, -1, :]  # (batch, hidden_dim)
-        
-        # Predict
+        emb = h[:, -1, :]
         out = self.output_net(emb)
         
-        # Reshape to (batch, output_window, num_nodes, output_dim, num_quantiles)
         predictions = out.reshape(
             batch_size, 
             self.output_window, 
@@ -143,14 +134,11 @@ class SimpleTCN(nn.Module):
         current_input = x_flat.clone()
         
         for step in range(self.output_window):
-            # Encoder
             h = self.temporal_encoder(current_input)
             emb = h[:, -1, :]
             
-            # Predict next step
             out_flat = self.output_net(emb)
             
-            # Reshape: (batch, num_nodes, output_dim, num_quantiles)
             step_pred = out_flat.reshape(
                 batch_size, 
                 self.num_nodes, 
@@ -160,14 +148,10 @@ class SimpleTCN(nn.Module):
             
             predictions.append(step_pred)
             
-            # Prepare next input
             median_idx = self.num_quantiles // 2
-            next_pred = step_pred[..., median_idx] # (batch, num_nodes, output_dim)
-            
-            # Clipping
+            next_pred = step_pred[..., median_idx]
             next_pred = torch.clamp(next_pred, min=self.pred_min, max=self.pred_max)
             
-            # Teacher Forcing
             if self.training and target is not None:
                 use_target = random.random() < self.teacher_forcing_ratio
                 if use_target and step < target.shape[1]:
@@ -179,18 +163,15 @@ class SimpleTCN(nn.Module):
             else:
                 next_input_vals = next_pred
             
-            # Project to feature space
             next_input_vals_reshaped = next_input_vals.reshape(-1, self.output_dim)
             next_features_reshaped = self.pred_to_features(next_input_vals_reshaped)
             next_features = next_features_reshaped.reshape(batch_size, self.num_nodes * self.num_features)
             
-            # Update input sequence
             current_input = torch.cat([
-                current_input[:, 1:, :],  # Remove oldest
-                next_features.unsqueeze(1) # Add newest
+                current_input[:, 1:, :],
+                next_features.unsqueeze(1)
             ], dim=1)
             
-        # Stack predictions
         predictions = torch.stack(predictions, dim=1)
         
         if return_attention:
