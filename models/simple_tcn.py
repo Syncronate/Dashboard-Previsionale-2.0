@@ -1,212 +1,190 @@
 """
-Simple TCN Model for Spatio-Temporal Forecasting.
-Flattens spatial dimension (nodes) into features.
-Supports:
-- Temporal Attention
-- Autoregressive Prediction (with Teacher Forcing)
-- Quantile Output
+SimpleTCN per Bettolelle - Compatibile con checkpoint esistenti
 """
 
 import torch
 import torch.nn as nn
-import random
-from .temporal_convolution import TCNWithAttention
+import torch.nn.functional as F
+
 
 class SimpleTCN(nn.Module):
     """
-    Simplified TCN model that treats all nodes as a single feature vector.
-    
-    Input: (batch, timesteps, num_nodes, num_features)
-    Internal: Flattens to (batch, timesteps, num_nodes * num_features)
-    Output: (batch, output_window, num_nodes, output_dim, num_quantiles)
+    TCN con default allineati al config Bettolelle.
+    Tutti i parametri opzionali per backward compatibility.
     """
     
-    def __init__(self, num_nodes, num_features, hidden_dim, 
-                 output_window, output_dim=1, num_quantiles=1,
-                 # TCN params
-                 tcn_blocks=5, tcn_kernel_size=3,
-                 # Attention params
-                 attention_heads=4, use_temporal_attention=True,
-                 # Prediction mode
-                 prediction_mode='direct',  # 'direct' or 'autoregressive'
-                 teacher_forcing_ratio=0.5,
-                 # Regularization
-                 dropout=0.1,
-                 # Bounds
-                 pred_min=-5.0,
-                 pred_max=10.0,
-                 **kwargs):
+    def __init__(
+        self,
+        # ✅ DEFAULT DAL TUO CONFIG
+        num_nodes: int = 5,              # graph.nodes (5 nodi)
+        num_features: int = 20,          # Calcolato dalle feature effettive
+        output_window: int = 12,         # data.output_window (6h = 12 step)
+        hidden_dim: int = 256,           # model.hidden_dim
+        output_dim: int = 1,             # Predici solo livello
+        num_quantiles: int = 3,          # model.num_quantiles [0.1, 0.5, 0.9]
+        num_blocks: int = 5,             # model.tcn.num_blocks
+        kernel_size: int = 3,            # model.tcn.kernel_size
+        dropout: float = 0.2,            # model.dropout
+        use_temporal_attention: bool = True,  # model.tcn.use_temporal_attention
+        # Parametri deprecati
+        input_dim: int = None,
+        tcn_blocks: int = None,          # ✅ AGGIUNTO per il tuo checkpoint
+        attention_heads: int = None,     # ✅ AGGIUNTO (non usato in SimpleTCN)
+        asymmetric_loss: bool = None,   # ✅ AGGIUNTO (gestito dal wrapper)
+        **kwargs  # Ignora altri parametri dal checkpoint
+    ):
         super().__init__()
         
+        # ✅ Gestisci nomi alternativi
+        if input_dim is not None:
+            num_features = input_dim
+        
+        if tcn_blocks is not None:
+            num_blocks = tcn_blocks
+        
+        # Salva parametri
         self.num_nodes = num_nodes
         self.num_features = num_features
-        self.hidden_dim = hidden_dim
         self.output_window = output_window
+        self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.num_quantiles = num_quantiles
+        self.num_blocks = num_blocks
+        self.use_attention = use_temporal_attention
         
-        self.prediction_mode = prediction_mode
-        self.teacher_forcing_ratio = teacher_forcing_ratio
-        self.pred_min = pred_min
-        self.pred_max = pred_max
+        # Input projection
+        self.input_proj = nn.Linear(num_features, hidden_dim)
         
-        # Flattened input dimension
-        self.input_dim = num_nodes * num_features
+        # TCN blocks
+        self.tcn_blocks = nn.ModuleList()
+        for i in range(num_blocks):
+            dilation = 2 ** i
+            self.tcn_blocks.append(
+                TCNBlock(
+                    channels=hidden_dim,
+                    kernel_size=kernel_size,
+                    dilation=dilation,
+                    dropout=dropout
+                )
+            )
         
-        # ====================================================================
-        # TEMPORAL ENCODER: TCN + Attention
-        # ====================================================================
+        # Temporal attention (opzionale)
+        if use_temporal_attention:
+            self.temporal_attention = TemporalAttention(hidden_dim)
         
-        self.temporal_encoder = TCNWithAttention(
-            num_features=self.input_dim,
-            hidden_dim=hidden_dim,
-            num_blocks=tcn_blocks,
-            kernel_size=tcn_kernel_size,
-            num_heads=attention_heads,
-            dropout=dropout,
-            use_attention=use_temporal_attention
+        # Output projection
+        self.output_proj = nn.Linear(
+            hidden_dim, 
+            output_window * output_dim * num_quantiles
         )
         
-        print(f"   SimpleTCN Receptive Field: {self.temporal_encoder.receptive_field} timestep")
-        
-        # ====================================================================
-        # OUTPUT NETWORK
-        # ====================================================================
-        
-        if prediction_mode == 'direct':
-            # Predict ALL output steps at once
-            # Output size: output_window * num_nodes * output_dim * num_quantiles
-            output_size = output_window * num_nodes * output_dim * num_quantiles
-        else:  # autoregressive
-            # Predict ONE step at a time
-            # Output size: num_nodes * output_dim * num_quantiles
-            output_size = num_nodes * output_dim * num_quantiles
-        
-        self.output_net = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, output_size)
-        )
-        
-        # For autoregressive: project prediction back to feature space
-        if prediction_mode == 'autoregressive':
-            # We need to map (num_nodes * output_dim) back to (num_nodes * num_features)
-            # We'll do this per-node to keep it simple and scalable
-            self.pred_to_features = nn.Linear(output_dim, num_features)
-
-    def forward(self, x, target=None, return_attention=False, **kwargs):
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         """
         Args:
-            x: (batch, timesteps, num_nodes, num_features)
-            target: (batch, output_window, num_nodes, output_dim) - for teacher forcing
+            x: [batch, input_timesteps, nodes, features]
+        
+        Returns:
+            [batch, output_window, nodes, output_dim, num_quantiles]
         """
-        # Flatten nodes into features: (batch, timesteps, num_nodes * num_features)
-        batch_size, timesteps, num_nodes, num_features = x.shape
-        x_flat = x.reshape(batch_size, timesteps, num_nodes * num_features)
+        batch_size, input_seq_len, num_nodes, features = x.shape
         
-        if self.prediction_mode == 'direct':
-            return self._forward_direct(x_flat, batch_size, return_attention)
-        else:
-            return self._forward_autoregressive(x_flat, target, batch_size, return_attention)
-
-    def _forward_direct(self, x_flat, batch_size, return_attention):
+        # Flatten nodes
+        x = x.permute(0, 2, 1, 3).contiguous()
+        x = x.view(batch_size * num_nodes, input_seq_len, features)
         
-        if return_attention:
-            h, attn_weights = self.temporal_encoder(x_flat, return_attention_weights=True)
-        else:
-            h = self.temporal_encoder(x_flat)
-            attn_weights = None
-            
-        # Take last timestep embedding
-        emb = h[:, -1, :]  # (batch, hidden_dim)
+        # Input projection
+        x = self.input_proj(x)
+        x = self.dropout(x)
         
-        # Predict
-        out = self.output_net(emb)
+        # TCN blocks
+        for block in self.tcn_blocks:
+            x = block(x)
         
-        # Reshape to (batch, output_window, num_nodes, output_dim, num_quantiles)
-        predictions = out.reshape(
-            batch_size, 
-            self.output_window, 
-            self.num_nodes, 
-            self.output_dim, 
+        # Temporal attention
+        if self.use_attention:
+            x = self.temporal_attention(x)
+        
+        # Usa ultimo timestep
+        last_hidden = x[:, -1, :]
+        
+        # Output projection
+        out = self.output_proj(last_hidden)
+        
+        # Reshape
+        out = out.view(
+            batch_size,
+            num_nodes,
+            self.output_window,
+            self.output_dim,
             self.num_quantiles
         )
         
-        if return_attention:
-            return predictions, {'temporal_attention': attn_weights}
-        else:
-            return predictions
+        # Permuta
+        out = out.permute(0, 2, 1, 3, 4).contiguous()
+        
+        return out
 
-    def _forward_autoregressive(self, x_flat, target, batch_size, return_attention):
-        
-        predictions = []
-        current_input = x_flat.clone()
-        
-        for step in range(self.output_window):
-            # Encoder
-            h = self.temporal_encoder(current_input)
-            emb = h[:, -1, :]
-            
-            # Predict next step
-            # Out: (batch, num_nodes * output_dim * num_quantiles)
-            out_flat = self.output_net(emb)
-            
-            # Reshape: (batch, num_nodes, output_dim, num_quantiles)
-            step_pred = out_flat.reshape(
-                batch_size, 
-                self.num_nodes, 
-                self.output_dim, 
-                self.num_quantiles
-            )
-            
-            predictions.append(step_pred)
-            
-            # Prepare next input
-            # Extract median prediction
-            median_idx = self.num_quantiles // 2
-            next_pred = step_pred[..., median_idx] # (batch, num_nodes, output_dim)
-            
-            # Clipping
-            next_pred = torch.clamp(next_pred, min=self.pred_min, max=self.pred_max)
-            
-            # Teacher Forcing
-            if self.training and target is not None:
-                use_target = random.random() < self.teacher_forcing_ratio
-                if use_target and step < target.shape[1]:
-                    next_input_vals = target[:, step, :, :]
-                    if next_input_vals.dim() == 4:
-                        next_input_vals = next_input_vals.squeeze(-1)
-                else:
-                    next_input_vals = next_pred
-            else:
-                next_input_vals = next_pred
-            
-            # Project to feature space
-            # next_input_vals: (batch, num_nodes, output_dim)
-            # We need: (batch, num_nodes * num_features)
-            
-            # Reshape to process per-node
-            next_input_vals_reshaped = next_input_vals.reshape(-1, self.output_dim)
-            next_features_reshaped = self.pred_to_features(next_input_vals_reshaped)
-            next_features = next_features_reshaped.reshape(batch_size, self.num_nodes * self.num_features)
-            
-            # Update input sequence
-            current_input = torch.cat([
-                current_input[:, 1:, :],  # Remove oldest
-                next_features.unsqueeze(1) # Add newest
-            ], dim=1)
-            
-        # Stack predictions
-        predictions = torch.stack(predictions, dim=1)
-        
-        if return_attention:
-            return predictions, {}
-        else:
-            return predictions
 
-    def set_teacher_forcing_ratio(self, ratio):
-        self.teacher_forcing_ratio = max(0.0, min(1.0, ratio))
+class TCNBlock(nn.Module):
+    """Blocco TCN con causal convolution"""
+    
+    def __init__(self, channels: int, kernel_size: int, dilation: int, dropout: float = 0.2):
+        super().__init__()
+        
+        self.padding = (kernel_size - 1) * dilation
+        
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=self.padding, dilation=dilation)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=self.padding, dilation=dilation)
+        
+        self.norm1 = nn.LayerNorm(channels)
+        self.norm2 = nn.LayerNorm(channels)
+        
+        self.dropout = nn.Dropout(dropout)
+        self.activation = nn.ReLU()
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        
+        x = x.transpose(1, 2)
+        out = self.conv1(x)
+        if self.padding > 0:
+            out = out[:, :, :-self.padding]
+        
+        out = out.transpose(1, 2)
+        out = self.norm1(out)
+        out = self.activation(out)
+        out = self.dropout(out)
+        
+        out = out.transpose(1, 2)
+        out = self.conv2(out)
+        if self.padding > 0:
+            out = out[:, :, :-self.padding]
+        out = out.transpose(1, 2)
+        out = self.norm2(out)
+        
+        out = out + residual
+        out = self.activation(out)
+        
+        return out
+
+
+class TemporalAttention(nn.Module):
+    """Self-attention temporale"""
+    
+    def __init__(self, hidden_dim: int, num_heads: int = 4):
+        super().__init__()
+        
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=0.1,
+            batch_first=True
+        )
+        
+        self.norm = nn.LayerNorm(hidden_dim)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        attn_out, _ = self.attention(x, x, x)
+        return self.norm(x + attn_out)
