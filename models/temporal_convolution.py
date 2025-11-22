@@ -1,6 +1,5 @@
 """
-TCN - VERSIONE ESATTA DAL CHECKPOINT TRAINING
-NO attention, residual come Conv1d
+TCN con Temporal Attention - STRUTTURA CORRETTA
 """
 
 import torch
@@ -9,8 +8,9 @@ import torch.nn as nn
 
 class TCNWithAttention(nn.Module):
     """
-    TCN compatibile con checkpoint.
-    use_attention è ignorato - il checkpoint NON ha attention!
+    TCN con optional temporal attention.
+    Struttura che match il checkpoint:
+    self.temporal_attention.attention.*
     """
     
     def __init__(
@@ -19,17 +19,16 @@ class TCNWithAttention(nn.Module):
         hidden_dim: int,
         num_blocks: int = 5,
         kernel_size: int = 3,
-        num_heads: int = 4,  # Ignorato
+        num_heads: int = 4,
         dropout: float = 0.1,
-        use_attention: bool = True  # Ignorato - checkpoint NON ha attention
+        use_attention: bool = True
     ):
         super().__init__()
         
         self.num_features = num_features
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
-        # ✅ Forza use_attention=False (checkpoint non ha questi layer!)
-        self.use_attention = False
+        self.use_attention = use_attention
         
         # TCN network
         self.tcn = nn.ModuleDict()
@@ -37,9 +36,6 @@ class TCNWithAttention(nn.Module):
         
         for i in range(num_blocks):
             dilation = 2 ** i
-            
-            # Primo blocco: num_features -> hidden_dim
-            # Altri: hidden_dim -> hidden_dim
             in_channels = num_features if i == 0 else hidden_dim
             
             self.tcn['network'].append(
@@ -52,7 +48,13 @@ class TCNWithAttention(nn.Module):
                 )
             )
         
-        # ✅ NO attention (checkpoint non l'ha!)
+        # ✅ Temporal attention con struttura corretta
+        if use_attention:
+            self.temporal_attention = TemporalAttention(
+                hidden_dim=hidden_dim,
+                num_heads=num_heads,
+                dropout=dropout
+            )
         
         # Receptive field
         self.receptive_field = 1 + sum([2 ** i * (kernel_size - 1) for i in range(num_blocks)])
@@ -61,7 +63,6 @@ class TCNWithAttention(nn.Module):
         """
         Args:
             x: (batch, timesteps, num_features)
-        
         Returns:
             (batch, timesteps, hidden_dim)
         """
@@ -69,16 +70,61 @@ class TCNWithAttention(nn.Module):
         for block in self.tcn['network']:
             x = block(x)
         
-        # ✅ NO attention
+        # Temporal attention
+        if self.use_attention:
+            if return_attention_weights:
+                x, attn_weights = self.temporal_attention(x, return_weights=True)
+                return x, attn_weights
+            else:
+                x = self.temporal_attention(x)
         
-        if return_attention_weights:
-            return x, None
+        return x
+
+
+class TemporalAttention(nn.Module):
+    """
+    Temporal Attention wrapper.
+    Struttura che match checkpoint:
+    self.attention = MultiheadAttention
+    self.norm = LayerNorm
+    """
+    
+    def __init__(self, hidden_dim: int, num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        
+        # ✅ Nomi esatti come nel checkpoint
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        self.norm = nn.LayerNorm(hidden_dim)
+    
+    def forward(self, x, return_weights=False):
+        """
+        Args:
+            x: (batch, timesteps, hidden_dim)
+        Returns:
+            (batch, timesteps, hidden_dim)
+        """
+        # Self-attention
+        if return_weights:
+            attn_out, attn_weights = self.attention(x, x, x)
+            out = self.norm(x + attn_out)
+            return out, attn_weights
         else:
-            return x
+            attn_out, _ = self.attention(x, x, x)
+            out = self.norm(x + attn_out)
+            return out
 
 
 class TCNBlock(nn.Module):
-    """Blocco TCN ESATTO dal checkpoint"""
+    """Blocco TCN con causal convolution"""
     
     def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout):
         super().__init__()
@@ -94,8 +140,7 @@ class TCNBlock(nn.Module):
         self.bn1 = nn.BatchNorm1d(out_channels)
         self.bn2 = nn.BatchNorm1d(out_channels)
         
-        # ✅ Residual come Conv1d (NON Linear!)
-        # Checkpoint: [out_channels, in_channels, 1]
+        # Residual (Conv1d per match checkpoint)
         if in_channels != out_channels:
             self.residual = nn.Conv1d(in_channels, out_channels, kernel_size=1)
         else:
@@ -109,14 +154,13 @@ class TCNBlock(nn.Module):
         Args:
             x: (batch, timesteps, in_channels)
         """
-        # Salva per residual
         residual_input = x
         
         # Conv1
         out = self.conv1(x)
-        out = out.transpose(1, 2)  # (batch, timesteps, channels) -> (batch, channels, timesteps)
+        out = out.transpose(1, 2)
         out = self.bn1(out)
-        out = out.transpose(1, 2)  # Back
+        out = out.transpose(1, 2)
         out = self.relu(out)
         out = self.dropout(out)
         
@@ -126,12 +170,8 @@ class TCNBlock(nn.Module):
         out = self.bn2(out)
         out = out.transpose(1, 2)
         
-        # ✅ Residual (anche questo va attraverso Conv1d se dimensioni cambiano)
-        # residual_input: (batch, timesteps, in_channels)
-        # Dobbiamo passarlo attraverso self.residual che è Conv1d
-        
+        # Residual
         if isinstance(self.residual, nn.Conv1d):
-            # Conv1d expects (batch, channels, timesteps)
             res = residual_input.transpose(1, 2)
             res = self.residual(res)
             res = res.transpose(1, 2)
@@ -167,16 +207,11 @@ class CausalConv1d(nn.Module):
         Returns:
             (batch, timesteps, channels)
         """
-        # Conv1d expects (batch, channels, timesteps)
         x = x.transpose(1, 2)
-        
         out = self.conv(x)
         
-        # Remove future
         if self.padding > 0:
             out = out[:, :, :-self.padding]
         
-        # Back to (batch, timesteps, channels)
         out = out.transpose(1, 2)
-        
         return out
