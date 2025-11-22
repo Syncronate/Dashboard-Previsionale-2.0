@@ -1,6 +1,6 @@
 """
 Lightning wrapper SEMPLIFICATO - Solo SimpleTCN
-Rimuove dipendenze da LSTM, GNN complessi, routing, torch_geometric
+Compatible con checkpoint training
 """
 
 import pytorch_lightning as pl
@@ -21,9 +21,9 @@ class LitSpatioTemporalGNN(pl.LightningModule):
     
     def __init__(self, 
                  # Parametri modello
-                 num_nodes, num_features, hidden_dim, rnn_layers,
-                 output_window, output_dim, num_quantiles=1, dropout=0.2,
-                 attention_heads=1,
+                 num_nodes=None, num_features=None, hidden_dim=None, rnn_layers=None,
+                 output_window=None, output_dim=None, num_quantiles=1, dropout=0.2,
+                 attention_heads=None,
                  # Encoder temporale (ignorato, sempre SimpleTCN)
                  temporal_encoder='simple_tcn',
                  tcn_blocks=5,
@@ -73,6 +73,8 @@ class LitSpatioTemporalGNN(pl.LightningModule):
                 'tcn_blocks': tcn_cfg.get('num_blocks', tcn_blocks),
                 'tcn_kernel_size': tcn_cfg.get('kernel_size', tcn_kernel_size),
                 'use_temporal_attention': tcn_cfg.get('use_temporal_attention', use_temporal_attention),
+                'prediction_mode': tcn_cfg.get('prediction_mode', 'direct'),
+                'teacher_forcing_ratio': tcn_cfg.get('teacher_forcing_ratio', 0.5)
             })
         
         # ✅ QUANTILE LEVELS
@@ -87,25 +89,43 @@ class LitSpatioTemporalGNN(pl.LightningModule):
         self.register_buffer('quantiles', torch.tensor(self.quantile_levels, dtype=torch.float32))
         
         # ====================================================================
-        # CREA MODELLO SimpleTCN
+        # FALLBACK VALUES (se parametri sono None dal checkpoint)
         # ====================================================================
         
-        print(f"\n🧠 Modello: SimpleTCN (lightweight, no dependencies)")
+        num_nodes = num_nodes if num_nodes is not None else 5
+        num_features = num_features if num_features is not None else 20
+        output_window = output_window if output_window is not None else 12
+        hidden_dim = hidden_dim if hidden_dim is not None else 256
+        output_dim = output_dim if output_dim is not None else 1
+        attention_heads = attention_heads if attention_heads is not None else 8
+        dropout = dropout if dropout is not None else 0.2
+        
+        # ====================================================================
+        # CREA MODELLO SimpleTCN (con gnn_model per compatibilità checkpoint!)
+        # ====================================================================
+        
+        print(f"\n🧠 Modello: SimpleTCN")
         print(f"   - Nodes: {num_nodes}")
         print(f"   - Features: {num_features}")
         print(f"   - Hidden dim: {hidden_dim}")
-        print(f"   - TCN blocks: {tcn_config['tcn_blocks']}")
+        print(f"   - Output window: {output_window}")
         print(f"   - Quantiles: {self.quantile_levels}")
         
-        self.model = SimpleTCN(
-            input_dim=num_features,
+        # ✅ USA gnn_model (non model!) per compatibilità checkpoint
+        self.gnn_model = SimpleTCN(
+            num_nodes=num_nodes,
+            num_features=num_features,
+            output_window=output_window,
             hidden_dim=hidden_dim,
             output_dim=output_dim,
             num_quantiles=num_quantiles,
-            num_blocks=tcn_config['tcn_blocks'],
-            kernel_size=tcn_config['tcn_kernel_size'],
-            dropout=dropout,
-            use_temporal_attention=tcn_config['use_temporal_attention']
+            tcn_blocks=tcn_config['tcn_blocks'],
+            tcn_kernel_size=tcn_config['tcn_kernel_size'],
+            attention_heads=attention_heads,
+            use_temporal_attention=tcn_config['use_temporal_attention'],
+            prediction_mode=tcn_config.get('prediction_mode', 'direct'),
+            teacher_forcing_ratio=tcn_config.get('teacher_forcing_ratio', 0.5),
+            dropout=dropout
         )
         
         # ====================================================================
@@ -118,7 +138,7 @@ class LitSpatioTemporalGNN(pl.LightningModule):
         self.output_dim = output_dim
         
         # Converti regime shift date
-        self.regime_shift_ts = pd.to_datetime(self.hparams.regime_shift_date).timestamp()
+        self.regime_shift_ts = pd.to_datetime(regime_shift_date).timestamp()
 
         # Accumula predizioni validation
         self.val_predictions = []
@@ -162,25 +182,19 @@ class LitSpatioTemporalGNN(pl.LightningModule):
         
         Args:
             x: [batch, timesteps, num_nodes, num_features]
+            target: [batch, output_window, num_nodes, output_dim] (opzionale)
         Returns:
             [batch, output_window, num_nodes, output_dim, num_quantiles]
         """
-        batch_size, seq_len, num_nodes, features = x.shape
-        
-        # SimpleTCN forward
-        out = self.model(x)  # [batch, seq_len, nodes, output_dim, num_quantiles]
-        
-        # Prendi ultimi output_window timestep
-        out = out[:, -self.output_window:, :, :, :]
-        
-        return out
+        # ✅ USA gnn_model e passa target per teacher forcing
+        return self.gnn_model(x, target=target)
         
     def training_step(self, batch, batch_idx):
         """Training step con weighted loss."""
         x, y, ts = batch
         
-        # Forward
-        predictions = self(x)
+        # Forward (passa y per teacher forcing se autoregressive)
+        predictions = self(x, target=y)
         
         # ====================================================================
         # LOSS
@@ -300,7 +314,8 @@ class LitSpatioTemporalGNN(pl.LightningModule):
         """Validation step."""
         x, y, ts = batch
         
-        predictions = self(x)
+        # No teacher forcing in validation
+        predictions = self(x, target=None)
         
         # Estrai mediana
         if self.hparams.num_quantiles > 1:
