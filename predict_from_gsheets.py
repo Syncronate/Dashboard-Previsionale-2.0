@@ -1,6 +1,6 @@
 """
 Script di predizione SimpleTCN - Solo da Google Sheets
-SENZA dipendenza dal CSV di training
+Fix: gestione robusta colonne duplicate e conversione numerica
 """
 
 import os
@@ -101,6 +101,7 @@ def fetch_gsheet_data(gc, sheet_id):
 
 # ==================== PREPROCESSING ====================
 def clean_column_names(df):
+    """Rimuove prefissi ridondanti e gestisce duplicati"""
     rename_map = {}
     for col in df.columns:
         new_col = col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
@@ -111,9 +112,16 @@ def clean_column_names(df):
         df.rename(columns=rename_map, inplace=True)
         print(f"   🔄 Rinominate {len(rename_map)} colonne")
     
+    # ✅ RIMUOVI DUPLICATI
+    if df.columns.duplicated().any():
+        num_duplicates = df.columns.duplicated().sum()
+        print(f"   ⚠️  Rimosse {num_duplicates} colonne duplicate")
+        df = df.loc[:, ~df.columns.duplicated(keep='last')]
+    
     return df
 
 def parse_dates(df, date_col, date_fmt):
+    """Parse date con gestione errori"""
     df[date_col] = pd.to_datetime(df[date_col], format=date_fmt, errors='coerce')
     
     before = len(df)
@@ -126,15 +134,31 @@ def parse_dates(df, date_col, date_fmt):
     return df.sort_values(date_col).reset_index(drop=True)
 
 def convert_to_numeric(df, exclude_cols):
+    """Converte colonne a numerico con gestione errori robusta"""
     for col in df.columns:
         if col in exclude_cols:
             continue
         
-        if df[col].dtype == object:
-            try:
-                df[col] = df[col].astype(str).str.replace(',', '.').astype(float)
-            except:
-                pass
+        try:
+            col_data = df[col]
+            
+            # Se è un DataFrame (colonne duplicate), skippa
+            if isinstance(col_data, pd.DataFrame):
+                print(f"   ⚠️  Colonna duplicata ignorata: {col}")
+                continue
+            
+            # Se già numerico, skippa
+            if pd.api.types.is_numeric_dtype(col_data):
+                continue
+            
+            # Se object/string, converti
+            if col_data.dtype == object:
+                df[col] = col_data.astype(str).str.replace(',', '.', regex=False)
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+        except Exception as e:
+            print(f"   ⚠️  Errore conversione '{col}': {e}")
+            continue
     
     return df
 
@@ -155,6 +179,7 @@ def get_feature_columns(config):
     return sorted(list(all_cols))
 
 def prepare_data(df_hist, df_fcst, config):
+    """Prepara dati con gestione robusta"""
     print("\n⚙️  Preprocessing dati...")
     
     df_hist = clean_column_names(df_hist)
@@ -175,6 +200,8 @@ def prepare_data(df_hist, df_fcst, config):
     numeric_cols = df_hist.select_dtypes(include=[np.number]).columns
     df_hist[numeric_cols] = df_hist[numeric_cols].ffill().fillna(0)
     
+    print(f"   ✅ Dati preprocessati: {len(df_hist)} righe")
+    
     return df_hist, df_fcst, last_hist_date
 
 # ==================== ESTRAZIONE FEATURES ====================
@@ -187,6 +214,9 @@ def extract_features(df, config):
     
     if missing_cols:
         print(f"   ⚠️  Colonne mancanti: {len(missing_cols)}")
+        if len(missing_cols) <= 5:
+            for mc in list(missing_cols)[:5]:
+                print(f"      - {mc}")
     
     print(f"   📊 Feature estratte: {len(available_cols)} colonne")
     
@@ -194,9 +224,7 @@ def extract_features(df, config):
 
 # ==================== MODELLO ====================
 def load_model_and_fit_scaler(config_path, checkpoint_path, historical_data, feature_names):
-    """
-    Carica modello e crea scaler fittato sui dati storici di GSheets.
-    """
+    """Carica modello e fitta scaler"""
     print("\n🧠 Caricamento modello...")
     
     config = load_config(config_path)
@@ -231,7 +259,6 @@ def predict(model, scaler, input_data, config):
     input_normalized = scaler.transform(input_data)
     
     num_nodes = 5
-    input_window = config['data']['input_window']
     
     # Replica per ogni nodo
     input_reshaped = np.stack([input_normalized] * num_nodes, axis=1)
@@ -239,8 +266,12 @@ def predict(model, scaler, input_data, config):
     
     input_tensor = torch.FloatTensor(input_reshaped)
     
+    print(f"   📊 Input tensor shape: {input_tensor.shape}")
+    
     with torch.no_grad():
         output = model(input_tensor)
+    
+    print(f"   📊 Output shape: {output.shape}")
     
     # Estrai Bettolelle (nodo 3)
     target_node_idx = 3
