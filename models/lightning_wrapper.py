@@ -112,7 +112,7 @@ class LitSpatioTemporalGNN(pl.LightningModule):
         print(f"   - Quantiles: {self.quantile_levels}")
         
         # ✅ USA gnn_model (non model!) per compatibilità checkpoint
-        self.gnn_model = SimpleTCN(
+        self.model = SimpleTCN(
             num_nodes=num_nodes,
             num_features=num_features,
             output_window=output_window,
@@ -122,7 +122,7 @@ class LitSpatioTemporalGNN(pl.LightningModule):
             tcn_blocks=tcn_config['tcn_blocks'],
             tcn_kernel_size=tcn_config['tcn_kernel_size'],
             attention_heads=attention_heads,
-            use_temporal_attention=tcn_config['use_temporal_attention'],
+            use_temporal_attention=False,
             prediction_mode=tcn_config.get('prediction_mode', 'direct'),
             teacher_forcing_ratio=tcn_config.get('teacher_forcing_ratio', 0.5),
             dropout=dropout
@@ -187,7 +187,7 @@ class LitSpatioTemporalGNN(pl.LightningModule):
             [batch, output_window, num_nodes, output_dim, num_quantiles]
         """
         # ✅ USA gnn_model e passa target per teacher forcing
-        return self.gnn_model(x, target=target)
+        return self.model(x, target=target)
         
     def training_step(self, batch, batch_idx):
         """Training step con weighted loss."""
