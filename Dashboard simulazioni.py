@@ -1491,22 +1491,29 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
     else: # Logica Casuale
         st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
         
-        arrays_to_split = [X_scaled_full, y_scaled_full]
-        if use_weighted_loss and sample_weights_full is not None:
-            arrays_to_split.append(sample_weights_full)
+        if validation_percentage_random > 0:
+            arrays_to_split = [X_scaled_full, y_scaled_full]
+            if use_weighted_loss and sample_weights_full is not None:
+                arrays_to_split.append(sample_weights_full)
 
-        split_results = train_test_split(
-            *arrays_to_split,
-            test_size=validation_percentage_random, 
-            shuffle=True, 
-            random_state=42
-        )
-        
-        X_train, X_val = split_results[0], split_results[1]
-        y_train, y_val = split_results[2], split_results[3]
-        
-        if use_weighted_loss and sample_weights_full is not None:
-            weights_train, weights_val = split_results[4], split_results[5]
+            split_results = train_test_split(
+                *arrays_to_split,
+                test_size=validation_percentage_random, 
+                shuffle=True, 
+                random_state=42
+            )
+            
+            X_train, X_val = split_results[0], split_results[1]
+            y_train, y_val = split_results[2], split_results[3]
+            
+            if use_weighted_loss and sample_weights_full is not None:
+                weights_train, weights_val = split_results[4], split_results[5]
+        else:
+            # Caso 0% validazione
+            X_train, X_val = X_scaled_full, []
+            y_train, y_val = y_scaled_full, []
+            if use_weighted_loss and sample_weights_full is not None:
+                weights_train, weights_val = sample_weights_full, None
 
     train_loader = DataLoader(TimeSeriesDataset(X_train, y_train, weights_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size) if len(X_val) > 0 else None
@@ -2513,18 +2520,16 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
     if "Temporale" in split_method:
         st.info(f"Suddivisione temporale: {int((1-validation_percentage_temporal)*100)}% training, {int(validation_percentage_temporal*100)}% validazione.")
         
-        split_idx = int(len(X_enc_scaled_full) * (1 - validation_percentage_temporal))
+        split_idx = int(len(X_scaled_full) * (1 - validation_percentage_temporal))
         
         train_indices = range(0, split_idx)
-        val_indices = range(split_idx, len(X_enc_scaled_full))
+        val_indices = range(split_idx, len(X_scaled_full))
 
-        X_enc_train = X_enc_scaled_full[train_indices]
-        X_dec_train = X_dec_scaled_full[train_indices]
-        y_tar_train = y_tar_scaled_full[train_indices] # Corretto
+        X_train = X_scaled_full[train_indices]
+        y_train = y_scaled_full[train_indices]
         
-        X_enc_val = X_enc_scaled_full[val_indices]
-        X_dec_val = X_dec_scaled_full[val_indices]
-        y_tar_val = y_tar_scaled_full[val_indices] # Corretto
+        X_val = X_scaled_full[val_indices]
+        y_val = y_scaled_full[val_indices]
 
         if use_weighted_loss and sample_weights_full is not None:
             weights_train = sample_weights_full[train_indices]
@@ -2533,23 +2538,29 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
     else: # Logica Casuale
         st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
         
-        arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full] # Corretto
-        if use_weighted_loss and sample_weights_full is not None:
-            arrays_to_split.append(sample_weights_full)
+        if validation_percentage_random > 0:
+            arrays_to_split = [X_scaled_full, y_scaled_full]
+            if use_weighted_loss and sample_weights_full is not None:
+                arrays_to_split.append(sample_weights_full)
 
-        split_results = train_test_split(
-            *arrays_to_split,
-            test_size=validation_percentage_random, 
-            shuffle=True, 
-            random_state=42
-        )
-        
-        X_enc_train, X_enc_val = split_results[0], split_results[1]
-        X_dec_train, X_dec_val = split_results[2], split_results[3]
-        y_tar_train, y_tar_val = split_results[4], split_results[5] # Corretto
-        
-        if use_weighted_loss and sample_weights_full is not None:
-            weights_train, weights_val = split_results[6], split_results[7]
+            split_results = train_test_split(
+                *arrays_to_split,
+                test_size=validation_percentage_random, 
+                shuffle=True, 
+                random_state=42
+            )
+            
+            X_train, X_val = split_results[0], split_results[1]
+            y_train, y_val = split_results[2], split_results[3]
+            
+            if use_weighted_loss and sample_weights_full is not None:
+                weights_train, weights_val = split_results[4], split_results[5]
+        else:
+            # Caso 0% validazione
+            X_train, X_val = X_scaled_full, []
+            y_train, y_val = y_scaled_full, []
+            if use_weighted_loss and sample_weights_full is not None:
+                weights_train, weights_val = sample_weights_full, None
 
     # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
 
@@ -2849,23 +2860,31 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     else: # Logica Casuale
         st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
         
-        arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full] # Corretto
-        if use_weighted_loss and sample_weights_full is not None:
-            arrays_to_split.append(sample_weights_full)
+        if validation_percentage_random > 0:
+            arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full] # Corretto
+            if use_weighted_loss and sample_weights_full is not None:
+                arrays_to_split.append(sample_weights_full)
 
-        split_results = train_test_split(
-            *arrays_to_split,
-            test_size=validation_percentage_random, 
-            shuffle=True, 
-            random_state=42
-        )
-        
-        X_enc_train, X_enc_val = split_results[0], split_results[1]
-        X_dec_train, X_dec_val = split_results[2], split_results[3]
-        y_tar_train, y_tar_val = split_results[4], split_results[5] # Corretto
-        
-        if use_weighted_loss and sample_weights_full is not None:
-            weights_train, weights_val = split_results[6], split_results[7]
+            split_results = train_test_split(
+                *arrays_to_split,
+                test_size=validation_percentage_random, 
+                shuffle=True, 
+                random_state=42
+            )
+            
+            X_enc_train, X_enc_val = split_results[0], split_results[1]
+            X_dec_train, X_dec_val = split_results[2], split_results[3]
+            y_tar_train, y_tar_val = split_results[4], split_results[5] # Corretto
+            
+            if use_weighted_loss and sample_weights_full is not None:
+                weights_train, weights_val = split_results[6], split_results[7]
+        else:
+            # Caso 0% validazione: tutto al training
+            X_enc_train, X_enc_val = X_enc_scaled_full, []
+            X_dec_train, X_dec_val = X_dec_scaled_full, []
+            y_tar_train, y_tar_val = y_tar_scaled_full, []
+            if use_weighted_loss and sample_weights_full is not None:
+                weights_train, weights_val = sample_weights_full, None
 
     # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
 
