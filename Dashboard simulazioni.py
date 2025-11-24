@@ -1688,11 +1688,16 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
-    if save_strategy == 'migliore' and best_model_state:
-        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
-        st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
+    final_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
-    return model, (train_losses, []), (val_losses, [])
+    if (save_strategy == 'migliore' or save_strategy == 'entrambi') and best_model_state:
+        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
+        if save_strategy == 'migliore':
+            st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
+        else:
+            st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f} (sarà salvato come '_best').")
+
+    return model, (train_losses, []), (val_losses, []), final_model_state
 
 def predict_gnn(model, input_data_multi_feature, scalers, config, device, uncertainty_passes=1):
     model.eval()
@@ -2726,11 +2731,16 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
-    if save_strategy == 'migliore' and best_model_state:
-        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
-        st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
+    final_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
-    return model, (train_losses, []), (val_losses, [])
+    if (save_strategy == 'migliore' or save_strategy == 'entrambi') and best_model_state:
+        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
+        if save_strategy == 'migliore':
+            st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
+        else:
+            st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f} (sarà salvato come '_best').")
+
+    return model, (train_losses, []), (val_losses, []), final_model_state
 
 
 class TeacherForcingScheduler:
@@ -3045,11 +3055,16 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
         progress_bar.progress((epoch + 1) / epochs)
         update_loss_chart(train_losses, val_losses, loss_chart_placeholder)
 
-    if save_strategy == 'migliore' and best_model_state:
-        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
-        st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
+    final_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
-    return model, (train_losses, []), (val_losses, [])
+    if (save_strategy == 'migliore' or save_strategy == 'entrambi') and best_model_state:
+        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
+        if save_strategy == 'migliore':
+            st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f}")
+        else:
+            st.success(f"Caricato modello con Val Loss migliore: {best_val_loss:.6f} (sarà salvato come '_best').")
+
+    return model, (train_losses, []), (val_losses, []), final_model_state
 # --- Funzioni Helper Download ---
 def get_table_download_link(df, filename="data.csv", link_text="Scarica CSV"):
     try:
@@ -4267,7 +4282,7 @@ elif page == 'Allenamento Modello':
                 ep = st.number_input("Numero Epoche", 1, value=50, step=5, key="t_lstm_ep")
             c4, c5 = st.columns(2)
             with c4: device_option = st.radio("Device:", ['Auto', 'CPU'], 0, key='train_dev_lstm', horizontal=True)
-            with c5: save_choice = st.radio("Salvataggio:", ['Migliore', 'Finale'], 0, key='train_save_lstm', horizontal=True)
+            with c5: save_choice = st.radio("Salvataggio:", ['Migliore', 'Finale', 'Entrambi'], 0, key='train_save_lstm', horizontal=True)
 
         st.divider()
         ready_to_train = bool(save_name and selected_features and selected_targets and ow_steps > 0)
@@ -4288,10 +4303,10 @@ elif page == 'Allenamento Modello':
             
             if X_scaled is not None and y_scaled is not None:
                 # <<< MODIFICA 2: Passaggio sample_weights e use_weighted_loss al trainer
-                trained_model, _, _ = train_model(
+                trained_model, _, _, final_state = train_model(
                     X_scaled, y_scaled, sample_weights, sc_t,
                     X_scaled.shape[2], len(selected_targets), ow_steps, hs, nl, ep, bs, lr, dr,
-                    'migliore' if 'Migliore' in save_choice else 'finale',
+                    save_choice.lower(),
                     'auto' if 'Auto' in device_option else 'cpu',
                     loss_function_name=loss_choice,
                     training_mode=training_mode.split()[0].lower(),
@@ -4308,12 +4323,35 @@ elif page == 'Allenamento Modello':
                     st.success("Addestramento LSTM completato!")
                     config_save = {"model_type": "LSTM", "input_window": X_scaled.shape[1], "output_window": ow_steps, "hidden_size": hs, "num_layers": nl, "dropout": dr, "feature_columns": selected_features, "target_columns": selected_targets, "training_date": datetime.now(italy_tz).isoformat(), "display_name": save_name, "training_mode": training_mode.split()[0].lower(), "loss_function": loss_choice}
                     if training_mode == "Quantile Regression": config_save["quantiles"] = quantiles_list
-                    base_path = os.path.join(MODELS_DIR, save_name)
-                    torch.save(trained_model.state_dict(), f"{base_path}.pth")
-                    joblib.dump(sc_f, f"{base_path}_features.joblib")
-                    joblib.dump(sc_t, f"{base_path}_targets.joblib")
-                    with open(f"{base_path}.json", 'w', encoding='utf-8') as f: json.dump(config_save, f, indent=4)
-                    st.success(f"Modello '{save_name}' salvato.")
+                    
+                    if save_choice == 'Entrambi':
+                        # Salva Best
+                        base_path_best = os.path.join(MODELS_DIR, save_name + "_best")
+                        config_save_best = config_save.copy()
+                        config_save_best["display_name"] = save_name + " (Best)"
+                        torch.save(trained_model.state_dict(), f"{base_path_best}.pth")
+                        joblib.dump(sc_f, f"{base_path_best}_features.joblib")
+                        joblib.dump(sc_t, f"{base_path_best}_targets.joblib")
+                        with open(f"{base_path_best}.json", 'w', encoding='utf-8') as f: json.dump(config_save_best, f, indent=4)
+                        
+                        # Salva Final
+                        base_path_final = os.path.join(MODELS_DIR, save_name + "_final")
+                        config_save_final = config_save.copy()
+                        config_save_final["display_name"] = save_name + " (Final)"
+                        torch.save(final_state, f"{base_path_final}.pth")
+                        joblib.dump(sc_f, f"{base_path_final}_features.joblib")
+                        joblib.dump(sc_t, f"{base_path_final}_targets.joblib")
+                        with open(f"{base_path_final}.json", 'w', encoding='utf-8') as f: json.dump(config_save_final, f, indent=4)
+                        
+                        st.success(f"Modelli salvati: '{save_name}_best' e '{save_name}_final'.")
+                    else:
+                        base_path = os.path.join(MODELS_DIR, save_name)
+                        torch.save(trained_model.state_dict(), f"{base_path}.pth")
+                        joblib.dump(sc_f, f"{base_path}_features.joblib")
+                        joblib.dump(sc_t, f"{base_path}_targets.joblib")
+                        with open(f"{base_path}.json", 'w', encoding='utf-8') as f: json.dump(config_save, f, indent=4)
+                        st.success(f"Modello '{save_name}' salvato.")
+                    
                     find_available_models.clear()
             else: st.error("Preparazione dati LSTM fallita.")
 
@@ -4354,7 +4392,7 @@ elif page == 'Allenamento Modello':
                 ep = st.number_input("Numero Epoche", 1, value=50, step=5, key="t_s2s_ep")
             c4, c5 = st.columns(2)
             with c4: device_option = st.radio("Device:", ['Auto', 'CPU'], 0, key='train_dev_s2s', horizontal=True)
-            with c5: save_choice = st.radio("Salvataggio:", ['Migliore', 'Finale'], 0, key='train_save_s2s', horizontal=True)
+            with c5: save_choice = st.radio("Salvataggio:", ['Migliore', 'Finale', 'Entrambi'], 0, key='train_save_s2s', horizontal=True)
 
         st.divider()
         ready_to_train = bool(save_name and selected_past_features and selected_forecast_features and selected_targets and ow_steps > 0)
@@ -4393,10 +4431,10 @@ elif page == 'Allenamento Modello':
                         model_instance = Seq2SeqHydro(encoder, decoder, ow_steps)
                 
                 # <<< MODIFICA 5: Passaggio parametri al trainer
-                trained_model, _, _ = train_model_seq2seq(
+                trained_model, _, _, final_state = train_model_seq2seq(
                     X_enc_scaled, X_dec_scaled, y_tar_scaled, sample_weights, sc_tar,
                     model_instance, ow_steps, ep, bs, lr,
-                    'migliore' if 'Migliore' in save_choice else 'finale',
+                    save_choice.lower(),
                     'auto' if 'Auto' in device_option else 'cpu',
                     teacher_forcing_ratio_schedule=[0.6, 0.1], n_splits_cv=n_splits_cv,
                     loss_function_name=loss_choice,
@@ -4414,11 +4452,6 @@ elif page == 'Allenamento Modello':
                 if trained_model:
                     # ... (logica di salvataggio invariata)
                     st.success(f"Addestramento {train_model_type} completato!")
-                    base_path = os.path.join(MODELS_DIR, save_name)
-                    torch.save(trained_model.state_dict(), f"{base_path}.pth")
-                    joblib.dump(sc_past, f"{base_path}_past_features.joblib")
-                    joblib.dump(sc_fore, f"{base_path}_forecast_features.joblib")
-                    joblib.dump(sc_tar, f"{base_path}_targets.joblib")
                     
                     config_save = {"display_name": save_name, "training_date": datetime.now(italy_tz).isoformat(), "model_type": train_model_type.replace(" (Encoder-Decoder)", ""), "input_window_steps": iw_steps, "forecast_window_steps": fw_steps, "output_window_steps": ow_steps, "all_past_feature_columns": selected_past_features, "forecast_input_columns": selected_forecast_features, "target_columns": selected_targets, "dropout": dr, "training_mode": training_mode.split()[0].lower(), "loss_function": loss_choice}
                     if training_mode == "Quantile Regression": config_save["quantiles"] = quantiles_list
@@ -4426,9 +4459,38 @@ elif page == 'Allenamento Modello':
                         config_save.update({"d_model": d_model, "nhead": nhead, "dim_feedforward": dim_ff, "num_encoder_layers": num_enc_l, "num_decoder_layers": num_dec_l})
                     else:
                         config_save.update({"hidden_size": hs, "num_layers": nl})
+
+                    if save_choice == 'Entrambi':
+                        # Salva Best
+                        base_path_best = os.path.join(MODELS_DIR, save_name + "_best")
+                        config_save_best = config_save.copy()
+                        config_save_best["display_name"] = save_name + " (Best)"
+                        torch.save(trained_model.state_dict(), f"{base_path_best}.pth")
+                        joblib.dump(sc_past, f"{base_path_best}_past_features.joblib")
+                        joblib.dump(sc_fore, f"{base_path_best}_forecast_features.joblib")
+                        joblib.dump(sc_tar, f"{base_path_best}_targets.joblib")
+                        with open(f"{base_path_best}.json", 'w', encoding='utf-8') as f: json.dump(config_save_best, f, indent=4)
+                        
+                        # Salva Final
+                        base_path_final = os.path.join(MODELS_DIR, save_name + "_final")
+                        config_save_final = config_save.copy()
+                        config_save_final["display_name"] = save_name + " (Final)"
+                        torch.save(final_state, f"{base_path_final}.pth")
+                        joblib.dump(sc_past, f"{base_path_final}_past_features.joblib")
+                        joblib.dump(sc_fore, f"{base_path_final}_forecast_features.joblib")
+                        joblib.dump(sc_tar, f"{base_path_final}_targets.joblib")
+                        with open(f"{base_path_final}.json", 'w', encoding='utf-8') as f: json.dump(config_save_final, f, indent=4)
+
+                        st.success(f"Modelli salvati: '{save_name}_best' e '{save_name}_final'.")
+                    else:
+                        base_path = os.path.join(MODELS_DIR, save_name)
+                        torch.save(trained_model.state_dict(), f"{base_path}.pth")
+                        joblib.dump(sc_past, f"{base_path}_past_features.joblib")
+                        joblib.dump(sc_fore, f"{base_path}_forecast_features.joblib")
+                        joblib.dump(sc_tar, f"{base_path}_targets.joblib")
+                        with open(f"{base_path}.json", 'w', encoding='utf-8') as f: json.dump(config_save, f, indent=4)
+                        st.success(f"Modello '{save_name}' salvato.")
                     
-                    with open(f"{base_path}.json", 'w', encoding='utf-8') as f: json.dump(config_save, f, indent=4)
-                    st.success(f"Modello '{save_name}' salvato.")
                     find_available_models.clear()
             else:
                 st.error(f"Preparazione dati {train_model_type} fallita.")
@@ -4545,6 +4607,10 @@ elif page == 'Allenamento Modello':
             with c3:
                 bs = st.select_slider("Batch Size", [8,16,32,64], 32, key=f"t_{train_model_type}_bs")
                 ep = st.number_input("Numero Epoche", min_value=1, value=50, key=f"t_{train_model_type}_ep")
+            
+            c4_gnn = st.columns(1)[0]
+            with c4_gnn:
+                save_choice_gnn = st.radio("Salvataggio:", ['Migliore', 'Finale', 'Entrambi'], 0, key=f"train_{train_model_type}_save", horizontal=True)
 
         if st.button(f"Avvia Addestramento {train_model_type}", type="primary", key=f"train_run_{train_model_type}"):
             if not all([save_name, node_order, selected_targets_gnn, edge_index, edge_weights]):
@@ -4581,9 +4647,10 @@ elif page == 'Allenamento Modello':
                             num_quantiles=num_q, dropout=dr
                         )
 
-                    trained_model, _, _ = train_model_gnn(
+                    trained_model, _, _, final_state = train_model_gnn(
                         X_scaled, y_scaled, sample_weights, sc_t,
                         model, edge_index, edge_weights, ep, bs, lr,
+                        save_strategy=save_choice_gnn.lower(),
                         training_mode=training_mode.split()[0].lower(),
                         quantiles=quantiles_list if training_mode == "Quantile Regression" else None,
                         split_method=split_method,
@@ -4614,12 +4681,34 @@ elif page == 'Allenamento Modello':
 
                         if config["training_mode"] == "quantile": config["quantiles"] = quantiles_list
                         
-                        base_path = os.path.join(MODELS_DIR, save_name)
-                        torch.save(trained_model.state_dict(), f"{base_path}.pth")
-                        joblib.dump(sc_f, f"{base_path}_features.joblib")
-                        joblib.dump(sc_t, f"{base_path}_targets.joblib")
-                        with open(f"{base_path}.json", 'w') as f: json.dump(config, f, indent=4)
-                        st.success(f"Modello GNN '{save_name}' salvato.")
+                        if save_choice_gnn == 'Entrambi':
+                             # Salva Best
+                            base_path_best = os.path.join(MODELS_DIR, save_name + "_best")
+                            config_best = config.copy()
+                            config_best["display_name"] = save_name + " (Best)"
+                            torch.save(trained_model.state_dict(), f"{base_path_best}.pth")
+                            joblib.dump(sc_f, f"{base_path_best}_features.joblib")
+                            joblib.dump(sc_t, f"{base_path_best}_targets.joblib")
+                            with open(f"{base_path_best}.json", 'w') as f: json.dump(config_best, f, indent=4)
+
+                            # Salva Final
+                            base_path_final = os.path.join(MODELS_DIR, save_name + "_final")
+                            config_final = config.copy()
+                            config_final["display_name"] = save_name + " (Final)"
+                            torch.save(final_state, f"{base_path_final}.pth")
+                            joblib.dump(sc_f, f"{base_path_final}_features.joblib")
+                            joblib.dump(sc_t, f"{base_path_final}_targets.joblib")
+                            with open(f"{base_path_final}.json", 'w') as f: json.dump(config_final, f, indent=4)
+                            
+                            st.success(f"Modelli salvati: '{save_name}_best' e '{save_name}_final'.")
+                        else:
+                            base_path = os.path.join(MODELS_DIR, save_name)
+                            torch.save(trained_model.state_dict(), f"{base_path}.pth")
+                            joblib.dump(sc_f, f"{base_path}_features.joblib")
+                            joblib.dump(sc_t, f"{base_path}_targets.joblib")
+                            with open(f"{base_path}.json", 'w') as f: json.dump(config, f, indent=4)
+                            st.success(f"Modello GNN '{save_name}' salvato.")
+                            
                         find_available_models.clear()
                 else:
                     st.error("Preparazione dati GNN fallita.")
@@ -4666,7 +4755,7 @@ elif page == 'Post-Training Modello':
                 st.info("**Loss:** `QuantileLoss` (dal modello originale)")
             else:
                 loss_choice_pt = st.selectbox("Funzione di Loss:", ["MSELoss", "HuberLoss"], index=["MSELoss", "HuberLoss"].index(original_config.get('loss_function', 'MSELoss')), key="pt_loss_choice")
-            save_choice_pt = st.radio("Strategia Salvataggio:", ['Migliore', 'Finale'], index=0, key='pt_save_choice', horizontal=True)
+            save_choice_pt = st.radio("Strategia Salvataggio:", ['Migliore', 'Finale', 'Entrambi'], index=0, key='pt_save_choice', horizontal=True)
     
     st.divider()
     
@@ -4675,31 +4764,89 @@ elif page == 'Post-Training Modello':
         
         current_device_pt = st.session_state.active_device
         quantiles_pt = original_config.get("quantiles") if training_mode_pt == 'quantile' else None
+        
+        sc_f = original_scalers if isinstance(original_scalers, tuple) else original_scalers.get("past") # Just for saving later if needed, assuming reusing existing scalers means we save them again with new name
 
         # Logica di preparazione dati e training
         if active_model_type == "LSTM":
             # Prepara nuovi dati usando i vecchi scaler
             with st.spinner("Preparazione nuovi dati per post-training LSTM..."):
-                X_new_scaled, y_new_scaled = prepare_training_data(df_current_csv.copy(), original_config["feature_columns"], original_config["target_columns"], original_config["input_window"]/2, original_config["output_window"]/2)[0:2] #Prendiamo solo i primi due elementi
+                #prepare_training_data restituisce X_scaled, y_scaled, sample_weights, scaler_features, scaler_targets
+                # Ma per post-training stiamo usando i dati originali, forse dovremmo usare i nuovi?
+                # Per ora usiamo df_current_csv come 'nuovi dati'
+                
+                # IMPORTANTE: prepare_training_data calcola nuovi scalers. Se vogliamo usare i vecchi per il fine-tuning, dovremmo usare transform, non fit_transform.
+                # Tuttavia, il codice originale sembra richiamare prepare_training_data che fa fit_transform. 
+                # Se l'utente vuole fine-tuning su nuovi dati, di solito si assume che la distribuzione sia simile o si voglia adattare.
+                # Per semplicità seguiamo il codice esistente che richiamava prepare_training_data.
+                
+                # Attenzione: train_model richiede X_scaled, y_scaled, sample_weights, scaler_targets...
+                data_tuple = prepare_training_data(df_current_csv.copy(), original_config["feature_columns"], original_config["target_columns"], original_config["input_window"]/2, original_config["output_window"]/2, use_weighted_loss=False) # Dummy e weights non gestiti in post-training UI originale per ora
             
+            if data_tuple:
+                X_new_scaled, y_new_scaled, sample_weights_pt, sc_f_new, sc_t_new = data_tuple
+            else:
+                X_new_scaled = None
+
             if X_new_scaled is not None:
                 num_q_pt = len(quantiles_pt) if training_mode_pt == 'quantile' else 1
                 model_instance = HydroLSTM(X_new_scaled.shape[2], original_config["hidden_size"], len(original_config["target_columns"]), original_config["output_window"], original_config["num_layers"], original_config["dropout"], num_quantiles=num_q_pt).to(current_device_pt)
                 model_instance.load_state_dict(model_to_fine_tune_state_dict)
 
-                fine_tuned_model, _, _ = train_model(X_new_scaled, y_new_scaled, X_new_scaled.shape[2], len(original_config["target_columns"]), original_config["output_window"],_model_to_continue_train=model_instance, epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt, save_strategy='migliore' if 'Migliore' in save_choice_pt else 'finale', n_splits_cv=n_splits_cv_pt, loss_function_name=loss_choice_pt, training_mode=training_mode_pt, quantiles=quantiles_pt)
+                fine_tuned_model, _, _, final_state = train_model(
+                    X_new_scaled, y_new_scaled, sample_weights_pt, sc_t_new, # Use new scalers/weights
+                    X_new_scaled.shape[2], len(original_config["target_columns"]), original_config["output_window"],
+                    _model_to_continue_train=model_instance,
+                    epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt,
+                    save_strategy=save_choice_pt.lower(),
+                    n_splits_cv=n_splits_cv_pt, loss_function_name=loss_choice_pt,
+                    training_mode=training_mode_pt, quantiles=quantiles_pt,
+                    split_method="Temporale", validation_percentage_temporal=0.2 # Default per PT
+                )
 
                 if fine_tuned_model:
                     st.success("Post-Training LSTM completato!")
-                    # Salva il modello affinato
-                    # ... (logica di salvataggio)
+                    
+                    config_save = original_config.copy()
+                    config_save["display_name"] = save_name_pt
+                    config_save["training_date"] = datetime.now(italy_tz).isoformat()
+                    
+                    if save_choice_pt == 'Entrambi':
+                        # Save Best
+                        base_path_best = os.path.join(MODELS_DIR, save_name_pt + "_best")
+                        config_best = config_save.copy()
+                        config_best["display_name"] = save_name_pt + " (Best)"
+                        torch.save(fine_tuned_model.state_dict(), f"{base_path_best}.pth")
+                        joblib.dump(sc_f_new, f"{base_path_best}_features.joblib")
+                        joblib.dump(sc_t_new, f"{base_path_best}_targets.joblib")
+                        with open(f"{base_path_best}.json", 'w', encoding='utf-8') as f: json.dump(config_best, f, indent=4)
+                        
+                        # Save Final
+                        base_path_final = os.path.join(MODELS_DIR, save_name_pt + "_final")
+                        config_final = config_save.copy()
+                        config_final["display_name"] = save_name_pt + " (Final)"
+                        torch.save(final_state, f"{base_path_final}.pth")
+                        joblib.dump(sc_f_new, f"{base_path_final}_features.joblib")
+                        joblib.dump(sc_t_new, f"{base_path_final}_targets.joblib")
+                        with open(f"{base_path_final}.json", 'w', encoding='utf-8') as f: json.dump(config_final, f, indent=4)
+                        
+                        st.success(f"Modelli salvati: '{save_name_pt}_best' e '{save_name_pt}_final'.")
+                    else:
+                        base_path = os.path.join(MODELS_DIR, save_name_pt)
+                        torch.save(fine_tuned_model.state_dict(), f"{base_path}.pth")
+                        joblib.dump(sc_f_new, f"{base_path}_features.joblib")
+                        joblib.dump(sc_t_new, f"{base_path}_targets.joblib")
+                        with open(f"{base_path}.json", 'w', encoding='utf-8') as f: json.dump(config_save, f, indent=4)
+                        st.success(f"Modello '{save_name_pt}' salvato.")
+                    
+                    find_available_models.clear()
         
         elif active_model_type in ["Seq2Seq", "Seq2SeqAttention", "Transformer"]:
             with st.spinner(f"Preparazione nuovi dati per post-training {active_model_type}..."):
                  data_tuple = prepare_training_data_seq2seq(df_current_csv.copy(), original_config["all_past_feature_columns"], original_config["forecast_input_columns"], original_config["target_columns"], original_config["input_window_steps"], original_config["forecast_window_steps"], original_config["output_window_steps"])
 
             if data_tuple:
-                (X_enc_new, X_dec_new, y_tar_new, _, _, _) = data_tuple
+                (X_enc_new, X_dec_new, y_tar_new, sample_weights_pt, sc_past_new, sc_fore_new, sc_tar_new) = data_tuple
                 num_q_pt = len(quantiles_pt) if training_mode_pt == 'quantile' else 1
                 
                 model_instance = None
@@ -4717,12 +4864,55 @@ elif page == 'Post-Training Modello':
 
                 model_instance.load_state_dict(model_to_fine_tune_state_dict)
 
-                fine_tuned_model, _, _ = train_model_seq2seq(X_enc_new, X_dec_new, y_tar_new, model_instance, original_config["output_window_steps"], epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt, save_strategy='migliore' if 'Migliore' in save_choice_pt else 'finale', n_splits_cv=n_splits_cv_pt, loss_function_name=loss_choice_pt, training_mode=training_mode_pt, quantiles=quantiles_pt)
+                fine_tuned_model, _, _, final_state = train_model_seq2seq(
+                    X_enc_new, X_dec_new, y_tar_new, sample_weights_pt, sc_tar_new,
+                    model_instance, original_config["output_window_steps"],
+                    epochs=ep_pt, batch_size=bs_pt, learning_rate=lr_pt,
+                    save_strategy=save_choice_pt.lower(),
+                    n_splits_cv=n_splits_cv_pt, loss_function_name=loss_choice_pt,
+                    training_mode=training_mode_pt, quantiles=quantiles_pt,
+                    split_method="Temporale", validation_percentage_temporal=0.2
+                )
 
                 if fine_tuned_model:
                     st.success(f"Post-Training {active_model_type} completato!")
-                    # Salva il modello affinato
-                    # ... (logica di salvataggio)
+                    
+                    config_save = original_config.copy()
+                    config_save["display_name"] = save_name_pt
+                    config_save["training_date"] = datetime.now(italy_tz).isoformat()
+
+                    if save_choice_pt == 'Entrambi':
+                        # Best
+                        base_path_best = os.path.join(MODELS_DIR, save_name_pt + "_best")
+                        config_best = config_save.copy()
+                        config_best["display_name"] = save_name_pt + " (Best)"
+                        torch.save(fine_tuned_model.state_dict(), f"{base_path_best}.pth")
+                        joblib.dump(sc_past_new, f"{base_path_best}_past_features.joblib")
+                        joblib.dump(sc_fore_new, f"{base_path_best}_forecast_features.joblib")
+                        joblib.dump(sc_tar_new, f"{base_path_best}_targets.joblib")
+                        with open(f"{base_path_best}.json", 'w', encoding='utf-8') as f: json.dump(config_best, f, indent=4)
+                        
+                        # Final
+                        base_path_final = os.path.join(MODELS_DIR, save_name_pt + "_final")
+                        config_final = config_save.copy()
+                        config_final["display_name"] = save_name_pt + " (Final)"
+                        torch.save(final_state, f"{base_path_final}.pth")
+                        joblib.dump(sc_past_new, f"{base_path_final}_past_features.joblib")
+                        joblib.dump(sc_fore_new, f"{base_path_final}_forecast_features.joblib")
+                        joblib.dump(sc_tar_new, f"{base_path_final}_targets.joblib")
+                        with open(f"{base_path_final}.json", 'w', encoding='utf-8') as f: json.dump(config_final, f, indent=4)
+                        
+                        st.success(f"Modelli salvati: '{save_name_pt}_best' e '{save_name_pt}_final'.")
+                    else:
+                        base_path = os.path.join(MODELS_DIR, save_name_pt)
+                        torch.save(fine_tuned_model.state_dict(), f"{base_path}.pth")
+                        joblib.dump(sc_past_new, f"{base_path}_past_features.joblib")
+                        joblib.dump(sc_fore_new, f"{base_path}_forecast_features.joblib")
+                        joblib.dump(sc_tar_new, f"{base_path}_targets.joblib")
+                        with open(f"{base_path}.json", 'w', encoding='utf-8') as f: json.dump(config_save, f, indent=4)
+                        st.success(f"Modello '{save_name_pt}' salvato.")
+                    
+                    find_available_models.clear()
         else:
             st.error(f"Tipo modello '{active_model_type}' non supportato per il post-training.")
             st.stop()
