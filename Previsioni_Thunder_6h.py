@@ -34,7 +34,7 @@ class EncoderLSTM(nn.Module):
 
         # LSTM bidirezionale
         self.lstm = nn.LSTM(
-            hidden_size, # Usiamo hidden_size dopo projection
+            hidden_size,
             hidden_size,
             num_layers,
             batch_first=True,
@@ -51,14 +51,6 @@ class EncoderLSTM(nn.Module):
             self.cell_proj = nn.Linear(hidden_size * 2, hidden_size)
 
     def forward(self, x):
-        """
-        Args:
-            x: (batch, seq_len, input_size)
-        Returns:
-            outputs: (batch, seq_len, hidden_size * num_directions)
-            hidden: (num_layers, batch, hidden_size)
-            cell: (num_layers, batch, hidden_size)
-        """
         # Input projection
         x = self.input_proj(x)
 
@@ -70,14 +62,9 @@ class EncoderLSTM(nn.Module):
 
         # Se bidirezionale, proietta hidden e cell per il decoder
         if self.bidirectional:
-            # hidden shape: (num_layers * 2, batch, hidden_size)
-            # Vogliamo: (num_layers, batch, hidden_size)
-
-            # Combina forward e backward
             hidden = hidden.view(self.num_layers, 2, -1, self.hidden_size)
             cell = cell.view(self.num_layers, 2, -1, self.hidden_size)
 
-            # Concatena e proietta
             hidden = self.hidden_proj(
                 torch.cat([hidden[:, 0, :, :], hidden[:, 1, :, :]], dim=-1)
             )
@@ -87,60 +74,39 @@ class EncoderLSTM(nn.Module):
 
         return outputs, hidden, cell
 
+
 class ImprovedAttention(nn.Module):
     def __init__(self, hidden_size, attention_type='additive'):
         super().__init__()
         self.hidden_size = hidden_size
         self.attention_type = attention_type
 
-        if attention_type == 'additive': # Bahdanau-style
+        if attention_type == 'additive':
             self.W_decoder = nn.Linear(hidden_size, hidden_size, bias=False)
             self.W_encoder = nn.Linear(hidden_size * 2, hidden_size, bias=False)
             self.v = nn.Linear(hidden_size, 1, bias=False)
-        elif attention_type == 'dot': # Luong-style
+        elif attention_type == 'dot':
             self.W = nn.Linear(hidden_size, hidden_size * 2, bias=False)
 
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, decoder_hidden, encoder_outputs, mask=None):
-        """
-        Args:
-            decoder_hidden: (batch, hidden_size) - ultimo stato decoder
-            encoder_outputs: (batch, seq_len, hidden_size)
-            mask: (batch, seq_len) - maschera per padding (opzionale)
-        Returns:
-            context: (batch, hidden_size)
-            attn_weights: (batch, seq_len)
-        """
         batch_size, seq_len, _ = encoder_outputs.shape
 
         if self.attention_type == 'additive':
-            # Bahdanau Attention
-            # (batch, hidden_size) -> (batch, 1, hidden_size) -> (batch, seq_len, hidden_size)
             decoder_proj = self.W_decoder(decoder_hidden).unsqueeze(1).expand(-1, seq_len, -1)
             encoder_proj = self.W_encoder(encoder_outputs)
-
-            # (batch, seq_len, hidden_size)
             energy = torch.tanh(decoder_proj + encoder_proj)
-
-            # (batch, seq_len, 1) -> (batch, seq_len)
             scores = self.v(energy).squeeze(-1)
 
         elif self.attention_type == 'dot':
-            # Luong Attention (dot product)
-            decoder_proj = self.W(decoder_hidden) # (batch, hidden_size)
-            # (batch, hidden_size, 1)
+            decoder_proj = self.W(decoder_hidden)
             scores = torch.bmm(encoder_outputs, decoder_proj.unsqueeze(2)).squeeze(2)
 
-        # Applica maschera se presente (per sequenze di lunghezza variabile)
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e10)
 
-        # Normalizza con softmax
-        attn_weights = self.softmax(scores) # (batch, seq_len)
-
-        # Context vector: somma pesata degli encoder outputs
-        # (batch, 1, seq_len) x (batch, seq_len, hidden_size) -> (batch, 1, hidden_size)
+        attn_weights = self.softmax(scores)
         context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)
 
         return context, attn_weights
@@ -160,7 +126,7 @@ class DecoderLSTMWithAttention(nn.Module):
 
         # LSTM input: forecast features + context vector
         self.lstm = nn.LSTM(
-            forecast_input_size + hidden_size * 2, # Concatenazione
+            forecast_input_size + hidden_size * 2,
             hidden_size,
             num_layers,
             batch_first=True,
@@ -183,45 +149,31 @@ class DecoderLSTMWithAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
-        """
-        Args:
-            x_forecast_step: (batch, 1, forecast_input_size)
-            hidden: (num_layers, batch, hidden_size)
-            cell: (num_layers, batch, hidden_size)
-            encoder_outputs: (batch, encoder_seq_len, hidden_size)
-        """
         batch_size = x_forecast_step.size(0)
 
-        # Usa l'ultimo layer dell'hidden state per l'attention
-        decoder_hidden = hidden[-1] # (batch, hidden_size)
-
-        # Calcola attention
+        decoder_hidden = hidden[-1]
         context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
 
-        # Concatena input forecast con context
         lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
 
-        # Forward LSTM
         output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
-        output = output.squeeze(1) # (batch, hidden_size)
+        output = output.squeeze(1)
 
-        # Gating: bilancia context e output LSTM
         projected_context = self.context_proj(context)
         gate_input = torch.cat([
             x_forecast_step.squeeze(1),
             projected_context,
             output
         ], dim=1)
-        gate_value = self.gate(gate_input) # (batch, hidden_size)
+        gate_value = self.gate(gate_input)
 
-        # Output finale: mix pesato
         gated_output = gate_value * output + (1 - gate_value) * projected_context
         gated_output = self.dropout(gated_output)
 
-        # Predizione
         prediction = self.fc(gated_output)
 
         return prediction, hidden, cell, attn_weights
+
 
 class Seq2SeqWithAttention(nn.Module):
     def __init__(self, encoder, decoder, output_window_steps):
@@ -232,31 +184,20 @@ class Seq2SeqWithAttention(nn.Module):
 
     def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0,
                 target_sequence=None):
-        """
-        Args:
-            x_past: (batch, enc_seq_len, enc_features)
-            x_future_forecast: (batch, dec_seq_len, dec_features)
-            teacher_forcing_ratio: float in [0, 1]
-            target_sequence: (batch, output_window, num_targets) - per teacher forcing
-        """
         batch_size = x_past.shape[0]
         target_output_size = self.decoder.output_size
         num_quantiles = self.decoder.num_quantiles
         decoder_output_dim = target_output_size * num_quantiles
 
-        # Output tensors
         outputs = torch.zeros(batch_size, self.output_window, decoder_output_dim).to(x_past.device)
         attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(x_past.device)
 
-        # Encode
         encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
 
-        # Primo input del decoder
         decoder_input_step = x_future_forecast[:, 0:1, :]
 
         for t in range(self.output_window):
-            # Decode step
             decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
                 decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
             )
@@ -264,39 +205,22 @@ class Seq2SeqWithAttention(nn.Module):
             outputs[:, t, :] = decoder_output_step
             attention_weights_history[:, t, :] = attn_weights.squeeze()
 
-            # Prepara input per prossimo step
             if t < self.output_window - 1:
                 use_teacher_forcing = random.random() < teacher_forcing_ratio
 
                 if use_teacher_forcing and target_sequence is not None:
-                    # Teacher forcing: usa target reale
-                    # Nota: devi avere le forecast features associate al target reale
                     decoder_input_step = x_future_forecast[:, t+1:t+2, :]
                 else:
-                    # Autoregressive: usa predizione precedente
-                    # CRITICO: devi integrare la predizione nelle forecast features
-
-                    # Reshape predizione per ottenere i target
                     if num_quantiles > 1:
-                        # Usa la mediana (quantile centrale)
                         pred_reshaped = decoder_output_step.view(batch_size, target_output_size, num_quantiles)
-                        pred_targets = pred_reshaped[:, :, 1] # Mediana
+                        pred_targets = pred_reshaped[:, :, 1]
                     else:
                         pred_targets = decoder_output_step.view(batch_size, target_output_size)
 
-                    # OPZIONE 1: Sostituisci i livelli predetti nelle forecast features
                     next_forecast_features = x_future_forecast[:, t+1, :].clone()
-
-                    # Identifica quali feature sono livelli (da sostituire)
-                    # Questa logica dipende dal tuo ordine delle feature!
-                    # Esempio: se le ultime N feature sono i livelli target
                     num_target_features = target_output_size
                     next_forecast_features[:, -num_target_features:] = pred_targets
-
                     decoder_input_step = next_forecast_features.unsqueeze(1)
-
-                    # OPZIONE 2 (più semplice ma meno accurata): usa solo forecast features
-                    # decoder_input_step = x_future_forecast[:, t+1:t+2, :]
 
         if num_quantiles > 1:
             outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
@@ -321,6 +245,7 @@ GSHEET_FORECAST_DATE_COL = 'Data e Ora'
 GSHEET_FORECAST_DATE_FORMAT = '%d/%m/%Y %H:%M'
 italy_tz = pytz.timezone('Europe/Rome')
 
+
 def log_environment_info():
     """Log delle informazioni sull'ambiente di esecuzione"""
     print("=== INFORMAZIONI AMBIENTE ===")
@@ -335,6 +260,7 @@ def log_environment_info():
         print(f"CUDA device: {torch.cuda.get_device_name()}")
     print(f"Device utilizzato: {'cuda' if torch.cuda.is_available() else 'cpu'}")
     print("=" * 30)
+
 
 def load_model_and_scalers(model_base_name, models_dir):
     print(f"\n=== CARICAMENTO MODELLO E SCALER ===")
@@ -382,7 +308,6 @@ def load_model_and_scalers(model_base_name, models_dir):
     model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
     
     model_state = torch.load(model_path, map_location=device)
-    
     model.load_state_dict(model_state)
     model.eval()
     
@@ -392,6 +317,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     print("Modello e scaler caricati con successo.")
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
+
 
 def fetch_and_prepare_data(gc, sheet_id, config):
     print(f"\n=== CARICAMENTO E PREPARAZIONE DATI ===")
@@ -487,6 +413,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
+
 def make_prediction(model, scalers, config, data_inputs, device):
     print(f"\n=== GENERAZIONE PREVISIONI ===")
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
@@ -502,42 +429,40 @@ def make_prediction(model, scalers, config, data_inputs, device):
         predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
-    # predictions_np shape: (seq_len, num_targets) OR (seq_len, num_targets, num_quantiles)
+    # predictions_np shape: (seq_len, num_targets, num_quantiles) oppure (seq_len, num_targets)
     
     num_targets = len(config["target_columns"])
     
+    print(f"Shape output modello (dopo squeeze): {predictions_np.shape}")
+    
     if predictions_np.ndim == 3:
         # Case: (seq_len, num_targets, num_quantiles)
-        # We need to reshape to (N, num_targets) for the scaler
-        # Transpose to (seq_len, num_quantiles, num_targets)
         seq_len, n_targets, n_quantiles = predictions_np.shape
-        if n_targets != num_targets:
-             print(f"Warning: Model output targets {n_targets} != config targets {num_targets}")
+        print(f"Output 3D rilevato: seq_len={seq_len}, targets={n_targets}, quantiles={n_quantiles}")
         
-        preds_permuted = predictions_np.transpose(0, 2, 1) # (seq, quantiles, targets)
-        preds_flat = preds_permuted.reshape(-1, num_targets)
+        # Reshape per inverse_transform: (seq_len * n_quantiles, n_targets)
+        preds_permuted = predictions_np.transpose(0, 2, 1)  # (seq, quantiles, targets)
+        preds_flat = preds_permuted.reshape(-1, n_targets)
         preds_unscaled_flat = scaler_targets.inverse_transform(preds_flat)
-        preds_unscaled = preds_unscaled_flat.reshape(seq_len, n_quantiles, num_targets)
-        predictions_scaled_back = preds_unscaled.transpose(0, 2, 1) # Back to (seq, targets, quantiles)
+        preds_unscaled = preds_unscaled_flat.reshape(seq_len, n_quantiles, n_targets)
+        predictions_scaled_back = preds_unscaled.transpose(0, 2, 1)  # (seq, targets, quantiles)
         
     elif predictions_np.ndim == 2:
         # Case: (seq_len, num_targets)
+        print(f"Output 2D rilevato: {predictions_np.shape}")
         predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
         
     else:
-        # Fallback for unexpected shapes (e.g. flattened old models)
-        original_shape = predictions_np.shape
-        if predictions_np.shape[-1] != num_targets:
-             print(f"Rilevato output con dimensione finale {predictions_np.shape[-1]} diversa da num_targets {num_targets}. Tentativo di reshape.")
-             predictions_np_flat = predictions_np.reshape(-1, num_targets)
-             predictions_scaled_back_flat = scaler_targets.inverse_transform(predictions_np_flat)
-             predictions_scaled_back = predictions_scaled_back_flat.reshape(original_shape)
-        else:
-             predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
+        # Fallback per shape inattese
+        print(f"Output shape inattesa: {predictions_np.shape}, tentativo di flatten...")
+        predictions_np_flat = predictions_np.reshape(-1, num_targets)
+        predictions_scaled_back = scaler_targets.inverse_transform(predictions_np_flat)
 
+    print(f"Shape finale previsioni: {predictions_scaled_back.shape}")
     print(f"Previsioni finali stats: min={predictions_scaled_back.min():.4f}, max={predictions_scaled_back.max():.4f}")
     
     return predictions_scaled_back
+
 
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
     print(f"\n=== SALVATAGGIO PREVISIONI ===")
@@ -554,7 +479,9 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     target_cols = config["target_columns"]
     header = ["Timestamp Previsione"]
 
-    if quantiles and isinstance(quantiles, list) and len(quantiles) > 1:
+    has_quantiles = quantiles and isinstance(quantiles, list) and len(quantiles) > 1
+    
+    if has_quantiles:
         for col in target_cols:
             for q in quantiles:
                 header.append(f"Previsto: {col} (Q{int(q * 100)})")
@@ -563,18 +490,40 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
             header.append(f"Previsto: {col}")
     
     worksheet.append_row(header, value_input_option='USER_ENTERED')
+    print(f"Header scritto: {header}")
     
     rows_to_append = []
     prediction_start_time = config["_prediction_start_time"]
+    
+    print(f"Shape predictions_np: {predictions_np.shape}, ndim: {predictions_np.ndim}")
+    
     for i in range(predictions_np.shape[0]):
         timestamp = prediction_start_time + timedelta(minutes=30 * (i + 1))
         row = [timestamp.strftime('%d/%m/%Y %H:%M')]
-        row.extend([f"{val:.3f}".replace('.', ',') for val in predictions_np[i, :]])
+        
+        # Gestisci diversi formati di output
+        if predictions_np.ndim == 3:
+            # Shape: (seq_len, num_targets, num_quantiles)
+            # Flatten: [target1_q1, target1_q2, target1_q3, target2_q1, ...]
+            step_values = predictions_np[i].flatten()
+        elif predictions_np.ndim == 2:
+            # Shape: (seq_len, num_targets)
+            step_values = predictions_np[i]
+        else:
+            # Fallback
+            step_values = np.atleast_1d(predictions_np[i]).flatten()
+        
+        # Converti ogni valore in stringa formattata
+        for val in step_values:
+            formatted_val = f"{float(val):.3f}".replace('.', ',')
+            row.append(formatted_val)
+        
         rows_to_append.append(row)
     
     if rows_to_append:
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
-        print(f"Salvate {len(rows_to_append)} righe di previsione.")
+        print(f"✓ Salvate {len(rows_to_append)} righe di previsione con {len(rows_to_append[0])-1} colonne dati ciascuna.")
+
 
 def main():
     print(f"AVVIO SCRIPT - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -582,9 +531,6 @@ def main():
     
     try:
         log_environment_info()
-        
-        # --- BLOCCO DI AUTENTICAZIONE MODIFICATO (SOLUZIONE 1) ---
-        # Questo blocco ora legge il file 'credentials.json' creato dal file .yml
         
         credentials_file_path = "credentials.json"
         if not os.path.exists(credentials_file_path):
@@ -597,7 +543,6 @@ def main():
         gc = gspread.authorize(credentials)
         print("✓ Autenticazione Google Sheets riuscita.")
         
-        # Il resto dello script continua normalmente
         model, scaler_past, scaler_forecast, scaler_target, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
         hist_data, fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
@@ -609,11 +554,13 @@ def main():
         
         append_predictions_to_gsheet(gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions, config)
         
-        print(f"\n✓ SCRIPT COMPLETATO - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(f"\n✓ SCRIPT COMPLETATO CON SUCCESSO - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     except Exception as e:
         print(f"\n❌ ERRORE CRITICO: {e}")
         traceback.print_exc()
+        raise  # Rilancia per far fallire il workflow GitHub Actions
+
 
 if __name__ == "__main__":
     main()
