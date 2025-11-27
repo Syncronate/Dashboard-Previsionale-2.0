@@ -14,9 +14,48 @@ import io
 import csv
 import random
 
-# Imposta seed per riproducibilità
-torch.manual_seed(42)
-np.random.seed(42)
+# ============================================
+# CONFIGURAZIONE RIPRODUCIBILITÀ COMPLETA
+# ============================================
+SEED = 42
+
+def set_seed(seed):
+    """
+    Imposta tutti i seed necessari per garantire risultati riproducibili.
+    Questa funzione deve essere chiamata PRIMA di qualsiasi operazione con PyTorch/NumPy.
+    """
+    # Python random
+    random.seed(seed)
+    
+    # NumPy
+    np.random.seed(seed)
+    
+    # PyTorch CPU
+    torch.manual_seed(seed)
+    
+    # PyTorch CUDA (se disponibile)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # Per multi-GPU
+    
+    # Rendi le operazioni CUDA deterministiche
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
+    # Hash seed di Python (per alcune operazioni interne)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    # PyTorch 1.8+ - Forza algoritmi deterministici
+    if hasattr(torch, 'use_deterministic_algorithms'):
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except Exception:
+            pass  # Alcune operazioni potrebbero non supportarlo
+    
+    print(f"✓ Seed impostato a {seed} per riproducibilità completa")
+
+# Applica seed IMMEDIATAMENTE all'avvio (prima di qualsiasi altra operazione)
+set_seed(SEED)
 
 # --- INIZIO BLOCCO MODELLO CORRETTO ---
 # Classi del modello allineate con quelle usate per l'addestramento.
@@ -304,6 +343,9 @@ def log_environment_info():
     if torch.cuda.is_available():
         print(f"CUDA device: {torch.cuda.get_device_name()}")
     print(f"Device utilizzato: {'cuda' if torch.cuda.is_available() else 'cpu'}")
+    print(f"Seed riproducibilità: {SEED}")
+    print(f"cuDNN deterministic: {torch.backends.cudnn.deterministic}")
+    print(f"cuDNN benchmark: {torch.backends.cudnn.benchmark}")
     print("=" * 30)
 
 def load_model_and_scalers(model_base_name, models_dir):
@@ -392,34 +434,17 @@ def fetch_and_prepare_data(gc, sheet_id, config):
 
     print("Avvio rinomina aggressiva per standardizzare le colonne...")
     
-    # Logica corretta:
-    # 1. Le colonne "Cumulata Giornaliera Sensore X" (senza suffisso) sono i totali giornalieri e VANNO IGNORATE per il modello base.
-    # 2. Le colonne "Cumulata Giornaliera Sensore X_cumulata_30min" corrispondono alla pioggia istantanea (30min) e devono diventare "Cumulata Sensore X".
-    # 3. Le altre colonne "Cumulata Giornaliera Sensore X_suffisso" (es. _cumulata_1h) devono diventare "Cumulata Sensore X_suffisso".
-
     def build_rename_map(columns):
         rename_map = {}
         for col in columns:
             if 'Giornaliera ' in col:
                 if '_cumulata_30min' in col:
-                    # Caso 2: Trasforma "..._cumulata_30min" nel nome base senza suffisso
                     new_name = col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
                     rename_map[col] = new_name
                 else:
-                    # Caso 3: Rimuove solo "Giornaliera " mantenendo gli altri suffissi (_cumulata_1h, etc.)
-                    # Attenzione: Questo mapperebbe anche "Cumulata Giornaliera Sensore X" (totale) in "Cumulata Sensore X".
-                    # Dobbiamo evitare di sovrascrivere la mappatura del punto 2.
                     new_name = col.replace('Giornaliera ', '')
-                    # Se questa colonna è il totale giornaliero (nessun altro underscore oltre a quelli del nome sensore?),
-                    # rischiamo di mapparla sul nome base.
-                    # Tuttavia, se applichiamo prima la rinomina del 30min, e poi questa, potremmo avere collisioni.
-                    # Soluzione: Mappiamo tutto ciò che ha un suffisso temporale esplicito o statistico.
-                    
-                    # Se la colonna finisce con ')' (es. "Sensore 1295 (Arcevia)"), è il cumulato giornaliero puro.
-                    # Lo ignoriamo o lo mappiamo su qualcosa che non da fastidio, per evitare che sovrascriva il dato a 30min.
                     if col.strip().endswith(')'):
-                        continue # Ignora il cumulato giornaliero puro
-                    
+                        continue
                     rename_map[col] = new_name
         return rename_map
 
@@ -482,44 +507,66 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
 def make_prediction(model, scalers, config, data_inputs, device):
+    """
+    Genera le previsioni con il modello.
+    Include controlli di debug per verificare la riproducibilità.
+    """
     print(f"\n=== GENERAZIONE PREVISIONI ===")
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
     historical_data_np, forecast_data_np = data_inputs
     
+    # DEBUG: Verifica che gli input siano identici tra le esecuzioni
+    print(f"DEBUG - Hash dati storici: {hash(historical_data_np.tobytes())}")
+    print(f"DEBUG - Hash dati forecast: {hash(forecast_data_np.tobytes())}")
+    print(f"DEBUG - Primi 3 valori storici: {historical_data_np.flatten()[:3]}")
+    print(f"DEBUG - Primi 3 valori forecast: {forecast_data_np.flatten()[:3]}")
+    
+    # Normalizzazione
     historical_normalized = scaler_past_features.transform(historical_data_np)
     forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
     
+    # DEBUG: Verifica normalizzazione identica
+    print(f"DEBUG - Hash normalizzati storici: {hash(historical_normalized.tobytes())}")
+    print(f"DEBUG - Hash normalizzati forecast: {hash(forecast_normalized.tobytes())}")
+    
+    # Conversione a tensori
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
+    
+    # Assicura che il modello sia in eval mode (disabilita dropout)
+    model.eval()
+    
+    # Re-imposta il seed prima dell'inferenza per massima riproducibilità
+    # (Questo è un extra precaution, non dovrebbe essere necessario in eval mode)
+    set_seed(SEED)
     
     with torch.no_grad():
         predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
-    predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
-    # predictions_np shape: (seq_len, num_targets) OR (seq_len, num_targets, num_quantiles)
+    # DEBUG: Verifica output del modello
+    predictions_cpu = predictions_normalized.cpu().numpy()
+    print(f"DEBUG - Hash output modello: {hash(predictions_cpu.tobytes())}")
+    print(f"DEBUG - Primi 3 valori output: {predictions_cpu.flatten()[:3]}")
+    
+    predictions_np = predictions_cpu.squeeze(0)
     
     num_targets = len(config["target_columns"])
     
     if predictions_np.ndim == 3:
-        # Case: (seq_len, num_targets, num_quantiles)
-        # We need to reshape to (N, num_targets) for the scaler
-        # Transpose to (seq_len, num_quantiles, num_targets)
         seq_len, n_targets, n_quantiles = predictions_np.shape
         if n_targets != num_targets:
              print(f"Warning: Model output targets {n_targets} != config targets {num_targets}")
         
-        preds_permuted = predictions_np.transpose(0, 2, 1) # (seq, quantiles, targets)
+        preds_permuted = predictions_np.transpose(0, 2, 1)
         preds_flat = preds_permuted.reshape(-1, num_targets)
         preds_unscaled_flat = scaler_targets.inverse_transform(preds_flat)
         preds_unscaled = preds_unscaled_flat.reshape(seq_len, n_quantiles, num_targets)
-        predictions_scaled_back = preds_unscaled.transpose(0, 2, 1) # Back to (seq, targets, quantiles)
+        predictions_scaled_back = preds_unscaled.transpose(0, 2, 1)
         
     elif predictions_np.ndim == 2:
-        # Case: (seq_len, num_targets)
         predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
         
     else:
-        # Fallback for unexpected shapes (e.g. flattened old models)
         original_shape = predictions_np.shape
         if predictions_np.shape[-1] != num_targets:
              print(f"Rilevato output con dimensione finale {predictions_np.shape[-1]} diversa da num_targets {num_targets}. Tentativo di reshape.")
@@ -530,6 +577,7 @@ def make_prediction(model, scalers, config, data_inputs, device):
              predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
 
     print(f"Previsioni finali stats: min={predictions_scaled_back.min():.4f}, max={predictions_scaled_back.max():.4f}")
+    print(f"DEBUG - Hash previsioni finali: {hash(predictions_scaled_back.tobytes())}")
     
     return predictions_scaled_back
 
@@ -582,9 +630,6 @@ def main():
     try:
         log_environment_info()
         
-        # --- BLOCCO DI AUTENTICAZIONE MODIFICATO (SOLUZIONE 1) ---
-        # Questo blocco ora legge il file 'credentials.json' creato dal file .yml
-        
         credentials_file_path = "credentials.json"
         if not os.path.exists(credentials_file_path):
              raise FileNotFoundError(f"File delle credenziali '{credentials_file_path}' non trovato. Assicurarsi che lo step YML lo crei correttamente.")
@@ -596,7 +641,6 @@ def main():
         gc = gspread.authorize(credentials)
         print("✓ Autenticazione Google Sheets riuscita.")
         
-        # Il resto dello script continua normalmente
         model, scaler_past, scaler_forecast, scaler_target, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
         hist_data, fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
