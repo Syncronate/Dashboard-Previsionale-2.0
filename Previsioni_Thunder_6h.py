@@ -521,6 +521,18 @@ def make_prediction(model, scalers, config, data_inputs, device):
     print(f"DEBUG - Primi 3 valori storici: {historical_data_np.flatten()[:3]}")
     print(f"DEBUG - Primi 3 valori forecast: {forecast_data_np.flatten()[:3]}")
     
+    # DEBUG VISUALE (PER GITHUB ACTIONS)
+    if 'all_past_feature_columns' in config:
+        cols_past = config['all_past_feature_columns']
+        if len(cols_past) == historical_data_np.shape[1]:
+            print("\nDEBUG SCRIPT - CONFRONTO COLONNE E VALORI (Prima riga Storico):")
+            first_row = historical_data_np[0]
+            for i, (col, val) in enumerate(zip(cols_past, first_row)):
+                print(f"  {i:02d} | {col[:50]:<50} | {val:.6f}")
+            print("----------------------------------------------------")
+        else:
+            print(f"DEBUG SCRIPT - Mismatch colonne past: Config={len(cols_past)}, Data={historical_data_np.shape[1]}")
+    
     # Normalizzazione
     historical_normalized = scaler_past_features.transform(historical_data_np)
     forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
