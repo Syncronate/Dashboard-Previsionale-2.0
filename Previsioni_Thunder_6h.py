@@ -569,7 +569,12 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     for i in range(predictions_np.shape[0]):
         timestamp = prediction_start_time + timedelta(minutes=30 * (i + 1))
         row = [timestamp.strftime('%d/%m/%Y %H:%M')]
-        row.extend([f"{val:.3f}".replace('.', ',') for val in predictions_np[i, :]])
+        
+        step_data = predictions_np[i]
+        if step_data.ndim > 1:
+            step_data = step_data.flatten()
+            
+        row.extend([f"{val:.3f}".replace('.', ',') for val in step_data])
         rows_to_append.append(row)
     
     if rows_to_append:
