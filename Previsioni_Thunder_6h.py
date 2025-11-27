@@ -391,16 +391,40 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
 
     print("Avvio rinomina aggressiva per standardizzare le colonne...")
-    hist_rename_map = {
-        col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
-        for col in df_historical_raw.columns
-        if 'Giornaliera ' in col or '_cumulata_30min' in col
-    }
-    fcst_rename_map = {
-        col: col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
-        for col in df_forecast_raw.columns
-        if 'Giornaliera ' in col or '_cumulata_30min' in col
-    }
+    
+    # Logica corretta:
+    # 1. Le colonne "Cumulata Giornaliera Sensore X" (senza suffisso) sono i totali giornalieri e VANNO IGNORATE per il modello base.
+    # 2. Le colonne "Cumulata Giornaliera Sensore X_cumulata_30min" corrispondono alla pioggia istantanea (30min) e devono diventare "Cumulata Sensore X".
+    # 3. Le altre colonne "Cumulata Giornaliera Sensore X_suffisso" (es. _cumulata_1h) devono diventare "Cumulata Sensore X_suffisso".
+
+    def build_rename_map(columns):
+        rename_map = {}
+        for col in columns:
+            if 'Giornaliera ' in col:
+                if '_cumulata_30min' in col:
+                    # Caso 2: Trasforma "..._cumulata_30min" nel nome base senza suffisso
+                    new_name = col.replace('Giornaliera ', '').replace('_cumulata_30min', '')
+                    rename_map[col] = new_name
+                else:
+                    # Caso 3: Rimuove solo "Giornaliera " mantenendo gli altri suffissi (_cumulata_1h, etc.)
+                    # Attenzione: Questo mapperebbe anche "Cumulata Giornaliera Sensore X" (totale) in "Cumulata Sensore X".
+                    # Dobbiamo evitare di sovrascrivere la mappatura del punto 2.
+                    new_name = col.replace('Giornaliera ', '')
+                    # Se questa colonna è il totale giornaliero (nessun altro underscore oltre a quelli del nome sensore?),
+                    # rischiamo di mapparla sul nome base.
+                    # Tuttavia, se applichiamo prima la rinomina del 30min, e poi questa, potremmo avere collisioni.
+                    # Soluzione: Mappiamo tutto ciò che ha un suffisso temporale esplicito o statistico.
+                    
+                    # Se la colonna finisce con ')' (es. "Sensore 1295 (Arcevia)"), è il cumulato giornaliero puro.
+                    # Lo ignoriamo o lo mappiamo su qualcosa che non da fastidio, per evitare che sovrascriva il dato a 30min.
+                    if col.strip().endswith(')'):
+                        continue # Ignora il cumulato giornaliero puro
+                    
+                    rename_map[col] = new_name
+        return rename_map
+
+    hist_rename_map = build_rename_map(df_historical_raw.columns)
+    fcst_rename_map = build_rename_map(df_forecast_raw.columns)
 
     if hist_rename_map:
         df_historical_raw.rename(columns=hist_rename_map, inplace=True)
