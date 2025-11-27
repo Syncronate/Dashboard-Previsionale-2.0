@@ -1056,6 +1056,48 @@ def calculate_mbe(y_true, y_pred):
     """Calcola il Mean Bias Error."""
     return np.mean(y_pred - y_true)
 
+def calculate_split_indices(total_samples, input_steps, val_start_row, val_end_row, split_method, val_pct_temporal, val_pct_random):
+    """
+    Calcola gli indici di training e validazione in base al metodo scelto.
+    Restituisce (train_indices, val_indices).
+    """
+    train_indices, val_indices = None, None
+    
+    if "Temporale" in split_method:
+        st.info(f"Suddivisione temporale: {int((1-val_pct_temporal)*100)}% training, {int(val_pct_temporal*100)}% validazione.")
+        split_idx = int(total_samples * (1 - val_pct_temporal))
+        train_indices = np.arange(0, split_idx)
+        val_indices = np.arange(split_idx, total_samples)
+
+    elif "Evento Specifico" in split_method and val_start_row is not None and val_end_row is not None:
+        st.info(f"Validazione su Evento Specifico: Target Righe {val_start_row} - {val_end_row}")
+        
+        start_val_idx = max(0, val_start_row - input_steps)
+        end_val_idx = max(0, val_end_row - input_steps + 1)
+        
+        if start_val_idx >= total_samples:
+             st.warning(f"Indice di inizio validazione ({start_val_idx}) oltre la fine del dataset ({total_samples}).")
+             train_indices = np.arange(total_samples)
+             val_indices = np.array([], dtype=int)
+        else:
+             end_val_idx = min(end_val_idx, total_samples)
+             # Buffer per evitare leakage: escludiamo i campioni successivi il cui input si sovrappone all'evento
+             buffer_steps = input_steps
+             resume_train_idx = min(end_val_idx + buffer_steps, total_samples)
+             
+             val_indices = np.arange(start_val_idx, end_val_idx)
+             train_indices = np.concatenate([np.arange(0, start_val_idx), np.arange(resume_train_idx, total_samples)])
+             
+             st.write(f"Buffer applicato: esclusi {resume_train_idx - end_val_idx} campioni post-evento per evitare data leakage (input sovrapposti).")
+             st.write(f"Campioni Validazione: {len(val_indices)} (Idx: {start_val_idx}-{end_val_idx}) | Campioni Training: {len(train_indices)}")
+             
+    else: # Logica Casuale
+        st.info(f"Suddivisione casuale con {val_pct_random*100:.0f}% dei dati per la validazione.")
+        # Nota: Per la suddivisione casuale restituiamo None per indicare al chiamante di usare train_test_split
+        return None, None
+
+    return train_indices, val_indices
+
 def calculate_nse(y_true, y_pred):
     """Calcola la Nash-Sutcliffe Efficiency (NSE)."""
     numerator = np.sum((y_pred - y_true) ** 2)
@@ -1420,8 +1462,9 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
                     epochs=50, batch_size=32, learning_rate=0.001,
                     save_strategy='migliore', preferred_device='auto',
                     n_splits_cv=3, loss_function_name="MSELoss", training_mode='standard', quantiles=None,
-                    split_method="Temporale", validation_percentage_temporal=0.2, validation_percentage_random=0.2, use_weighted_loss=False, 
-                    use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
+                    split_method="Temporale", validation_percentage_temporal=0.2, validation_percentage_random=0.2, 
+                    val_start_row_csv=None, val_end_row_csv=None,
+                    use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
     if (split_method == "Temporale (Consigliato per Serie Storiche)" and validation_percentage_temporal == 0) or \
        (split_method == "Casuale per Percentuale" and validation_percentage_random == 0):
         if save_strategy == 'migliore':
@@ -1464,23 +1507,21 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    # --- INIZIO BLOCCO DI CODICE DA SOSTITUIRE ---
-
     from sklearn.model_selection import train_test_split
     weights_train, weights_val = None, None
     X_train, X_val, y_train, y_val = [None] * 4
 
-    if "Temporale" in split_method:
-        st.info(f"Suddivisione temporale: {int((1-validation_percentage_temporal)*100)}% training, {int(validation_percentage_temporal*100)}% validazione.")
-        
-        split_idx = int(len(X_scaled_full) * (1 - validation_percentage_temporal))
-        
-        train_indices = range(0, split_idx)
-        val_indices = range(split_idx, len(X_scaled_full))
+    total_samples = len(X_scaled_full)
+    input_steps_val = X_scaled_full.shape[1]
 
+    train_indices, val_indices = calculate_split_indices(
+        total_samples, input_steps_val, val_start_row_csv, val_end_row_csv,
+        split_method, validation_percentage_temporal, validation_percentage_random
+    )
+
+    if train_indices is not None: # Metodo Temporale o Evento
         X_train = X_scaled_full[train_indices]
         y_train = y_scaled_full[train_indices]
-        
         X_val = X_scaled_full[val_indices]
         y_val = y_scaled_full[val_indices]
 
@@ -1488,9 +1529,7 @@ def train_model_gnn(X_scaled_full, y_scaled_full, sample_weights_full, scaler_ta
             weights_train = sample_weights_full[train_indices]
             weights_val = sample_weights_full[val_indices]
 
-    else: # Logica Casuale
-        st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
-        
+    else: # Metodo Casuale
         if validation_percentage_random > 0:
             arrays_to_split = [X_scaled_full, y_scaled_full]
             if use_weighted_loss and sample_weights_full is not None:
@@ -2459,6 +2498,7 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
                 training_mode='standard', quantiles=None,
                 _model_to_continue_train=None,
                 split_method="Temporale", validation_percentage_temporal=0.2, validation_percentage_random=0.2,
+                val_start_row_csv=None, val_end_row_csv=None,
                 use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
     if (split_method == "Temporale (Consigliato per Serie Storiche)" and validation_percentage_temporal == 0) or \
        (split_method == "Casuale per Percentuale" and validation_percentage_random == 0):
@@ -2510,34 +2550,29 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    # --- INIZIO BLOCCO DI CODICE DA SOSTITUIRE ---
-
     from sklearn.model_selection import train_test_split
     weights_train, weights_val = None, None
-    X_enc_train, X_enc_val, y_tar_train, y_tar_val = [None] * 4 # Corretto
-    X_dec_train, X_dec_val = None, None
+    X_train, X_val, y_train, y_val = [None] * 4
 
-    if "Temporale" in split_method:
-        st.info(f"Suddivisione temporale: {int((1-validation_percentage_temporal)*100)}% training, {int(validation_percentage_temporal*100)}% validazione.")
-        
-        split_idx = int(len(X_scaled_full) * (1 - validation_percentage_temporal))
-        
-        train_indices = range(0, split_idx)
-        val_indices = range(split_idx, len(X_scaled_full))
+    total_samples = len(X_scaled_full)
+    input_steps_val = X_scaled_full.shape[1]
 
+    train_indices, val_indices = calculate_split_indices(
+        total_samples, input_steps_val, val_start_row_csv, val_end_row_csv,
+        split_method, validation_percentage_temporal, validation_percentage_random
+    )
+
+    if train_indices is not None: # Metodo Temporale o Evento
         X_train = X_scaled_full[train_indices]
         y_train = y_scaled_full[train_indices]
-        
         X_val = X_scaled_full[val_indices]
         y_val = y_scaled_full[val_indices]
 
         if use_weighted_loss and sample_weights_full is not None:
             weights_train = sample_weights_full[train_indices]
             weights_val = sample_weights_full[val_indices]
-
-    else: # Logica Casuale
-        st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
-        
+    
+    else: # Metodo Casuale
         if validation_percentage_random > 0:
             arrays_to_split = [X_scaled_full, y_scaled_full]
             if use_weighted_loss and sample_weights_full is not None:
@@ -2561,8 +2596,6 @@ def train_model(X_scaled_full, y_scaled_full, sample_weights_full, scaler_target
             y_train, y_val = y_scaled_full, []
             if use_weighted_loss and sample_weights_full is not None:
                 weights_train, weights_val = sample_weights_full, None
-
-    # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
 
     # MODIFICATO: Passa i pesi al DataLoader
     train_loader = DataLoader(TimeSeriesDataset(X_train, y_train, weights_train), batch_size=batch_size, shuffle=True)
@@ -2789,6 +2822,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
                         n_splits_cv=3, loss_function_name="MSELoss",
                         training_mode='standard', quantiles=None,
                         split_method="Temporale", validation_percentage_temporal=0.2, validation_percentage_random=0.2,
+                        val_start_row_csv=None, val_end_row_csv=None,
                         use_weighted_loss=False, use_magnitude_loss=False, target_threshold=0.5, weight_exponent=1.0):
     if (split_method == "Temporale (Consigliato per Serie Storiche)" and validation_percentage_temporal == 0) or \
        (split_method == "Casuale per Percentuale" and validation_percentage_random == 0):
@@ -2830,38 +2864,35 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    # --- INIZIO BLOCCO DI CODICE DA SOSTITUIRE ---
-
     from sklearn.model_selection import train_test_split
     weights_train, weights_val = None, None
     X_enc_train, X_enc_val, y_tar_train, y_tar_val = [None] * 4 # Corretto
     X_dec_train, X_dec_val = None, None
 
-    if "Temporale" in split_method:
-        st.info(f"Suddivisione temporale: {int((1-validation_percentage_temporal)*100)}% training, {int(validation_percentage_temporal*100)}% validazione.")
-        
-        split_idx = int(len(X_enc_scaled_full) * (1 - validation_percentage_temporal))
-        
-        train_indices = range(0, split_idx)
-        val_indices = range(split_idx, len(X_enc_scaled_full))
+    total_samples = len(X_enc_scaled_full)
+    input_steps_val = X_enc_scaled_full.shape[1]
 
+    train_indices, val_indices = calculate_split_indices(
+        total_samples, input_steps_val, val_start_row_csv, val_end_row_csv,
+        split_method, validation_percentage_temporal, validation_percentage_random
+    )
+
+    if train_indices is not None: # Metodo Temporale o Evento
         X_enc_train = X_enc_scaled_full[train_indices]
         X_dec_train = X_dec_scaled_full[train_indices]
-        y_tar_train = y_tar_scaled_full[train_indices] # Corretto
+        y_tar_train = y_tar_scaled_full[train_indices]
         
         X_enc_val = X_enc_scaled_full[val_indices]
         X_dec_val = X_dec_scaled_full[val_indices]
-        y_tar_val = y_tar_scaled_full[val_indices] # Corretto
+        y_tar_val = y_tar_scaled_full[val_indices]
 
         if use_weighted_loss and sample_weights_full is not None:
             weights_train = sample_weights_full[train_indices]
             weights_val = sample_weights_full[val_indices]
-
-    else: # Logica Casuale
-        st.info(f"Suddivisione casuale con {validation_percentage_random*100:.0f}% dei dati per la validazione.")
-        
+    
+    else: # Metodo Casuale
         if validation_percentage_random > 0:
-            arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full] # Corretto
+            arrays_to_split = [X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full]
             if use_weighted_loss and sample_weights_full is not None:
                 arrays_to_split.append(sample_weights_full)
 
@@ -2874,7 +2905,7 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             
             X_enc_train, X_enc_val = split_results[0], split_results[1]
             X_dec_train, X_dec_val = split_results[2], split_results[3]
-            y_tar_train, y_tar_val = split_results[4], split_results[5] # Corretto
+            y_tar_train, y_tar_val = split_results[4], split_results[5]
             
             if use_weighted_loss and sample_weights_full is not None:
                 weights_train, weights_val = split_results[6], split_results[7]
@@ -2885,8 +2916,6 @@ def train_model_seq2seq(X_enc_scaled_full, X_dec_scaled_full, y_tar_scaled_full,
             y_tar_train, y_tar_val = y_tar_scaled_full, []
             if use_weighted_loss and sample_weights_full is not None:
                 weights_train, weights_val = sample_weights_full, None
-
-    # --- FINE BLOCCO DI CODICE DA SOSTITUIRE ---
 
     X_train, y_train = X_enc_train, y_tar_train
     X_val, y_val = X_enc_val, y_tar_val
@@ -4188,12 +4217,15 @@ elif page == 'Allenamento Modello':
     st.markdown("**Metodo di Suddivisione Dati**")
     split_method = st.radio(
         "Scegli la strategia di suddivisione:",
-        options=["Temporale (Consigliato per Serie Storiche)", "Casuale per Percentuale"],
+        options=["Temporale (Consigliato per Serie Storiche)", "Casuale per Percentuale", "Evento Specifico (Indici Righe CSV)"],
         index=0, key="split_method_selection",
-        help="Temporale: i dati più vecchi per training, i più recenti per validazione. Casuale: mescola tutti i dati."
+        help="Temporale: i dati più vecchi per training, i più recenti per validazione. Casuale: mescola tutti i dati. Evento: seleziona un range di righe specifiche per la validazione."
     )
 
     validation_percentage_temporal = 0.2
+    val_start_row = None
+    val_end_row = None
+
     if split_method == "Temporale (Consigliato per Serie Storiche)":
         validation_percentage_temporal = st.slider(
             "Percentuale Dati Recenti per il Validation Set:", 0, 50, 20, 5, format="%d%%",
@@ -4207,6 +4239,18 @@ elif page == 'Allenamento Modello':
         validation_percentage_random = st.slider(
             "Percentuale Dati per il Validation Set:", 0, 50, 20, 5, format="%d%%", key="validation_split_percentage_random"
         ) / 100.0
+    
+    if split_method == "Evento Specifico (Indici Righe CSV)":
+        st.info("Definisci l'inizio e la fine dell'evento (fenomeno target) che vuoi usare per la validazione.")
+        c_start, c_end = st.columns(2)
+        with c_start:
+            val_start_row = st.number_input("Riga Inizio Evento (Target)", min_value=0, value=0, step=1, key="val_event_start")
+        with c_end:
+            val_end_row = st.number_input("Riga Fine Evento (Target)", min_value=0, value=100, step=1, key="val_event_end")
+        
+        if val_start_row >= val_end_row:
+            st.error("La riga di fine deve essere maggiore della riga di inizio.")
+            st.stop()
 
     st.markdown("**Modalità di Training e Funzione di Loss**")
     col_mode, col_loss = st.columns(2)
@@ -4333,6 +4377,7 @@ elif page == 'Allenamento Modello':
                     split_method=split_method,
                     validation_percentage_temporal=validation_percentage_temporal,
                     validation_percentage_random=validation_percentage_random,
+                    val_start_row_csv=val_start_row, val_end_row_csv=val_end_row,
                     use_weighted_loss=use_weighted_loss,
                     use_magnitude_loss=use_magnitude_loss,
                     target_threshold=target_threshold_scaled,
@@ -4462,6 +4507,7 @@ elif page == 'Allenamento Modello':
                     split_method=split_method,
                     validation_percentage_temporal=validation_percentage_temporal,
                     validation_percentage_random=validation_percentage_random,
+                    val_start_row_csv=val_start_row, val_end_row_csv=val_end_row,
                     use_weighted_loss=use_weighted_loss,
                     use_magnitude_loss=use_magnitude_loss,
                     target_threshold=target_threshold_scaled,
@@ -4675,6 +4721,7 @@ elif page == 'Allenamento Modello':
                         split_method=split_method,
                         validation_percentage_temporal=validation_percentage_temporal,
                         validation_percentage_random=validation_percentage_random,
+                        val_start_row_csv=val_start_row, val_end_row_csv=val_end_row,
                         use_weighted_loss=use_weighted_loss,
                         use_magnitude_loss=use_magnitude_loss,
                         target_threshold=target_threshold_scaled,
