@@ -502,17 +502,38 @@ def make_prediction(model, scalers, config, data_inputs, device):
         predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
+    # predictions_np shape: (seq_len, num_targets) OR (seq_len, num_targets, num_quantiles)
     
-    original_shape = predictions_np.shape
     num_targets = len(config["target_columns"])
     
-    if predictions_np.ndim > 1 and predictions_np.shape[1] > num_targets:
-        print(f"Rilevato output multi-colonna ({original_shape[1]} colonne) per {num_targets} target(s). Appiattimento per lo scaling.")
-        predictions_np_flat = predictions_np.reshape(-1, num_targets)
-        predictions_scaled_back_flat = scaler_targets.inverse_transform(predictions_np_flat)
-        predictions_scaled_back = predictions_scaled_back_flat.reshape(original_shape)
-    else:
+    if predictions_np.ndim == 3:
+        # Case: (seq_len, num_targets, num_quantiles)
+        # We need to reshape to (N, num_targets) for the scaler
+        # Transpose to (seq_len, num_quantiles, num_targets)
+        seq_len, n_targets, n_quantiles = predictions_np.shape
+        if n_targets != num_targets:
+             print(f"Warning: Model output targets {n_targets} != config targets {num_targets}")
+        
+        preds_permuted = predictions_np.transpose(0, 2, 1) # (seq, quantiles, targets)
+        preds_flat = preds_permuted.reshape(-1, num_targets)
+        preds_unscaled_flat = scaler_targets.inverse_transform(preds_flat)
+        preds_unscaled = preds_unscaled_flat.reshape(seq_len, n_quantiles, num_targets)
+        predictions_scaled_back = preds_unscaled.transpose(0, 2, 1) # Back to (seq, targets, quantiles)
+        
+    elif predictions_np.ndim == 2:
+        # Case: (seq_len, num_targets)
         predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
+        
+    else:
+        # Fallback for unexpected shapes (e.g. flattened old models)
+        original_shape = predictions_np.shape
+        if predictions_np.shape[-1] != num_targets:
+             print(f"Rilevato output con dimensione finale {predictions_np.shape[-1]} diversa da num_targets {num_targets}. Tentativo di reshape.")
+             predictions_np_flat = predictions_np.reshape(-1, num_targets)
+             predictions_scaled_back_flat = scaler_targets.inverse_transform(predictions_np_flat)
+             predictions_scaled_back = predictions_scaled_back_flat.reshape(original_shape)
+        else:
+             predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
 
     print(f"Previsioni finali stats: min={predictions_scaled_back.min():.4f}, max={predictions_scaled_back.max():.4f}")
     
