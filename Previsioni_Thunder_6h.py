@@ -29,53 +29,122 @@ class EncoderLSTM(nn.Module):
         self.bidirectional = bidirectional
         self.num_directions = 2 if bidirectional else 1
 
+        # Input projection per stabilità
         self.input_proj = nn.Linear(input_size, hidden_size)
+
+        # LSTM bidirezionale
         self.lstm = nn.LSTM(
-            hidden_size,
+            hidden_size, # Usiamo hidden_size dopo projection
             hidden_size,
             num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0,
             bidirectional=bidirectional
         )
+
+        # Layer Normalization
         self.layer_norm = nn.LayerNorm(hidden_size * self.num_directions)
 
+        # Projection per ridurre bidirezionale a unidirezionale per decoder
         if bidirectional:
             self.hidden_proj = nn.Linear(hidden_size * 2, hidden_size)
             self.cell_proj = nn.Linear(hidden_size * 2, hidden_size)
 
     def forward(self, x):
+        """
+        Args:
+            x: (batch, seq_len, input_size)
+        Returns:
+            outputs: (batch, seq_len, hidden_size * num_directions)
+            hidden: (num_layers, batch, hidden_size)
+            cell: (num_layers, batch, hidden_size)
+        """
+        # Input projection
         x = self.input_proj(x)
+
+        # LSTM forward
         outputs, (hidden, cell) = self.lstm(x)
+
+        # Layer normalization
         outputs = self.layer_norm(outputs)
+
+        # Se bidirezionale, proietta hidden e cell per il decoder
         if self.bidirectional:
+            # hidden shape: (num_layers * 2, batch, hidden_size)
+            # Vogliamo: (num_layers, batch, hidden_size)
+
+            # Combina forward e backward
             hidden = hidden.view(self.num_layers, 2, -1, self.hidden_size)
             cell = cell.view(self.num_layers, 2, -1, self.hidden_size)
-            hidden = self.hidden_proj(torch.cat([hidden[:, 0, :, :], hidden[:, 1, :, :]], dim=-1))
-            cell = self.cell_proj(torch.cat([cell[:, 0, :, :], cell[:, 1, :, :]], dim=-1))
+
+            # Concatena e proietta
+            hidden = self.hidden_proj(
+                torch.cat([hidden[:, 0, :, :], hidden[:, 1, :, :]], dim=-1)
+            )
+            cell = self.cell_proj(
+                torch.cat([cell[:, 0, :, :], cell[:, 1, :, :]], dim=-1)
+            )
+
         return outputs, hidden, cell
 
-class Attention(nn.Module):
+class ImprovedAttention(nn.Module):
     def __init__(self, hidden_size, attention_type='additive'):
         super().__init__()
         self.hidden_size = hidden_size
         self.attention_type = attention_type
-        self.W_decoder = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.W_encoder = nn.Linear(hidden_size * 2, hidden_size, bias=False)
-        self.v = nn.Linear(hidden_size, 1, bias=False)
+
+        if attention_type == 'additive': # Bahdanau-style
+            self.W_decoder = nn.Linear(hidden_size, hidden_size, bias=False)
+            self.W_encoder = nn.Linear(hidden_size * 2, hidden_size, bias=False)
+            self.v = nn.Linear(hidden_size, 1, bias=False)
+        elif attention_type == 'dot': # Luong-style
+            self.W = nn.Linear(hidden_size, hidden_size * 2, bias=False)
+
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, decoder_hidden, encoder_outputs, mask=None):
+        """
+        Args:
+            decoder_hidden: (batch, hidden_size) - ultimo stato decoder
+            encoder_outputs: (batch, seq_len, hidden_size)
+            mask: (batch, seq_len) - maschera per padding (opzionale)
+        Returns:
+            context: (batch, hidden_size)
+            attn_weights: (batch, seq_len)
+        """
         batch_size, seq_len, _ = encoder_outputs.shape
-        decoder_proj = self.W_decoder(decoder_hidden).unsqueeze(1).expand(-1, seq_len, -1)
-        encoder_proj = self.W_encoder(encoder_outputs)
-        energy = torch.tanh(decoder_proj + encoder_proj)
-        scores = self.v(energy).squeeze(-1)
+
+        if self.attention_type == 'additive':
+            # Bahdanau Attention
+            # (batch, hidden_size) -> (batch, 1, hidden_size) -> (batch, seq_len, hidden_size)
+            decoder_proj = self.W_decoder(decoder_hidden).unsqueeze(1).expand(-1, seq_len, -1)
+            encoder_proj = self.W_encoder(encoder_outputs)
+
+            # (batch, seq_len, hidden_size)
+            energy = torch.tanh(decoder_proj + encoder_proj)
+
+            # (batch, seq_len, 1) -> (batch, seq_len)
+            scores = self.v(energy).squeeze(-1)
+
+        elif self.attention_type == 'dot':
+            # Luong Attention (dot product)
+            decoder_proj = self.W(decoder_hidden) # (batch, hidden_size)
+            # (batch, hidden_size, 1)
+            scores = torch.bmm(encoder_outputs, decoder_proj.unsqueeze(2)).squeeze(2)
+
+        # Applica maschera se presente (per sequenze di lunghezza variabile)
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e10)
-        attn_weights = self.softmax(scores)
+
+        # Normalizza con softmax
+        attn_weights = self.softmax(scores) # (batch, seq_len)
+
+        # Context vector: somma pesata degli encoder outputs
+        # (batch, 1, seq_len) x (batch, seq_len, hidden_size) -> (batch, 1, hidden_size)
         context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)
+
         return context, attn_weights
+
 
 class DecoderLSTMWithAttention(nn.Module):
     def __init__(self, forecast_input_size, hidden_size, output_size,
@@ -86,54 +155,72 @@ class DecoderLSTMWithAttention(nn.Module):
         self.forecast_input_size = forecast_input_size
         self.output_size = output_size
         self.num_quantiles = num_quantiles
-        self.attention = Attention(hidden_size, attention_type)
 
+        self.attention = ImprovedAttention(hidden_size, attention_type)
+
+        # LSTM input: forecast features + context vector
         self.lstm = nn.LSTM(
-            forecast_input_size + hidden_size * 2, # Input LSTM corretto
+            forecast_input_size + hidden_size * 2, # Concatenazione
             hidden_size,
             num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0
         )
-        
-        # --- QUESTA È LA RIGA CORRETTA ---
-        # La dimensione dell'input ora è calcolata come: forecast_input_size + hidden_size + hidden_size
-        # che corrisponde a 4 + 128 + 128 = 260.
+
+        # Gating mechanism per bilanciare input e context
         self.gate = nn.Sequential(
-            nn.Linear(forecast_input_size + hidden_size + hidden_size, hidden_size),
+            nn.Linear(forecast_input_size + hidden_size * 2, hidden_size),
             nn.Sigmoid()
         )
-        # ------------------------------------
 
+        # projection layer for context vector
         self.context_proj = nn.Linear(hidden_size * 2, hidden_size)
+
+        # Output layer
         self.fc = nn.Linear(hidden_size, output_size * num_quantiles)
+
+        # Dropout per regolarizzazione
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
-        decoder_hidden = hidden[-1]
-        context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
-        
-        lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
-        
-        output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
-        output = output.squeeze(1)
-        
-        projected_context = self.context_proj(context)
+        """
+        Args:
+            x_forecast_step: (batch, 1, forecast_input_size)
+            hidden: (num_layers, batch, hidden_size)
+            cell: (num_layers, batch, hidden_size)
+            encoder_outputs: (batch, encoder_seq_len, hidden_size)
+        """
+        batch_size = x_forecast_step.size(0)
 
-        # Questo gate_input ora corrisponderà alla definizione del layer nn.Linear qui sopra
+        # Usa l'ultimo layer dell'hidden state per l'attention
+        decoder_hidden = hidden[-1] # (batch, hidden_size)
+
+        # Calcola attention
+        context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
+
+        # Concatena input forecast con context
+        lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
+
+        # Forward LSTM
+        output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
+        output = output.squeeze(1) # (batch, hidden_size)
+
+        # Gating: bilancia context e output LSTM
+        projected_context = self.context_proj(context)
         gate_input = torch.cat([
             x_forecast_step.squeeze(1),
             projected_context,
             output
         ], dim=1)
-        
-        gate_value = self.gate(gate_input)
-        
+        gate_value = self.gate(gate_input) # (batch, hidden_size)
+
+        # Output finale: mix pesato
         gated_output = gate_value * output + (1 - gate_value) * projected_context
         gated_output = self.dropout(gated_output)
-        
+
+        # Predizione
         prediction = self.fc(gated_output)
-        
+
         return prediction, hidden, cell, attn_weights
 
 class Seq2SeqWithAttention(nn.Module):
@@ -143,30 +230,77 @@ class Seq2SeqWithAttention(nn.Module):
         self.decoder = decoder
         self.output_window = output_window_steps
 
-    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0, target_sequence=None):
+    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0,
+                target_sequence=None):
+        """
+        Args:
+            x_past: (batch, enc_seq_len, enc_features)
+            x_future_forecast: (batch, dec_seq_len, dec_features)
+            teacher_forcing_ratio: float in [0, 1]
+            target_sequence: (batch, output_window, num_targets) - per teacher forcing
+        """
         batch_size = x_past.shape[0]
         target_output_size = self.decoder.output_size
         num_quantiles = self.decoder.num_quantiles
         decoder_output_dim = target_output_size * num_quantiles
-        
+
+        # Output tensors
         outputs = torch.zeros(batch_size, self.output_window, decoder_output_dim).to(x_past.device)
         attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(x_past.device)
-        
+
+        # Encode
         encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
-        
+
+        # Primo input del decoder
         decoder_input_step = x_future_forecast[:, 0:1, :]
-        
+
         for t in range(self.output_window):
+            # Decode step
             decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
                 decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
             )
-            outputs[:, t, :] = decoder_output_step
-            attention_weights_history[:, t, :] = attn_weights.squeeze(0)
 
+            outputs[:, t, :] = decoder_output_step
+            attention_weights_history[:, t, :] = attn_weights.squeeze()
+
+            # Prepara input per prossimo step
             if t < self.output_window - 1:
-                decoder_input_step = x_future_forecast[:, t+1:t+2, :]
-        
+                use_teacher_forcing = random.random() < teacher_forcing_ratio
+
+                if use_teacher_forcing and target_sequence is not None:
+                    # Teacher forcing: usa target reale
+                    # Nota: devi avere le forecast features associate al target reale
+                    decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+                else:
+                    # Autoregressive: usa predizione precedente
+                    # CRITICO: devi integrare la predizione nelle forecast features
+
+                    # Reshape predizione per ottenere i target
+                    if num_quantiles > 1:
+                        # Usa la mediana (quantile centrale)
+                        pred_reshaped = decoder_output_step.view(batch_size, target_output_size, num_quantiles)
+                        pred_targets = pred_reshaped[:, :, 1] # Mediana
+                    else:
+                        pred_targets = decoder_output_step.view(batch_size, target_output_size)
+
+                    # OPZIONE 1: Sostituisci i livelli predetti nelle forecast features
+                    next_forecast_features = x_future_forecast[:, t+1, :].clone()
+
+                    # Identifica quali feature sono livelli (da sostituire)
+                    # Questa logica dipende dal tuo ordine delle feature!
+                    # Esempio: se le ultime N feature sono i livelli target
+                    num_target_features = target_output_size
+                    next_forecast_features[:, -num_target_features:] = pred_targets
+
+                    decoder_input_step = next_forecast_features.unsqueeze(1)
+
+                    # OPZIONE 2 (più semplice ma meno accurata): usa solo forecast features
+                    # decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+
+        if num_quantiles > 1:
+            outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
+
         return outputs, attention_weights_history
 
 # --- FINE BLOCCO MODELLO ---
