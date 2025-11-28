@@ -33,7 +33,7 @@ def set_seed(seed):
 set_seed(SEED)
 
 # ============================================
-# DEFINIZIONE MODELLO
+# DEFINIZIONE MODELLO (Seq2SeqWithAttention)
 # ============================================
 
 class EncoderLSTM(nn.Module):
@@ -148,13 +148,6 @@ class DecoderLSTMWithAttention(nn.Module):
 
 
 class Seq2SeqWithAttention(nn.Module):
-    """
-    Modello Seq2Seq con Attention.
-    
-    NOTA: Questo modello NON usa feedback autoregressivo nelle features di input,
-    perché le forecast_input_columns non contengono i valori target.
-    L'autoregressive avviene solo attraverso lo stato hidden dell'LSTM.
-    """
     def __init__(self, encoder, decoder, output_window_steps):
         super().__init__()
         self.encoder = encoder
@@ -162,43 +155,75 @@ class Seq2SeqWithAttention(nn.Module):
         self.output_window = output_window_steps
 
     def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0, target_sequence=None):
-        """
-        Args:
-            x_past: (batch, enc_seq_len, enc_features) - Dati storici
-            x_future_forecast: (batch, dec_seq_len, dec_features) - Feature forecast future
-        Returns:
-            outputs: Predizioni per ogni step
-            attention_weights_history: Pesi attention per debug/visualizzazione
-        """
         batch_size = x_past.shape[0]
         target_output_size = self.decoder.output_size
         num_quantiles = self.decoder.num_quantiles
         decoder_output_dim = target_output_size * num_quantiles
 
-        # Inizializza tensori output
         outputs = torch.zeros(batch_size, self.output_window, decoder_output_dim).to(x_past.device)
         attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(x_past.device)
 
-        # Encoding dei dati storici
         encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
 
-        # Loop di decoding - USA LE FORECAST FEATURES ORIGINALI PER OGNI STEP
-        # (Nessun feedback autoregressivo nelle features, solo nello stato hidden)
+        # Primo input del decoder
+        decoder_input_step = x_future_forecast[:, 0:1, :]
+
         for t in range(self.output_window):
-            # Prendi le forecast features per questo step
-            decoder_input_step = x_future_forecast[:, t:t+1, :]
-            
-            # Decode
             decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
                 decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
             )
 
-            # Salva output
             outputs[:, t, :] = decoder_output_step
             attention_weights_history[:, t, :] = attn_weights.squeeze()
 
-        # Reshape per quantili se necessario
+            if t < self.output_window - 1:
+                # Autoregressive logic handled in make_prediction for inference script
+                # Here we just expect x_future_forecast to contain the correct next step input
+                # But since we are in a script where we might need to feed back predictions...
+                # Actually, for the script, we will call the model step-by-step or pass the full tensor
+                # IF the full tensor is already prepared.
+                # However, since the script needs to handle dynamic autoregression (updating the input),
+                # it's better if the script calls the model in a way that allows this, OR
+                # we implement the autoregressive logic HERE inside the forward method if x_future_forecast is not full.
+                
+                # For consistency with the script logic which prepares the tensor:
+                # We will assume x_future_forecast is fully populated OR we are in a mode where we don't update it here.
+                # BUT, wait! In the Transformer script, we pass the full tensor.
+                # If we want true autoregression where prediction t feeds into t+1, we need to do it here OR in the script loop.
+                # The Transformer script does it inside the model forward (for autoregressive mode).
+                # So let's add the autoregressive feedback logic here too!
+                
+                if teacher_forcing_ratio == 0 and target_sequence is None:
+                     # Autoregressive Inference Mode
+                     
+                     # 1. Get prediction
+                    if num_quantiles > 1:
+                        pred_reshaped = decoder_output_step.view(batch_size, target_output_size, num_quantiles)
+                        pred_targets = pred_reshaped[:, :, 1] # Median
+                    else:
+                        pred_targets = decoder_output_step.view(batch_size, target_output_size)
+                    
+                    # 2. Prepare next input
+                    # We need to take the base features from x_future_forecast (e.g. weather) and update the target columns
+                    next_base_input = x_future_forecast[:, t+1:t+2, :].clone()
+                    
+                    # Assuming target columns are the LAST N columns of the decoder input
+                    # This is a strong assumption but standard in this project
+                    num_target_features = target_output_size
+                    
+                    # Check if we actually have target features in the input (we might not if use_future_forecasts=False)
+                    # If use_future_forecasts=False, input dim is just num_targets
+                    if next_base_input.shape[-1] == num_target_features:
+                        next_base_input = pred_targets.unsqueeze(1)
+                    else:
+                        # We have other features + targets. Update only targets.
+                        next_base_input[:, :, -num_target_features:] = pred_targets
+                    
+                    decoder_input_step = next_base_input
+                else:
+                    decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+
         if num_quantiles > 1:
             outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
 
@@ -209,7 +234,7 @@ class Seq2SeqWithAttention(nn.Module):
 # COSTANTI
 # ============================================
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20251126_1100_best"
+MODEL_BASE_NAME = "modello_seq2seq_1054_final" # Default, will be overwritten by config if needed
 
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
@@ -245,7 +270,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     scaler_forecast_features_path = os.path.join(models_dir, f"{model_base_name}_forecast_features.joblib")
     scaler_targets_path = os.path.join(models_dir, f"{model_base_name}_targets.joblib")
     
-    for p in [config_path, model_path, scaler_past_features_path, scaler_forecast_features_path, scaler_targets_path]:
+    for p in [config_path, model_path, scaler_past_features_path, scaler_targets_path]:
         if not os.path.exists(p):
             raise FileNotFoundError(f"File non trovato -> {p}")
     
@@ -255,12 +280,19 @@ def load_model_and_scalers(model_base_name, models_dir):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     enc_input_size = len(config["all_past_feature_columns"])
-    dec_input_size = len(config["forecast_input_columns"])
+    
+    # Determine decoder input size
+    use_future_forecasts = config.get("use_future_forecasts", True)
+    dec_output_size = len(config["target_columns"])
+    
+    if use_future_forecasts:
+        dec_input_size = len(config["forecast_input_columns"])
+    else:
+        dec_input_size = dec_output_size # Only past targets
     
     quantiles = config.get("quantiles")
     num_quantiles = len(quantiles) if quantiles and isinstance(quantiles, list) else 1
     
-    dec_output_size = len(config["target_columns"])
     hidden = config["hidden_size"]
     layers = config["num_layers"]
     drop = config["dropout"]
@@ -272,6 +304,7 @@ def load_model_and_scalers(model_base_name, models_dir):
     print(f"  - Output: {dec_output_size} target(s)")
     print(f"  - Quantili: {num_quantiles}")
     print(f"  - Output window: {out_win} steps")
+    print(f"  - Use Future Forecasts: {use_future_forecasts}")
     
     encoder = EncoderLSTM(enc_input_size, hidden, layers, drop)
     decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop, num_quantiles=num_quantiles)
@@ -281,12 +314,15 @@ def load_model_and_scalers(model_base_name, models_dir):
     model.load_state_dict(model_state)
     model.eval()
     
-    # Carica scaler con warning gestito
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         scaler_past_features = joblib.load(scaler_past_features_path)
-        scaler_forecast_features = joblib.load(scaler_forecast_features_path)
+        try:
+            scaler_forecast_features = joblib.load(scaler_forecast_features_path)
+        except:
+            print("Warning: Scaler forecast non caricato (potrebbe non essere necessario).")
+            scaler_forecast_features = None
         scaler_targets = joblib.load(scaler_targets_path)
     
     print("✓ Modello e scaler caricati")
@@ -299,7 +335,12 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     past_feature_columns = config["all_past_feature_columns"]
-    forecast_feature_columns = config["forecast_input_columns"]
+    
+    use_future_forecasts = config.get("use_future_forecasts", True)
+    if use_future_forecasts:
+        forecast_feature_columns = config["forecast_input_columns"]
+    else:
+        forecast_feature_columns = []
     
     sh = gc.open_by_key(sheet_id)
     
@@ -314,10 +355,12 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     historical_values = historical_ws.get_all_values()
     df_historical_raw = pd.read_csv(io.StringIO(values_to_csv_string(historical_values)), decimal=',')
     
-    print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
-    forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
-    forecast_values = forecast_ws.get_all_values()
-    df_forecast_raw = pd.read_csv(io.StringIO(values_to_csv_string(forecast_values)), decimal=',')
+    df_forecast_raw = None
+    if use_future_forecasts:
+        print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
+        forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
+        forecast_values = forecast_ws.get_all_values()
+        df_forecast_raw = pd.read_csv(io.StringIO(values_to_csv_string(forecast_values)), decimal=',')
 
     # Rinomina colonne
     def build_rename_map(columns):
@@ -334,15 +377,17 @@ def fetch_and_prepare_data(gc, sheet_id, config):
         return rename_map
 
     hist_rename_map = build_rename_map(df_historical_raw.columns)
-    fcst_rename_map = build_rename_map(df_forecast_raw.columns)
-
     if hist_rename_map:
         df_historical_raw.rename(columns=hist_rename_map, inplace=True)
-    if fcst_rename_map:
-        df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
+    
+    if df_forecast_raw is not None:
+        fcst_rename_map = build_rename_map(df_forecast_raw.columns)
+        if fcst_rename_map:
+            df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
 
     df_historical_raw = df_historical_raw.loc[:, ~df_historical_raw.columns.duplicated(keep='last')]
-    df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='last')]
+    if df_forecast_raw is not None:
+        df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='last')]
 
     # Parsing date storiche
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
@@ -362,24 +407,28 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
     print(f"Shape dati storici: {input_data_historical.shape}")
     
-    # Parsing date forecast
-    df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(
-        df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce'
-    )
-    future_forecasts = df_forecast_raw[df_forecast_raw[GSHEET_FORECAST_DATE_COL] > latest_valid_timestamp].copy()
-    
-    if len(future_forecasts) < output_window_steps:
-        raise ValueError(f"Previsioni insufficienti: {len(future_forecasts)} < {output_window_steps}")
-    
-    future_data = future_forecasts.head(output_window_steps).copy()
-    
-    for col in forecast_feature_columns:
-        if col not in future_data.columns:
-            raise ValueError(f"Colonna previsionale '{col}' non trovata.")
-        future_data[col] = pd.to_numeric(future_data[col], errors='coerce')
+    # Prepara dati forecast
+    input_data_forecast = None
+    if use_future_forecasts and df_forecast_raw is not None:
+        df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(
+            df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce'
+        )
+        future_forecasts = df_forecast_raw[df_forecast_raw[GSHEET_FORECAST_DATE_COL] > latest_valid_timestamp].copy()
+        
+        if len(future_forecasts) < output_window_steps:
+            raise ValueError(f"Previsioni insufficienti: {len(future_forecasts)} < {output_window_steps}")
+        
+        future_data = future_forecasts.head(output_window_steps).copy()
+        
+        for col in forecast_feature_columns:
+            if col not in future_data.columns:
+                raise ValueError(f"Colonna previsionale '{col}' non trovata.")
+            future_data[col] = pd.to_numeric(future_data[col], errors='coerce')
 
-    input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
-    print(f"Shape dati forecast: {input_data_forecast.shape}")
+        input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
+        print(f"Shape dati forecast: {input_data_forecast.shape}")
+    else:
+        print("Nessuna colonna forecast richiesta o dati forecast non caricati.")
     
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
@@ -391,18 +440,44 @@ def make_prediction(model, scalers, config, data_inputs, device):
     
     # Normalizzazione
     historical_normalized = scaler_past_features.transform(historical_data_np)
-    forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
-    
-    # Conversione tensori
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
-    forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
     
+    forecast_tensor = None
+    use_future_forecasts = config.get("use_future_forecasts", True)
+    
+    if use_future_forecasts and forecast_data_np is not None:
+        forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
+        forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
+    else:
+        # No future forecasts: costruiamo il dummy input con l'ultimo target noto
+        past_cols = config.get("all_past_feature_columns", [])
+        target_cols = config.get("target_columns", [])
+        num_targets = len(target_cols)
+        output_steps = config['output_window_steps']
+        
+        last_target_values = []
+        for t_col in target_cols:
+            if t_col in past_cols:
+                idx = past_cols.index(t_col)
+                last_target_values.append(historical_normalized[-1, idx])
+            else:
+                last_target_values.append(0.0)
+        
+        last_targets_tensor = torch.tensor(last_target_values, dtype=torch.float32).view(1, 1, -1).to(device)
+        
+        # Create dummy future tensor (batch, seq_len, num_targets)
+        # We initialize with zeros, but the first step will be the last known target
+        dummy_future = torch.zeros(1, output_steps, num_targets).to(device)
+        dummy_future[:, 0:1, :] = last_targets_tensor
+        forecast_tensor = dummy_future
+
     # Inferenza
     model.eval()
     set_seed(SEED)
     
     with torch.no_grad():
-        predictions_normalized, _ = model(historical_tensor, forecast_tensor)
+        # The model's forward method now handles the autoregressive loop if teacher_forcing_ratio=0
+        predictions_normalized, _ = model(historical_tensor, forecast_tensor, teacher_forcing_ratio=0.0)
     
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     num_targets = len(config["target_columns"])
@@ -481,7 +556,7 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
 
 def main():
     print(f"\n{'='*60}")
-    print(f"AVVIO SCRIPT - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"AVVIO SCRIPT SEQ2SEQ - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
     
     try:
