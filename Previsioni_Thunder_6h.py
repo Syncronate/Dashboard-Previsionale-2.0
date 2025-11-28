@@ -335,12 +335,20 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     input_window_steps = config["input_window_steps"]
     output_window_steps = config["output_window_steps"]
     past_feature_columns = config["all_past_feature_columns"]
+    target_columns = config.get("target_columns", [])
     
     use_future_forecasts = config.get("use_future_forecasts", True)
+    forecast_feature_columns = []
+    actual_forecast_cols_to_fetch = []
+
     if use_future_forecasts:
         forecast_feature_columns = config["forecast_input_columns"]
-    else:
-        forecast_feature_columns = []
+        # Filtra le colonne che sono anche target (non vanno cercate nel foglio previsioni)
+        actual_forecast_cols_to_fetch = [c for c in forecast_feature_columns if c not in target_columns]
+        
+        if len(actual_forecast_cols_to_fetch) == 0:
+            print("Info: Le colonne di input previsionale coincidono con i target (Modello Autoregressivo Puro).")
+            print("      Non verranno caricati dati dal foglio previsioni.")
     
     sh = gc.open_by_key(sheet_id)
     
@@ -356,11 +364,15 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     df_historical_raw = pd.read_csv(io.StringIO(values_to_csv_string(historical_values)), decimal=',')
     
     df_forecast_raw = None
-    if use_future_forecasts:
+    # Carica il foglio previsioni SOLO se ci sono feature esterne da cercare
+    if use_future_forecasts and len(actual_forecast_cols_to_fetch) > 0:
         print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
-        forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
-        forecast_values = forecast_ws.get_all_values()
-        df_forecast_raw = pd.read_csv(io.StringIO(values_to_csv_string(forecast_values)), decimal=',')
+        try:
+            forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
+            forecast_values = forecast_ws.get_all_values()
+            df_forecast_raw = pd.read_csv(io.StringIO(values_to_csv_string(forecast_values)), decimal=',')
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"Warning: Foglio '{GSHEET_FORECAST_DATA_SHEET_NAME}' non trovato. Si prosegue senza previsioni esterne.")
 
     # Rinomina colonne
     def build_rename_map(columns):
@@ -409,7 +421,8 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     # Prepara dati forecast
     input_data_forecast = None
-    if use_future_forecasts and df_forecast_raw is not None:
+    
+    if use_future_forecasts and len(actual_forecast_cols_to_fetch) > 0 and df_forecast_raw is not None:
         df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(
             df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce'
         )
@@ -420,13 +433,26 @@ def fetch_and_prepare_data(gc, sheet_id, config):
         
         future_data = future_forecasts.head(output_window_steps).copy()
         
-        for col in forecast_feature_columns:
+        for col in actual_forecast_cols_to_fetch:
             if col not in future_data.columns:
                 raise ValueError(f"Colonna previsionale '{col}' non trovata.")
             future_data[col] = pd.to_numeric(future_data[col], errors='coerce')
 
-        input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
+        # Gestione caso misto (Rain + Level) dove Level è target
+        if len(actual_forecast_cols_to_fetch) < len(forecast_feature_columns):
+             df_complete_forecast = pd.DataFrame(index=future_data.index, columns=forecast_feature_columns)
+             for col in actual_forecast_cols_to_fetch:
+                 df_complete_forecast[col] = future_data[col]
+             df_complete_forecast = df_complete_forecast.fillna(0)
+             input_data_forecast = df_complete_forecast.values
+        else:
+             input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
+             
         print(f"Shape dati forecast: {input_data_forecast.shape}")
+        
+    elif use_future_forecasts and len(actual_forecast_cols_to_fetch) == 0:
+        print("Nessuna colonna forecast esterna richiesta. Si procede in modalità autoregressiva pura.")
+        input_data_forecast = None
     else:
         print("Nessuna colonna forecast richiesta o dati forecast non caricati.")
     
