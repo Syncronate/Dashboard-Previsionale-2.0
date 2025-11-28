@@ -472,6 +472,29 @@ def make_prediction(model, scalers, config, data_inputs, device):
     use_future_forecasts = config.get("use_future_forecasts", True)
     
     if use_future_forecasts and forecast_data_np is not None:
+        # CRITICO: Se siamo in modalità autoregressiva (anche parziale), le colonne dei target in forecast_data_np
+        # sono state riempite con 0. Dobbiamo inserire l'ultimo valore storico noto nella prima riga
+        # per "innescare" correttamente il loop autoregressivo.
+        
+        past_cols = config.get("all_past_feature_columns", [])
+        target_cols = config.get("target_columns", [])
+        forecast_cols = config.get("forecast_input_columns", [])
+        
+        # Identifica gli indici dei target nelle feature passate e future
+        # Assumiamo che in forecast_data_np i target siano nelle posizioni corrispondenti a forecast_cols
+        
+        for t_col in target_cols:
+            if t_col in past_cols and t_col in forecast_cols:
+                past_idx = past_cols.index(t_col)
+                fcst_idx = forecast_cols.index(t_col)
+                
+                # historical_data_np è raw (non scalato)
+                last_val = historical_data_np[-1, past_idx]
+                
+                # Inseriamo il valore solo nella prima riga (step t=0 per predire t=1)
+                # Le righe successive verranno sovrascritte dal modello durante l'inferenza
+                forecast_data_np[0, fcst_idx] = last_val
+                
         forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
         forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
     else:
