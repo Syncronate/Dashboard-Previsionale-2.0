@@ -24,41 +24,32 @@ def set_seed(seed):
     Imposta tutti i seed necessari per garantire risultati riproducibili.
     Questa funzione deve essere chiamata PRIMA di qualsiasi operazione con PyTorch/NumPy.
     """
-    # Python random
     random.seed(seed)
-    
-    # NumPy
     np.random.seed(seed)
-    
-    # PyTorch CPU
     torch.manual_seed(seed)
     
-    # PyTorch CUDA (se disponibile)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)  # Per multi-GPU
+        torch.cuda.manual_seed_all(seed)
     
-    # Rendi le operazioni CUDA deterministiche
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    
-    # Hash seed di Python (per alcune operazioni interne)
     os.environ['PYTHONHASHSEED'] = str(seed)
     
-    # PyTorch 1.8+ - Forza algoritmi deterministici
     if hasattr(torch, 'use_deterministic_algorithms'):
         try:
             torch.use_deterministic_algorithms(True, warn_only=True)
         except Exception:
-            pass  # Alcune operazioni potrebbero non supportarlo
+            pass
     
     print(f"✓ Seed impostato a {seed} per riproducibilità completa")
 
-# Applica seed IMMEDIATAMENTE all'avvio (prima di qualsiasi altra operazione)
+# Applica seed IMMEDIATAMENTE all'avvio
 set_seed(SEED)
 
-# --- INIZIO BLOCCO MODELLO CORRETTO ---
-# Classi del modello allineate con quelle usate per l'addestramento.
+# ============================================
+# DEFINIZIONE MODELLO (CON LOGICA AUTOREGRESSIVA CORRETTA)
+# ============================================
 
 class EncoderLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2, bidirectional=True):
@@ -68,12 +59,10 @@ class EncoderLSTM(nn.Module):
         self.bidirectional = bidirectional
         self.num_directions = 2 if bidirectional else 1
 
-        # Input projection per stabilità
         self.input_proj = nn.Linear(input_size, hidden_size)
 
-        # LSTM bidirezionale
         self.lstm = nn.LSTM(
-            hidden_size, # Usiamo hidden_size dopo projection
+            hidden_size,
             hidden_size,
             num_layers,
             batch_first=True,
@@ -81,42 +70,21 @@ class EncoderLSTM(nn.Module):
             bidirectional=bidirectional
         )
 
-        # Layer Normalization
         self.layer_norm = nn.LayerNorm(hidden_size * self.num_directions)
 
-        # Projection per ridurre bidirezionale a unidirezionale per decoder
         if bidirectional:
             self.hidden_proj = nn.Linear(hidden_size * 2, hidden_size)
             self.cell_proj = nn.Linear(hidden_size * 2, hidden_size)
 
     def forward(self, x):
-        """
-        Args:
-            x: (batch, seq_len, input_size)
-        Returns:
-            outputs: (batch, seq_len, hidden_size * num_directions)
-            hidden: (num_layers, batch, hidden_size)
-            cell: (num_layers, batch, hidden_size)
-        """
-        # Input projection
         x = self.input_proj(x)
-
-        # LSTM forward
         outputs, (hidden, cell) = self.lstm(x)
-
-        # Layer normalization
         outputs = self.layer_norm(outputs)
 
-        # Se bidirezionale, proietta hidden e cell per il decoder
         if self.bidirectional:
-            # hidden shape: (num_layers * 2, batch, hidden_size)
-            # Vogliamo: (num_layers, batch, hidden_size)
-
-            # Combina forward e backward
             hidden = hidden.view(self.num_layers, 2, -1, self.hidden_size)
             cell = cell.view(self.num_layers, 2, -1, self.hidden_size)
 
-            # Concatena e proietta
             hidden = self.hidden_proj(
                 torch.cat([hidden[:, 0, :, :], hidden[:, 1, :, :]], dim=-1)
             )
@@ -126,60 +94,39 @@ class EncoderLSTM(nn.Module):
 
         return outputs, hidden, cell
 
+
 class ImprovedAttention(nn.Module):
     def __init__(self, hidden_size, attention_type='additive'):
         super().__init__()
         self.hidden_size = hidden_size
         self.attention_type = attention_type
 
-        if attention_type == 'additive': # Bahdanau-style
+        if attention_type == 'additive':
             self.W_decoder = nn.Linear(hidden_size, hidden_size, bias=False)
             self.W_encoder = nn.Linear(hidden_size * 2, hidden_size, bias=False)
             self.v = nn.Linear(hidden_size, 1, bias=False)
-        elif attention_type == 'dot': # Luong-style
+        elif attention_type == 'dot':
             self.W = nn.Linear(hidden_size, hidden_size * 2, bias=False)
 
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, decoder_hidden, encoder_outputs, mask=None):
-        """
-        Args:
-            decoder_hidden: (batch, hidden_size) - ultimo stato decoder
-            encoder_outputs: (batch, seq_len, hidden_size)
-            mask: (batch, seq_len) - maschera per padding (opzionale)
-        Returns:
-            context: (batch, hidden_size)
-            attn_weights: (batch, seq_len)
-        """
         batch_size, seq_len, _ = encoder_outputs.shape
 
         if self.attention_type == 'additive':
-            # Bahdanau Attention
-            # (batch, hidden_size) -> (batch, 1, hidden_size) -> (batch, seq_len, hidden_size)
             decoder_proj = self.W_decoder(decoder_hidden).unsqueeze(1).expand(-1, seq_len, -1)
             encoder_proj = self.W_encoder(encoder_outputs)
-
-            # (batch, seq_len, hidden_size)
             energy = torch.tanh(decoder_proj + encoder_proj)
-
-            # (batch, seq_len, 1) -> (batch, seq_len)
             scores = self.v(energy).squeeze(-1)
 
         elif self.attention_type == 'dot':
-            # Luong Attention (dot product)
-            decoder_proj = self.W(decoder_hidden) # (batch, hidden_size)
-            # (batch, hidden_size, 1)
+            decoder_proj = self.W(decoder_hidden)
             scores = torch.bmm(encoder_outputs, decoder_proj.unsqueeze(2)).squeeze(2)
 
-        # Applica maschera se presente (per sequenze di lunghezza variabile)
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e10)
 
-        # Normalizza con softmax
-        attn_weights = self.softmax(scores) # (batch, seq_len)
-
-        # Context vector: somma pesata degli encoder outputs
-        # (batch, 1, seq_len) x (batch, seq_len, hidden_size) -> (batch, 1, hidden_size)
+        attn_weights = self.softmax(scores)
         context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)
 
         return context, attn_weights
@@ -197,72 +144,61 @@ class DecoderLSTMWithAttention(nn.Module):
 
         self.attention = ImprovedAttention(hidden_size, attention_type)
 
-        # LSTM input: forecast features + context vector
         self.lstm = nn.LSTM(
-            forecast_input_size + hidden_size * 2, # Concatenazione
+            forecast_input_size + hidden_size * 2,
             hidden_size,
             num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0
         )
 
-        # Gating mechanism per bilanciare input e context
         self.gate = nn.Sequential(
             nn.Linear(forecast_input_size + hidden_size * 2, hidden_size),
             nn.Sigmoid()
         )
 
-        # projection layer for context vector
         self.context_proj = nn.Linear(hidden_size * 2, hidden_size)
-
-        # Output layer
         self.fc = nn.Linear(hidden_size, output_size * num_quantiles)
-
-        # Dropout per regolarizzazione
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
-        """
-        Args:
-            x_forecast_step: (batch, 1, forecast_input_size)
-            hidden: (num_layers, batch, hidden_size)
-            cell: (num_layers, batch, hidden_size)
-            encoder_outputs: (batch, encoder_seq_len, hidden_size)
-        """
         batch_size = x_forecast_step.size(0)
+        decoder_hidden = hidden[-1]
 
-        # Usa l'ultimo layer dell'hidden state per l'attention
-        decoder_hidden = hidden[-1] # (batch, hidden_size)
-
-        # Calcola attention
         context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
 
-        # Concatena input forecast con context
         lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
 
-        # Forward LSTM
         output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
-        output = output.squeeze(1) # (batch, hidden_size)
+        output = output.squeeze(1)
 
-        # Gating: bilancia context e output LSTM
         projected_context = self.context_proj(context)
         gate_input = torch.cat([
             x_forecast_step.squeeze(1),
             projected_context,
             output
         ], dim=1)
-        gate_value = self.gate(gate_input) # (batch, hidden_size)
+        gate_value = self.gate(gate_input)
 
-        # Output finale: mix pesato
         gated_output = gate_value * output + (1 - gate_value) * projected_context
         gated_output = self.dropout(gated_output)
 
-        # Predizione
         prediction = self.fc(gated_output)
 
         return prediction, hidden, cell, attn_weights
 
+
 class Seq2SeqWithAttention(nn.Module):
+    """
+    Modello Seq2Seq con Attention e logica AUTOREGRESSIVA corretta.
+    
+    Durante l'inferenza (teacher_forcing_ratio=0):
+    - Il modello usa le proprie predizioni come input per gli step successivi
+    - Le ultime N colonne delle forecast features vengono sostituite con le predizioni
+    
+    IMPORTANTE: Questa logica assume che le feature target siano le ULTIME colonne
+    nelle forecast features, nello stesso ordine dei target.
+    """
     def __init__(self, encoder, decoder, output_window_steps):
         super().__init__()
         self.encoder = encoder
@@ -275,8 +211,8 @@ class Seq2SeqWithAttention(nn.Module):
         Args:
             x_past: (batch, enc_seq_len, enc_features)
             x_future_forecast: (batch, dec_seq_len, dec_features)
-            teacher_forcing_ratio: float in [0, 1]
-            target_sequence: (batch, output_window, num_targets) - per teacher forcing
+            teacher_forcing_ratio: float in [0, 1] - 0 per inferenza pura
+            target_sequence: (batch, output_window, num_targets) - per teacher forcing durante training
         """
         batch_size = x_past.shape[0]
         target_output_size = self.decoder.output_size
@@ -305,17 +241,47 @@ class Seq2SeqWithAttention(nn.Module):
 
             # Prepara input per prossimo step
             if t < self.output_window - 1:
-                decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+                # Ottimizzazione: evita chiamate random non necessarie durante inferenza
+                if teacher_forcing_ratio > 0:
+                    use_teacher_forcing = random.random() < teacher_forcing_ratio
+                else:
+                    use_teacher_forcing = False
+
+                if use_teacher_forcing and target_sequence is not None:
+                    # Teacher forcing: usa le forecast features originali
+                    # (che durante il training contengono i valori target reali)
+                    decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+                else:
+                    # AUTOREGRESSIVE: usa la predizione precedente
+                    
+                    # Reshape predizione per ottenere i target
+                    if num_quantiles > 1:
+                        # Usa la mediana (quantile centrale, indice 1 per [0.1, 0.5, 0.9])
+                        pred_reshaped = decoder_output_step.view(batch_size, target_output_size, num_quantiles)
+                        pred_targets = pred_reshaped[:, :, num_quantiles // 2]  # Mediana
+                    else:
+                        pred_targets = decoder_output_step.view(batch_size, target_output_size)
+
+                    # Prendi le forecast features per il prossimo step
+                    next_forecast_features = x_future_forecast[:, t+1, :].clone()
+                    
+                    # Sostituisci le ultime colonne (target features) con le predizioni
+                    # ASSUNZIONE: le feature target sono le ULTIME colonne
+                    num_target_features = target_output_size
+                    next_forecast_features[:, -num_target_features:] = pred_targets
+
+                    decoder_input_step = next_forecast_features.unsqueeze(1)
 
         if num_quantiles > 1:
             outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
 
         return outputs, attention_weights_history
 
-# --- FINE BLOCCO MODELLO ---
 
+# ============================================
+# CONFIGURAZIONE E COSTANTI
+# ============================================
 
-# --- Costanti ---
 MODELS_DIR = "models"
 MODEL_BASE_NAME = "modello_seq2seq_20251126_1100_best"
 
@@ -329,6 +295,7 @@ GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
 GSHEET_FORECAST_DATE_COL = 'Data e Ora'
 GSHEET_FORECAST_DATE_FORMAT = '%d/%m/%Y %H:%M'
 italy_tz = pytz.timezone('Europe/Rome')
+
 
 def log_environment_info():
     """Log delle informazioni sull'ambiente di esecuzione"""
@@ -347,6 +314,7 @@ def log_environment_info():
     print(f"cuDNN deterministic: {torch.backends.cudnn.deterministic}")
     print(f"cuDNN benchmark: {torch.backends.cudnn.benchmark}")
     print("=" * 30)
+
 
 def load_model_and_scalers(model_base_name, models_dir):
     print(f"\n=== CARICAMENTO MODELLO E SCALER ===")
@@ -394,7 +362,6 @@ def load_model_and_scalers(model_base_name, models_dir):
     model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
     
     model_state = torch.load(model_path, map_location=device)
-    
     model.load_state_dict(model_state)
     model.eval()
     
@@ -402,8 +369,15 @@ def load_model_and_scalers(model_base_name, models_dir):
     scaler_forecast_features = joblib.load(scaler_forecast_features_path)
     scaler_targets = joblib.load(scaler_targets_path)
     
-    print("Modello e scaler caricati con successo.")
+    print("✓ Modello e scaler caricati con successo.")
+    print(f"  - Encoder input size: {enc_input_size}")
+    print(f"  - Decoder input size: {dec_input_size}")
+    print(f"  - Output size: {dec_output_size}")
+    print(f"  - Num quantiles: {num_quantiles}")
+    print(f"  - Output window: {out_win}")
+    
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
+
 
 def fetch_and_prepare_data(gc, sheet_id, config):
     print(f"\n=== CARICAMENTO E PREPARAZIONE DATI ===")
@@ -506,6 +480,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
+
 def make_prediction(model, scalers, config, data_inputs, device):
     """
     Genera le previsioni con il modello.
@@ -521,7 +496,7 @@ def make_prediction(model, scalers, config, data_inputs, device):
     print(f"DEBUG - Primi 3 valori storici: {historical_data_np.flatten()[:3]}")
     print(f"DEBUG - Primi 3 valori forecast: {forecast_data_np.flatten()[:3]}")
     
-    # DEBUG VISUALE (PER GITHUB ACTIONS)
+    # DEBUG VISUALE
     if 'all_past_feature_columns' in config:
         cols_past = config['all_past_feature_columns']
         if len(cols_past) == historical_data_np.shape[1]:
@@ -549,10 +524,11 @@ def make_prediction(model, scalers, config, data_inputs, device):
     model.eval()
     
     # Re-imposta il seed prima dell'inferenza per massima riproducibilità
-    # (Questo è un extra precaution, non dovrebbe essere necessario in eval mode)
     set_seed(SEED)
     
     with torch.no_grad():
+        # Durante l'inferenza: teacher_forcing_ratio=0 (default)
+        # Il modello userà la logica autoregressiva
         predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
     # DEBUG: Verifica output del modello
@@ -592,6 +568,7 @@ def make_prediction(model, scalers, config, data_inputs, device):
     print(f"DEBUG - Hash previsioni finali: {hash(predictions_scaled_back.tobytes())}")
     
     return predictions_scaled_back
+
 
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
     print(f"\n=== SALVATAGGIO PREVISIONI ===")
@@ -633,18 +610,24 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     
     if rows_to_append:
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
-        print(f"Salvate {len(rows_to_append)} righe di previsione.")
+        print(f"✓ Salvate {len(rows_to_append)} righe di previsione.")
+
 
 def main():
     print(f"AVVIO SCRIPT - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print(f"Modello: {MODEL_BASE_NAME}")
+    print("=" * 60)
+    print("NOTA: Questo script usa la logica AUTOREGRESSIVA corretta.")
+    print("Durante l'inferenza, le predizioni vengono usate come input")
+    print("per gli step successivi del decoder.")
+    print("=" * 60)
     
     try:
         log_environment_info()
         
         credentials_file_path = "credentials.json"
         if not os.path.exists(credentials_file_path):
-             raise FileNotFoundError(f"File delle credenziali '{credentials_file_path}' non trovato. Assicurarsi che lo step YML lo crei correttamente.")
+             raise FileNotFoundError(f"File delle credenziali '{credentials_file_path}' non trovato.")
 
         credentials = Credentials.from_service_account_file(
             credentials_file_path,
@@ -664,11 +647,17 @@ def main():
         
         append_predictions_to_gsheet(gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions, config)
         
-        print(f"\n✓ SCRIPT COMPLETATO - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(f"\n{'='*60}")
+        print(f"✓ SCRIPT COMPLETATO CON SUCCESSO")
+        print(f"  Timestamp: {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(f"{'='*60}")
 
     except Exception as e:
-        print(f"\n❌ ERRORE CRITICO: {e}")
+        print(f"\n{'='*60}")
+        print(f"❌ ERRORE CRITICO: {e}")
+        print(f"{'='*60}")
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()
