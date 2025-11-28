@@ -20,10 +20,6 @@ import random
 SEED = 42
 
 def set_seed(seed):
-    """
-    Imposta tutti i seed necessari per garantire risultati riproducibili.
-    Questa funzione deve essere chiamata PRIMA di qualsiasi operazione con PyTorch/NumPy.
-    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -44,11 +40,10 @@ def set_seed(seed):
     
     print(f"✓ Seed impostato a {seed} per riproducibilità completa")
 
-# Applica seed IMMEDIATAMENTE all'avvio
 set_seed(SEED)
 
 # ============================================
-# DEFINIZIONE MODELLO (CON LOGICA AUTOREGRESSIVA CORRETTA)
+# DEFINIZIONE MODELLO
 # ============================================
 
 class EncoderLSTM(nn.Module):
@@ -60,16 +55,12 @@ class EncoderLSTM(nn.Module):
         self.num_directions = 2 if bidirectional else 1
 
         self.input_proj = nn.Linear(input_size, hidden_size)
-
         self.lstm = nn.LSTM(
-            hidden_size,
-            hidden_size,
-            num_layers,
+            hidden_size, hidden_size, num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0,
             bidirectional=bidirectional
         )
-
         self.layer_norm = nn.LayerNorm(hidden_size * self.num_directions)
 
         if bidirectional:
@@ -84,13 +75,8 @@ class EncoderLSTM(nn.Module):
         if self.bidirectional:
             hidden = hidden.view(self.num_layers, 2, -1, self.hidden_size)
             cell = cell.view(self.num_layers, 2, -1, self.hidden_size)
-
-            hidden = self.hidden_proj(
-                torch.cat([hidden[:, 0, :, :], hidden[:, 1, :, :]], dim=-1)
-            )
-            cell = self.cell_proj(
-                torch.cat([cell[:, 0, :, :], cell[:, 1, :, :]], dim=-1)
-            )
+            hidden = self.hidden_proj(torch.cat([hidden[:, 0, :, :], hidden[:, 1, :, :]], dim=-1))
+            cell = self.cell_proj(torch.cat([cell[:, 0, :, :], cell[:, 1, :, :]], dim=-1))
 
         return outputs, hidden, cell
 
@@ -118,7 +104,6 @@ class ImprovedAttention(nn.Module):
             encoder_proj = self.W_encoder(encoder_outputs)
             energy = torch.tanh(decoder_proj + encoder_proj)
             scores = self.v(energy).squeeze(-1)
-
         elif self.attention_type == 'dot':
             decoder_proj = self.W(decoder_hidden)
             scores = torch.bmm(encoder_outputs, decoder_proj.unsqueeze(2)).squeeze(2)
@@ -143,20 +128,15 @@ class DecoderLSTMWithAttention(nn.Module):
         self.num_quantiles = num_quantiles
 
         self.attention = ImprovedAttention(hidden_size, attention_type)
-
         self.lstm = nn.LSTM(
-            forecast_input_size + hidden_size * 2,
-            hidden_size,
-            num_layers,
+            forecast_input_size + hidden_size * 2, hidden_size, num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0
         )
-
         self.gate = nn.Sequential(
             nn.Linear(forecast_input_size + hidden_size * 2, hidden_size),
             nn.Sigmoid()
         )
-
         self.context_proj = nn.Linear(hidden_size * 2, hidden_size)
         self.fc = nn.Linear(hidden_size, output_size * num_quantiles)
         self.dropout = nn.Dropout(dropout)
@@ -164,74 +144,51 @@ class DecoderLSTMWithAttention(nn.Module):
     def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
         batch_size = x_forecast_step.size(0)
         decoder_hidden = hidden[-1]
-
         context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
-
         lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
-
         output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
         output = output.squeeze(1)
-
         projected_context = self.context_proj(context)
-        gate_input = torch.cat([
-            x_forecast_step.squeeze(1),
-            projected_context,
-            output
-        ], dim=1)
+        gate_input = torch.cat([x_forecast_step.squeeze(1), projected_context, output], dim=1)
         gate_value = self.gate(gate_input)
-
         gated_output = gate_value * output + (1 - gate_value) * projected_context
         gated_output = self.dropout(gated_output)
-
         prediction = self.fc(gated_output)
-
         return prediction, hidden, cell, attn_weights
 
 
 class Seq2SeqWithAttention(nn.Module):
-    """
-    Modello Seq2Seq con Attention e logica AUTOREGRESSIVA corretta.
-    
-    Durante l'inferenza (teacher_forcing_ratio=0):
-    - Il modello usa le proprie predizioni come input per gli step successivi
-    - Le ultime N colonne delle forecast features vengono sostituite con le predizioni
-    
-    IMPORTANTE: Questa logica assume che le feature target siano le ULTIME colonne
-    nelle forecast features, nello stesso ordine dei target.
-    """
     def __init__(self, encoder, decoder, output_window_steps):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.output_window = output_window_steps
+        self.debug_mode = True  # Attiva debug
 
-    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0,
-                target_sequence=None):
-        """
-        Args:
-            x_past: (batch, enc_seq_len, enc_features)
-            x_future_forecast: (batch, dec_seq_len, dec_features)
-            teacher_forcing_ratio: float in [0, 1] - 0 per inferenza pura
-            target_sequence: (batch, output_window, num_targets) - per teacher forcing durante training
-        """
+    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0, target_sequence=None):
         batch_size = x_past.shape[0]
         target_output_size = self.decoder.output_size
         num_quantiles = self.decoder.num_quantiles
         decoder_output_dim = target_output_size * num_quantiles
 
-        # Output tensors
         outputs = torch.zeros(batch_size, self.output_window, decoder_output_dim).to(x_past.device)
         attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(x_past.device)
 
-        # Encode
         encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
 
-        # Primo input del decoder
         decoder_input_step = x_future_forecast[:, 0:1, :]
 
+        if self.debug_mode:
+            print(f"\n{'='*60}")
+            print("DEBUG AUTOREGRESSIVE LOOP")
+            print(f"{'='*60}")
+            print(f"Output window: {self.output_window}")
+            print(f"Target output size: {target_output_size}")
+            print(f"Num quantiles: {num_quantiles}")
+            print(f"Decoder input dim: {x_future_forecast.shape[2]}")
+
         for t in range(self.output_window):
-            # Decode step
             decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
                 decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
             )
@@ -239,36 +196,35 @@ class Seq2SeqWithAttention(nn.Module):
             outputs[:, t, :] = decoder_output_step
             attention_weights_history[:, t, :] = attn_weights.squeeze()
 
-            # Prepara input per prossimo step
             if t < self.output_window - 1:
-                # Ottimizzazione: evita chiamate random non necessarie durante inferenza
                 if teacher_forcing_ratio > 0:
                     use_teacher_forcing = random.random() < teacher_forcing_ratio
                 else:
                     use_teacher_forcing = False
 
                 if use_teacher_forcing and target_sequence is not None:
-                    # Teacher forcing: usa le forecast features originali
-                    # (che durante il training contengono i valori target reali)
                     decoder_input_step = x_future_forecast[:, t+1:t+2, :]
                 else:
-                    # AUTOREGRESSIVE: usa la predizione precedente
-                    
-                    # Reshape predizione per ottenere i target
+                    # AUTOREGRESSIVE
                     if num_quantiles > 1:
-                        # Usa la mediana (quantile centrale, indice 1 per [0.1, 0.5, 0.9])
                         pred_reshaped = decoder_output_step.view(batch_size, target_output_size, num_quantiles)
-                        pred_targets = pred_reshaped[:, :, num_quantiles // 2]  # Mediana
+                        pred_targets = pred_reshaped[:, :, num_quantiles // 2]
                     else:
                         pred_targets = decoder_output_step.view(batch_size, target_output_size)
 
-                    # Prendi le forecast features per il prossimo step
                     next_forecast_features = x_future_forecast[:, t+1, :].clone()
                     
-                    # Sostituisci le ultime colonne (target features) con le predizioni
-                    # ASSUNZIONE: le feature target sono le ULTIME colonne
+                    # DEBUG: Mostra cosa stiamo sostituendo
+                    if self.debug_mode and t < 3:
+                        print(f"\n--- Step {t} -> {t+1} ---")
+                        print(f"  Predizione (normalizzata): {pred_targets[0].detach().cpu().numpy()}")
+                        print(f"  Ultime {target_output_size} feature PRIMA: {next_forecast_features[0, -target_output_size:].detach().cpu().numpy()}")
+                    
                     num_target_features = target_output_size
                     next_forecast_features[:, -num_target_features:] = pred_targets
+
+                    if self.debug_mode and t < 3:
+                        print(f"  Ultime {target_output_size} feature DOPO:  {next_forecast_features[0, -target_output_size:].detach().cpu().numpy()}")
 
                     decoder_input_step = next_forecast_features.unsqueeze(1)
 
@@ -279,9 +235,8 @@ class Seq2SeqWithAttention(nn.Module):
 
 
 # ============================================
-# CONFIGURAZIONE E COSTANTI
+# COSTANTI
 # ============================================
-
 MODELS_DIR = "models"
 MODEL_BASE_NAME = "modello_seq2seq_20251126_1100_best"
 
@@ -298,21 +253,9 @@ italy_tz = pytz.timezone('Europe/Rome')
 
 
 def log_environment_info():
-    """Log delle informazioni sull'ambiente di esecuzione"""
     print("=== INFORMAZIONI AMBIENTE ===")
-    print(f"Python version: {os.sys.version}")
     print(f"PyTorch version: {torch.__version__}")
-    print(f"Pandas version: {pd.__version__}")
-    print(f"NumPy version: {np.__version__}")
-    print(f"gspread version: {gspread.__version__}")
-    print(f"joblib version: {joblib.__version__}")
-    print(f"CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"CUDA device: {torch.cuda.get_device_name()}")
-    print(f"Device utilizzato: {'cuda' if torch.cuda.is_available() else 'cpu'}")
-    print(f"Seed riproducibilità: {SEED}")
-    print(f"cuDNN deterministic: {torch.backends.cudnn.deterministic}")
-    print(f"cuDNN benchmark: {torch.backends.cudnn.benchmark}")
+    print(f"Device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
     print("=" * 30)
 
 
@@ -326,32 +269,20 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     for p in [config_path, model_path, scaler_past_features_path, scaler_forecast_features_path, scaler_targets_path]:
         if not os.path.exists(p):
-            raise FileNotFoundError(f"ERRORE CRITICO: File non trovato -> {p}")
+            raise FileNotFoundError(f"File non trovato -> {p}")
     
     with open(config_path, 'r', encoding='utf-8-sig') as f:
         config = json.load(f)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    model_type = config.get("model_type")
-    if model_type != "Seq2SeqAttention":
-        raise ValueError(f"Tipo di modello non supportato: '{model_type}'.")
-    
     enc_input_size = len(config["all_past_feature_columns"])
     dec_input_size = len(config["forecast_input_columns"])
     
     quantiles = config.get("quantiles")
-    num_quantiles = 1
-    if quantiles and isinstance(quantiles, list):
-        num_quantiles = len(quantiles)
-        print(f"Rilevato modello a quantili. Quantili: {quantiles}")
-    else:
-        print("Rilevato modello con output singolo (non a quantili).")
+    num_quantiles = len(quantiles) if quantiles and isinstance(quantiles, list) else 1
     
     dec_output_size = len(config["target_columns"])
-    final_output_dim = dec_output_size * num_quantiles
-    print(f"Dimensione output del decoder impostata a: {final_output_dim}")
-    
     hidden = config["hidden_size"]
     layers = config["num_layers"]
     drop = config["dropout"]
@@ -369,12 +300,43 @@ def load_model_and_scalers(model_base_name, models_dir):
     scaler_forecast_features = joblib.load(scaler_forecast_features_path)
     scaler_targets = joblib.load(scaler_targets_path)
     
-    print("✓ Modello e scaler caricati con successo.")
-    print(f"  - Encoder input size: {enc_input_size}")
-    print(f"  - Decoder input size: {dec_input_size}")
-    print(f"  - Output size: {dec_output_size}")
-    print(f"  - Num quantiles: {num_quantiles}")
-    print(f"  - Output window: {out_win}")
+    # ============================================
+    # DEBUG CRITICO: Verifica allineamento colonne
+    # ============================================
+    print(f"\n{'='*60}")
+    print("DEBUG CRITICO: VERIFICA ALLINEAMENTO COLONNE")
+    print(f"{'='*60}")
+    
+    target_cols = config["target_columns"]
+    forecast_cols = config["forecast_input_columns"]
+    
+    print(f"\nTarget columns ({len(target_cols)}):")
+    for i, col in enumerate(target_cols):
+        print(f"  {i}: {col}")
+    
+    print(f"\nForecast input columns ({len(forecast_cols)}):")
+    for i, col in enumerate(forecast_cols):
+        print(f"  {i}: {col}")
+    
+    print(f"\nULTIME {len(target_cols)} colonne delle forecast features:")
+    for i, col in enumerate(forecast_cols[-len(target_cols):]):
+        print(f"  {i}: {col}")
+    
+    # Verifica se le ultime colonne corrispondono ai target
+    print(f"\n⚠️  VERIFICA CORRISPONDENZA:")
+    match = True
+    for i, (target, forecast) in enumerate(zip(target_cols, forecast_cols[-len(target_cols):])):
+        matches = target == forecast or target in forecast or forecast in target
+        status = "✓" if matches else "❌"
+        print(f"  {status} Target '{target}' vs Forecast '{forecast}'")
+        if not matches:
+            match = False
+    
+    if not match:
+        print("\n❌ ATTENZIONE: Le colonne target NON corrispondono alle ultime colonne forecast!")
+        print("   Questo causa previsioni errate nella logica autoregressiva!")
+    
+    print(f"{'='*60}\n")
     
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
@@ -394,20 +356,18 @@ def fetch_and_prepare_data(gc, sheet_id, config):
         writer.writerows(data)
         return output.getvalue()
 
-    print(f"Caricamento dati storici da '{GSHEET_HISTORICAL_DATA_SHEET_NAME}'...")
+    print(f"Caricamento dati storici...")
     historical_ws = sh.worksheet(GSHEET_HISTORICAL_DATA_SHEET_NAME)
     historical_values = historical_ws.get_all_values()
     historical_csv_string = values_to_csv_string(historical_values)
     df_historical_raw = pd.read_csv(io.StringIO(historical_csv_string), decimal=',')
     
-    print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
+    print(f"Caricamento dati previsionali...")
     forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
     forecast_values = forecast_ws.get_all_values()
     forecast_csv_string = values_to_csv_string(forecast_values)
     df_forecast_raw = pd.read_csv(io.StringIO(forecast_csv_string), decimal=',')
 
-    print("Avvio rinomina aggressiva per standardizzare le colonne...")
-    
     def build_rename_map(columns):
         rename_map = {}
         for col in columns:
@@ -427,44 +387,28 @@ def fetch_and_prepare_data(gc, sheet_id, config):
 
     if hist_rename_map:
         df_historical_raw.rename(columns=hist_rename_map, inplace=True)
-        print(f"Rinominate {len(hist_rename_map)} colonne nel set di dati storici.")
     if fcst_rename_map:
         df_forecast_raw.rename(columns=fcst_rename_map, inplace=True)
-        print(f"Rinominate {len(fcst_rename_map)} colonne nel set di dati previsionali.")
 
     df_historical_raw = df_historical_raw.loc[:, ~df_historical_raw.columns.duplicated(keep='last')]
     df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='last')]
-    print("✓ Eventuali colonne duplicate rimosse, mantenendo l'ultima occorrenza (keep='last').")
 
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
-        df_historical_raw[GSHEET_DATE_COL_INPUT], 
-        format=GSHEET_DATE_FORMAT_INPUT, 
-        errors='coerce'
+        df_historical_raw[GSHEET_DATE_COL_INPUT], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce'
     )
     df_historical = df_historical_raw.dropna(subset=[GSHEET_DATE_COL_INPUT]).sort_values(by=GSHEET_DATE_COL_INPUT)
     latest_valid_timestamp = df_historical[GSHEET_DATE_COL_INPUT].iloc[-1]
-    print(f"Ultimo timestamp valido: {latest_valid_timestamp}")
     
     for col in past_feature_columns:
         if col not in df_historical.columns:
-            raise ValueError(f"Colonna storica '{col}' non trovata. Controllare la mappatura e il foglio di input.")
+            raise ValueError(f"Colonna storica '{col}' non trovata.")
         df_historical[col] = pd.to_numeric(df_historical[col], errors='coerce')
 
     df_features_filled = df_historical[past_feature_columns].ffill().bfill().fillna(0)
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
     
-    min_val, max_val = input_data_historical.min(), input_data_historical.max()
-    print(f"Statistiche dati storici (finali): Min={min_val:.2f}, Max={max_val:.2f}, Mean={input_data_historical.mean():.2f}")
-    min_ragionevole, max_ragionevole = -1000, 200000
-    if min_val < min_ragionevole or max_val > max_ragionevole:
-        raise ValueError(f"Valori anomali rilevati. Min: {min_val}, Max: {max_val}. Controllare i dati sorgente.")
-    else:
-        print("✓ Controllo di validità dei dati storici superato.")
-    
     df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(
-        df_forecast_raw[GSHEET_FORECAST_DATE_COL], 
-        format=GSHEET_FORECAST_DATE_FORMAT, 
-        errors='coerce'
+        df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce'
     )
     future_forecasts = df_forecast_raw[df_forecast_raw[GSHEET_FORECAST_DATE_COL] > latest_valid_timestamp].copy()
     if len(future_forecasts) < output_window_steps:
@@ -478,94 +422,88 @@ def fetch_and_prepare_data(gc, sheet_id, config):
 
     input_data_forecast = future_data[forecast_feature_columns].ffill().bfill().fillna(0).values
     
+    # ============================================
+    # DEBUG: Mostra i valori effettivi delle ultime colonne
+    # ============================================
+    target_cols = config["target_columns"]
+    print(f"\n{'='*60}")
+    print("DEBUG: VALORI FORECAST FEATURES (ultime colonne = target)")
+    print(f"{'='*60}")
+    print(f"Shape forecast data: {input_data_forecast.shape}")
+    print(f"\nValori delle ULTIME {len(target_cols)} colonne (dovrebbero essere i livelli idrometrici):")
+    for i in range(min(5, output_window_steps)):
+        last_vals = input_data_forecast[i, -len(target_cols):]
+        print(f"  Step {i}: {last_vals}")
+    print(f"{'='*60}\n")
+    
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
 
 def make_prediction(model, scalers, config, data_inputs, device):
-    """
-    Genera le previsioni con il modello.
-    Include controlli di debug per verificare la riproducibilità.
-    """
     print(f"\n=== GENERAZIONE PREVISIONI ===")
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
     historical_data_np, forecast_data_np = data_inputs
-    
-    # DEBUG: Verifica che gli input siano identici tra le esecuzioni
-    print(f"DEBUG - Hash dati storici: {hash(historical_data_np.tobytes())}")
-    print(f"DEBUG - Hash dati forecast: {hash(forecast_data_np.tobytes())}")
-    print(f"DEBUG - Primi 3 valori storici: {historical_data_np.flatten()[:3]}")
-    print(f"DEBUG - Primi 3 valori forecast: {forecast_data_np.flatten()[:3]}")
-    
-    # DEBUG VISUALE
-    if 'all_past_feature_columns' in config:
-        cols_past = config['all_past_feature_columns']
-        if len(cols_past) == historical_data_np.shape[1]:
-            print("\nDEBUG SCRIPT - CONFRONTO COLONNE E VALORI (Prima riga Storico):")
-            first_row = historical_data_np[0]
-            for i, (col, val) in enumerate(zip(cols_past, first_row)):
-                print(f"  {i:02d} | {col[:50]:<50} | {val:.6f}")
-            print("----------------------------------------------------")
-        else:
-            print(f"DEBUG SCRIPT - Mismatch colonne past: Config={len(cols_past)}, Data={historical_data_np.shape[1]}")
     
     # Normalizzazione
     historical_normalized = scaler_past_features.transform(historical_data_np)
     forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
     
-    # DEBUG: Verifica normalizzazione identica
-    print(f"DEBUG - Hash normalizzati storici: {hash(historical_normalized.tobytes())}")
-    print(f"DEBUG - Hash normalizzati forecast: {hash(forecast_normalized.tobytes())}")
+    # DEBUG: Valori normalizzati delle ultime colonne
+    target_cols = config["target_columns"]
+    print(f"\nDEBUG: Valori NORMALIZZATI delle ultime {len(target_cols)} colonne forecast:")
+    for i in range(min(3, forecast_normalized.shape[0])):
+        last_vals = forecast_normalized[i, -len(target_cols):]
+        print(f"  Step {i}: {last_vals}")
     
-    # Conversione a tensori
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
     
-    # Assicura che il modello sia in eval mode (disabilita dropout)
     model.eval()
-    
-    # Re-imposta il seed prima dell'inferenza per massima riproducibilità
     set_seed(SEED)
     
     with torch.no_grad():
-        # Durante l'inferenza: teacher_forcing_ratio=0 (default)
-        # Il modello userà la logica autoregressiva
         predictions_normalized, attention_weights = model(historical_tensor, forecast_tensor)
     
-    # DEBUG: Verifica output del modello
     predictions_cpu = predictions_normalized.cpu().numpy()
-    print(f"DEBUG - Hash output modello: {hash(predictions_cpu.tobytes())}")
-    print(f"DEBUG - Primi 3 valori output: {predictions_cpu.flatten()[:3]}")
-    
     predictions_np = predictions_cpu.squeeze(0)
     
     num_targets = len(config["target_columns"])
     
     if predictions_np.ndim == 3:
         seq_len, n_targets, n_quantiles = predictions_np.shape
-        if n_targets != num_targets:
-             print(f"Warning: Model output targets {n_targets} != config targets {num_targets}")
-        
         preds_permuted = predictions_np.transpose(0, 2, 1)
         preds_flat = preds_permuted.reshape(-1, num_targets)
         preds_unscaled_flat = scaler_targets.inverse_transform(preds_flat)
         preds_unscaled = preds_unscaled_flat.reshape(seq_len, n_quantiles, num_targets)
         predictions_scaled_back = preds_unscaled.transpose(0, 2, 1)
-        
     elif predictions_np.ndim == 2:
         predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
-        
     else:
         original_shape = predictions_np.shape
-        if predictions_np.shape[-1] != num_targets:
-             print(f"Rilevato output con dimensione finale {predictions_np.shape[-1]} diversa da num_targets {num_targets}. Tentativo di reshape.")
-             predictions_np_flat = predictions_np.reshape(-1, num_targets)
-             predictions_scaled_back_flat = scaler_targets.inverse_transform(predictions_np_flat)
-             predictions_scaled_back = predictions_scaled_back_flat.reshape(original_shape)
-        else:
-             predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
+        predictions_np_flat = predictions_np.reshape(-1, num_targets)
+        predictions_scaled_back_flat = scaler_targets.inverse_transform(predictions_np_flat)
+        predictions_scaled_back = predictions_scaled_back_flat.reshape(original_shape)
 
-    print(f"Previsioni finali stats: min={predictions_scaled_back.min():.4f}, max={predictions_scaled_back.max():.4f}")
-    print(f"DEBUG - Hash previsioni finali: {hash(predictions_scaled_back.tobytes())}")
+    # DEBUG: Mostra previsioni finali
+    print(f"\n{'='*60}")
+    print("DEBUG: PREVISIONI FINALI (de-normalizzate)")
+    print(f"{'='*60}")
+    print(f"Shape: {predictions_scaled_back.shape}")
+    
+    if predictions_scaled_back.ndim == 3:
+        # Con quantili
+        print("Previsioni per ogni step (mediana):")
+        for i in range(predictions_scaled_back.shape[0]):
+            median_idx = predictions_scaled_back.shape[2] // 2
+            vals = predictions_scaled_back[i, :, median_idx]
+            print(f"  Step {i+1}: {vals}")
+    else:
+        print("Previsioni per ogni step:")
+        for i in range(predictions_scaled_back.shape[0]):
+            vals = predictions_scaled_back[i]
+            print(f"  Step {i+1}: {vals}")
+    
+    print(f"{'='*60}\n")
     
     return predictions_scaled_back
 
@@ -576,10 +514,8 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     try:
         worksheet = sh.worksheet(predictions_sheet_name)
         worksheet.clear()
-        print(f"Foglio '{predictions_sheet_name}' pulito.")
     except gspread.exceptions.WorksheetNotFound:
         worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=100, cols=20)
-        print(f"Foglio '{predictions_sheet_name}' creato.")
     
     quantiles = config.get("quantiles")
     target_cols = config["target_columns"]
@@ -610,31 +546,26 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     
     if rows_to_append:
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
-        print(f"✓ Salvate {len(rows_to_append)} righe di previsione.")
+        print(f"✓ Salvate {len(rows_to_append)} righe.")
 
 
 def main():
-    print(f"AVVIO SCRIPT - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    print(f"Modello: {MODEL_BASE_NAME}")
-    print("=" * 60)
-    print("NOTA: Questo script usa la logica AUTOREGRESSIVA corretta.")
-    print("Durante l'inferenza, le predizioni vengono usate come input")
-    print("per gli step successivi del decoder.")
-    print("=" * 60)
+    print(f"\n{'='*60}")
+    print(f"AVVIO SCRIPT DEBUG - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
     
     try:
         log_environment_info()
         
         credentials_file_path = "credentials.json"
         if not os.path.exists(credentials_file_path):
-             raise FileNotFoundError(f"File delle credenziali '{credentials_file_path}' non trovato.")
+            raise FileNotFoundError(f"File credenziali non trovato.")
 
         credentials = Credentials.from_service_account_file(
             credentials_file_path,
             scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         )
         gc = gspread.authorize(credentials)
-        print("✓ Autenticazione Google Sheets riuscita.")
         
         model, scaler_past, scaler_forecast, scaler_target, config, device = load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
         
@@ -647,15 +578,10 @@ def main():
         
         append_predictions_to_gsheet(gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions, config)
         
-        print(f"\n{'='*60}")
-        print(f"✓ SCRIPT COMPLETATO CON SUCCESSO")
-        print(f"  Timestamp: {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
-        print(f"{'='*60}")
+        print(f"\n✓ COMPLETATO")
 
     except Exception as e:
-        print(f"\n{'='*60}")
-        print(f"❌ ERRORE CRITICO: {e}")
-        print(f"{'='*60}")
+        print(f"\n❌ ERRORE: {e}")
         traceback.print_exc()
 
 
