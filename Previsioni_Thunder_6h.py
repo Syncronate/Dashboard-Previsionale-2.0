@@ -234,7 +234,7 @@ class Seq2SeqWithAttention(nn.Module):
 # COSTANTI
 # ============================================
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_1054_final" # Default, will be overwritten by config if needed
+MODEL_BASE_NAME = "modello_seq2seq_20251201_0842_best" # Default, will be overwritten by config if needed
 
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
