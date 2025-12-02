@@ -601,113 +601,172 @@ class HydroTransformer(nn.Module):
                  num_decoder_layers: int = 3,
                  dim_feedforward: int = 512,
                  dropout: float = 0.1,
-                 num_quantiles: int = 1):
+                 num_quantiles: int = 1,
+                 prediction_mode: str = 'autoregressive', # 'autoregressive' or 'direct'
+                 output_window: int = 12, # Necessario per la modalità direct
+                 priority_indices: list = None,
+                 priority_weight: float = 1.0):
         super().__init__()
         self.d_model = d_model
         self.num_quantiles = num_quantiles
         self.output_dim = output_dim
         self.input_dim_decoder = input_dim_decoder
+        self.prediction_mode = prediction_mode
+        self.output_window = output_window
+        self.priority_indices = priority_indices if priority_indices is not None else []
+        self.priority_weight = priority_weight
         
         self.encoder_embedding = nn.Linear(input_dim_encoder, d_model)
-        self.decoder_embedding = nn.Linear(input_dim_decoder, d_model)
         self.pos_encoder = PositionalEncoding(d_model, dropout)
+
+        if self.prediction_mode == 'autoregressive':
+            self.decoder_embedding = nn.Linear(input_dim_decoder, d_model)
+            self.transformer = nn.Transformer(
+                d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers,
+                num_decoder_layers=num_decoder_layers, dim_feedforward=dim_feedforward,
+                dropout=dropout, batch_first=True
+            )
+            self.fc_out = nn.Linear(d_model, output_dim * num_quantiles)
+        else: # Direct Mode
+            encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead,
+                                                     dim_feedforward=dim_feedforward,
+                                                     dropout=dropout, batch_first=True)
+            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+
+            # MLP Head per predire l'intera sequenza dall'ultimo stato dell'encoder
+            self.fc_direct = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model, output_window * output_dim * num_quantiles)
+            )
         
-        self.transformer = nn.Transformer(
-            d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers, dim_feedforward=dim_feedforward,
-            dropout=dropout, batch_first=True
-        )
-        
-        self.fc_out = nn.Linear(d_model, output_dim * num_quantiles)
-        
-    def forward(self, src: torch.Tensor, tgt: torch.Tensor, 
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor = None,
                 src_padding_mask: torch.Tensor = None, 
                 tgt_padding_mask: torch.Tensor = None, 
                 teacher_forcing_ratio=0.0) -> torch.Tensor:
         
         batch_size = src.size(0)
-        tgt_seq_len = tgt.size(1)
-        
-        # Encoding della sorgente
-        src_embedded = self.encoder_embedding(src) * math.sqrt(self.d_model)
+
+        # --- 1. Feature Weighting (Priorità Sensori) ---
+        if self.priority_indices and abs(self.priority_weight - 1.0) > 1e-6:
+            # Clona per evitare modifiche in-place che potrebbero rompere i gradienti se src è riusato
+            src_mod = src.clone()
+            src_mod[:, :, self.priority_indices] *= self.priority_weight
+            src_embedded = self.encoder_embedding(src_mod) * math.sqrt(self.d_model)
+        else:
+            src_embedded = self.encoder_embedding(src) * math.sqrt(self.d_model)
+
         src_embedded = self.pos_encoder(src_embedded)
         
-        # Encode con il Transformer encoder
-        memory = self.transformer.encoder(src_embedded, src_key_padding_mask=src_padding_mask)
-        
-        # **DECODIFICA AUTOREGRESSIVA**
-        if self.training and teacher_forcing_ratio > 0:
-            # Durante il training con teacher forcing, usa la sequenza completa
-            tgt_embedded = self.decoder_embedding(tgt) * math.sqrt(self.d_model)
-            tgt_embedded = self.pos_encoder(tgt_embedded)
-            tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_seq_len).to(src.device)
+        # --- 2. Modalità Direct ---
+        if self.prediction_mode == 'direct':
+            # Encoding
+            memory = self.transformer_encoder(src_embedded, src_key_padding_mask=src_padding_mask)
             
-            output = self.transformer.decoder(
-                tgt_embedded, memory,
-                tgt_mask=tgt_mask,
-                tgt_key_padding_mask=tgt_padding_mask,
-                memory_key_padding_mask=src_padding_mask
-            )
-            prediction = self.fc_out(output)
+            # Usa l'ultimo time step dell'encoder come context vector
+            last_step_memory = memory[:, -1, :] # (batch, d_model)
+            
+            # Predizione diretta full-sequence
+            prediction = self.fc_direct(last_step_memory) # (batch, output_window * output_dim * quantiles)
+            
+            # Reshape
+            if self.num_quantiles > 1:
+                prediction = prediction.view(batch_size, self.output_window, self.output_dim, self.num_quantiles)
+            else:
+                prediction = prediction.view(batch_size, self.output_window, self.output_dim)
+                
+            return prediction, None
+
+        # --- 3. Modalità Autoregressive ---
         else:
-            # **INFERENZA AUTOREGRESSIVA**: genera un passo alla volta
-            outputs = []
-            
-            # Inizializza con il primo step dell'input decoder
-            decoder_input = tgt[:, 0:1, :]  # (batch, 1, input_dim_decoder)
-            
-            for t in range(tgt_seq_len):
-                # Embedding del decoder input corrente
-                tgt_embedded = self.decoder_embedding(decoder_input) * math.sqrt(self.d_model)
+            if tgt is None:
+                raise ValueError("In modalità autoregressive, 'tgt' (input decoder) non può essere None.")
+                
+            tgt_seq_len = tgt.size(1)
+            # Encode con il Transformer encoder standard (o accessibile via self.transformer.encoder)
+            memory = self.transformer.encoder(src_embedded, src_key_padding_mask=src_padding_mask)
+
+            if self.training and teacher_forcing_ratio > 0:
+                # Durante il training con teacher forcing, usa la sequenza completa
+                tgt_embedded = self.decoder_embedding(tgt) * math.sqrt(self.d_model)
                 tgt_embedded = self.pos_encoder(tgt_embedded)
-                
-                # Mask causale per la lunghezza corrente
-                current_len = decoder_input.size(1)
-                tgt_mask = self.transformer.generate_square_subsequent_mask(current_len).to(src.device)
-                
-                # Decodifica
-                decoder_output = self.transformer.decoder(
+                tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_seq_len).to(src.device)
+
+                output = self.transformer.decoder(
                     tgt_embedded, memory,
                     tgt_mask=tgt_mask,
+                    tgt_key_padding_mask=tgt_padding_mask,
                     memory_key_padding_mask=src_padding_mask
                 )
+                prediction = self.fc_out(output)
+            else:
+                # **INFERENZA AUTOREGRESSIVA**: genera un passo alla volta
+                outputs = []
                 
-                # Predizione per l'ultimo step
-                step_prediction = self.fc_out(decoder_output[:, -1:, :])  # (batch, 1, output_dim * num_quantiles)
-                outputs.append(step_prediction)
+                # Inizializza con il primo step dell'input decoder
+                decoder_input = tgt[:, 0:1, :]  # (batch, 1, input_dim_decoder)
                 
-                # Prepara input per il prossimo step
-                if t < tgt_seq_len - 1:
-                    # Usa le forecast features del prossimo step
-                    next_forecast_features = tgt[:, t+1:t+2, :]
+                for t in range(tgt_seq_len):
+                    # Embedding del decoder input corrente
+                    tgt_embedded = self.decoder_embedding(decoder_input) * math.sqrt(self.d_model)
+                    tgt_embedded = self.pos_encoder(tgt_embedded)
                     
-                    # **INTEGRA LA PREDIZIONE NELLE FEATURES**
-                    # Assumendo che le ultime output_dim features siano i livelli da sostituire
-                    if self.num_quantiles > 1:
-                        # Usa la mediana (quantile centrale) per modelli quantile
-                        pred_reshaped = step_prediction.view(batch_size, 1, self.output_dim, self.num_quantiles)
-                        pred_targets = pred_reshaped[:, :, :, 1]  # Mediana
-                    else:
-                        pred_targets = step_prediction.view(batch_size, 1, self.output_dim)
+                    # Mask causale per la lunghezza corrente
+                    current_len = decoder_input.size(1)
+                    tgt_mask = self.transformer.generate_square_subsequent_mask(current_len).to(src.device)
                     
-                    # Sostituisci gli ultimi output_dim valori con le predizioni
-                    next_input = next_forecast_features.clone()
-                    next_input[:, :, -self.output_dim:] = pred_targets
-                    
-                    # Concatena all'input decoder per il prossimo step
-                    decoder_input = torch.cat([decoder_input, next_input], dim=1)
-            
-            # Concatena tutti gli output
-            prediction = torch.cat(outputs, dim=1)  # (batch, tgt_seq_len, output_dim * num_quantiles)
-        
-        # Reshape finale
-        if self.num_quantiles > 1:
-            prediction = prediction.view(
-                prediction.shape[0], prediction.shape[1], 
-                self.output_dim, self.num_quantiles
-            )
+                    # Decodifica
+                    decoder_output = self.transformer.decoder(
+                        tgt_embedded, memory,
+                        tgt_mask=tgt_mask,
+                        memory_key_padding_mask=src_padding_mask
+                    )
 
-        return prediction, None
+                    # Predizione per l'ultimo step
+                    step_prediction = self.fc_out(decoder_output[:, -1:, :])  # (batch, 1, output_dim * num_quantiles)
+                    outputs.append(step_prediction)
+                    
+                    # Prepara input per il prossimo step
+                    if t < tgt_seq_len - 1:
+                        # Recupera il prossimo input "base" (es. forecast meteo)
+                        next_base_input = tgt[:, t+1:t+2, :]
+
+                        # Se input_dim_decoder == output_dim, significa che NON stiamo usando forecast future,
+                        # ma solo i target passati. Quindi l'input per il prossimo step è PURAMENTE la predizione corrente.
+                        if self.input_dim_decoder == self.output_dim:
+                             if self.num_quantiles > 1:
+                                 # (batch, 1, output, quantiles) -> prendi mediana -> (batch, 1, output)
+                                 next_input = step_prediction[:, :, :, 1]
+                             else:
+                                 next_input = step_prediction
+                        else:
+                            # Stiamo usando forecast future + target passati (autoregressive ibrido)
+                            # Assumiamo che le ULTIME output_dim feature siano i target da sostituire con la predizione
+                            next_input = next_base_input.clone()
+
+                            if self.num_quantiles > 1:
+                                pred_targets = step_prediction[:, :, :, 1] # Mediana
+                            else:
+                                pred_targets = step_prediction.view(batch_size, 1, self.output_dim)
+
+                            # Sostituisci le feature target
+                            next_input[:, :, -self.output_dim:] = pred_targets
+
+                        # Concatena all'input decoder per il prossimo step (la storia cresce)
+                        decoder_input = torch.cat([decoder_input, next_input], dim=1)
+
+                # Concatena tutti gli output
+                prediction = torch.cat(outputs, dim=1)  # (batch, tgt_seq_len, output_dim * num_quantiles)
+            
+            # Reshape finale
+            if self.num_quantiles > 1:
+                prediction = prediction.view(
+                    prediction.shape[0], prediction.shape[1],
+                    self.output_dim, self.num_quantiles
+                )
+
+            return prediction, None
 
 
 # AGGIUNGI QUESTA CLASSE NELLA SEZIONE DELLE DEFINIZIONI DEI MODELLI
@@ -1937,6 +1996,11 @@ def load_specific_model(_model_path, config):
             dec_input_size = len(config["forecast_input_columns"])
             dec_output_size = len(config["target_columns"])
             
+            # Recupera nuovi parametri opzionali dalla config
+            prediction_mode = config.get("prediction_mode", "autoregressive")
+            priority_indices = config.get("priority_indices", [])
+            priority_weight = config.get("priority_weight", 1.0)
+
             model = HydroTransformer(
                 input_dim_encoder=enc_input_size,
                 input_dim_decoder=dec_input_size,
@@ -1947,7 +2011,11 @@ def load_specific_model(_model_path, config):
                 num_decoder_layers=config["num_decoder_layers"],
                 dim_feedforward=config["dim_feedforward"],
                 dropout=config["dropout"],
-                num_quantiles=num_quantiles
+                num_quantiles=num_quantiles,
+                prediction_mode=prediction_mode,
+                output_window=config["output_window_steps"],
+                priority_indices=priority_indices,
+                priority_weight=priority_weight
             ).to(device)
         elif model_type == "SpatioTemporalGNN":
             if not PYG_AVAILABLE: raise RuntimeError("PyTorch Geometric non trovato.")
@@ -2075,10 +2143,14 @@ def predict(model, input_data, scaler_features, scaler_targets, config, device):
         st.error(traceback.format_exc()); return None
 
 def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, device):
-    if not all([model, past_data is not None, future_forecast_data is not None, scalers, config, device]):
+    # Se direct mode o no future forecasts, future_forecast_data potrebbe essere None o dummy
+    if not all([model, past_data is not None, scalers, config, device]):
          st.error("Predict Seq2Seq: Input mancanti."); return None, None
 
     training_mode = config.get("training_mode", "standard")
+    prediction_mode = config.get("prediction_mode", "autoregressive")
+    use_future_forecasts = config.get("use_future_forecasts", True)
+
     num_quantiles = len(config["quantiles"]) if training_mode == 'quantile' else 1
     
     output_steps_model = config["output_window_steps"]
@@ -2091,9 +2163,61 @@ def predict_seq2seq(model, past_data, future_forecast_data, scalers, config, dev
     model.eval()
     try:
         past_norm = scaler_past.transform(past_data)
-        future_norm = scaler_forecast.transform(future_forecast_data)
         past_tens = torch.FloatTensor(past_norm).unsqueeze(0).to(device)
-        future_tens = torch.FloatTensor(future_norm).unsqueeze(0).to(device)
+
+        future_tens = None
+
+        if prediction_mode == 'direct':
+            # In direct mode, we don't need future_forecast_data for the model
+            pass
+        else:
+            # Autoregressive mode
+            if use_future_forecasts:
+                if future_forecast_data is None:
+                    st.error("Predict Seq2Seq: Dati forecast futuri mancanti per modalità autoregressive standard.")
+                    return None, None
+                future_norm = scaler_forecast.transform(future_forecast_data)
+                future_tens = torch.FloatTensor(future_norm).unsqueeze(0).to(device)
+            else:
+                # No future forecasts: il modello usa solo i target passati.
+                # Per far partire il loop autoregressivo, dobbiamo fornire l'ultimo valore noto (o un placeholder)
+                # Il modello è stato addestrato con Shifted Targets come 'forecast features'.
+                # Quindi input_dim_decoder == output_dim.
+                # All'inferenza, il primo input è l'ultimo target reale conosciuto.
+
+                # Prendiamo l'ultimo valore dei target dai dati passati
+                # past_data contiene TUTTE le feature passate. Dobbiamo estrarre solo le colonne target.
+
+                # Mappiamo le colonne target agli indici in past_data
+                past_cols = config.get("all_past_feature_columns", [])
+                target_cols = config.get("target_columns", [])
+
+                last_target_values = []
+                for t_col in target_cols:
+                    if t_col in past_cols:
+                        idx = past_cols.index(t_col)
+                        last_target_values.append(past_norm[-1, idx])
+                    else:
+                        # Fallback se il target non è nel passato (non dovrebbe accadere se ben configurato)
+                        last_target_values.append(0.0)
+
+                last_targets_tensor = torch.tensor(last_target_values, dtype=torch.float32).view(1, 1, -1).to(device)
+
+                # Creiamo un tensore dummy che abbia la lunghezza output_window per il loop,
+                # ma solo il primo elemento è importante per l'inizializzazione.
+                # In realtà, il modello userà prediction[t-1] per t > 0.
+                # Ma il ciclo for t in range(output_window) usa `decoder_input = tgt[:, 0:1, :]` inizialmente.
+                # E poi `next_base_input = tgt[:, t+1:t+2, :]`.
+
+                # Se NO forecast, next_base_input non deve essere usato o deve essere ignorato.
+                # Nel forward aggiornato:
+                # if self.input_dim_decoder == self.output_dim:
+                #    next_input = step_prediction
+
+                # Quindi `tgt` deve solo avere la lunghezza giusta e il primo valore corretto.
+                dummy_future = torch.zeros(1, output_steps_model, num_targets).to(device)
+                dummy_future[:, 0:1, :] = last_targets_tensor
+                future_tens = dummy_future
 
         with torch.no_grad(): 
             output, attention_weights = model(past_tens, future_tens, teacher_forcing_ratio=0.0)
@@ -4421,14 +4545,61 @@ elif page == 'Allenamento Modello':
 
     elif train_model_type in ["Seq2Seq (Encoder-Decoder)", "Seq2Seq con Attenzione", "Transformer"]:
         st.markdown(f"**1. Seleziona Feature ({train_model_type})**")
-        # ... (UI per Seq2Seq/Transformer invariata) ...
+
         all_features = df_current_csv.columns.drop(date_col_name_csv, errors='ignore').tolist()
         default_past = [f for f in st.session_state.feature_columns if f in all_features]
         selected_past_features = st.multiselect("Feature Storiche (Input Encoder):", all_features, default=default_past, key="train_s2s_past_feat")
-        default_forecast = [f for f in selected_past_features if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]
-        selected_forecast_features = st.multiselect("Feature Forecast (Input Decoder):", options=selected_past_features, default=default_forecast, key="train_s2s_forecast_feat")
+
         level_options = [f for f in selected_past_features if 'livello' in f.lower() or '[m]' in f.lower()]
         selected_targets = st.multiselect("Target Output (Livelli):", options=level_options, default=level_options[:1], key="train_s2s_target_feat")
+
+        # --- NUOVE VARIABILI DI CONFIGURAZIONE AVANZATA ---
+        prediction_mode = 'autoregressive'
+        use_future_forecasts = True
+        priority_indices = []
+        priority_weight = 1.0
+
+        if train_model_type == "Transformer":
+            with st.expander("Configurazione Avanzata Transformer (Nuovo!)"):
+                prediction_mode = st.radio(
+                    "Modalità di Predizione:",
+                    ["autoregressive", "direct"],
+                    index=0,
+                    help="'autoregressive': Predice passo-passo (loop). 'direct': Predice l'intera sequenza futura in un colpo solo (MLP Head)."
+                )
+
+                use_future_forecasts = st.checkbox(
+                    "Usa Previsioni Meteo Future",
+                    value=True,
+                    help="Se disattivato, il Decoder non riceverà le previsioni meteo future ma solo i target passati (shiftati). Utile per modelli 'blind' al futuro o se le previsioni meteo non sono affidabili."
+                )
+
+                # Definizione sensori prioritari
+                # Default suggeriti dall'utente
+                priority_defaults_ids = ['1008', '1283', '3072']
+                default_priority_sensors = [f for f in selected_past_features if any(pid in f for pid in priority_defaults_ids)]
+
+                priority_sensors = st.multiselect(
+                    "Sensori a Monte Prioritari (Input Encoder):",
+                    options=selected_past_features,
+                    default=default_priority_sensors,
+                    help="Questi sensori avranno un peso maggiore nell'embedding dell'encoder per forzare l'attenzione del modello."
+                )
+
+                if priority_sensors:
+                    priority_weight = st.slider("Peso Priorità", 1.0, 10.0, 2.0, 0.5)
+                    # Calcola indici
+                    priority_indices = [selected_past_features.index(f) for f in priority_sensors if f in selected_past_features]
+
+        # Logica condizionale per Forecast Features
+        if use_future_forecasts:
+            default_forecast = [f for f in selected_past_features if 'pioggia' in f.lower() or 'cumulata' in f.lower() or f == HUMIDITY_COL_NAME]
+            selected_forecast_features = st.multiselect("Feature Forecast (Input Decoder):", options=selected_past_features, default=default_forecast, key="train_s2s_forecast_feat")
+        else:
+            st.info("Modalità 'No Future Forecasts' attiva: L'input del decoder sarà costituito dai soli Target passati (shifted).")
+            # In questo caso, passiamo i target come 'forecast features' alla funzione di preparazione dati,
+            # così X_dec sarà creato usando le colonne target.
+            selected_forecast_features = selected_targets
 
         st.markdown(f"**2. Parametri Modello e Training ({train_model_type})**")
         with st.expander(f"Impostazioni Allenamento {train_model_type}", expanded=True):
@@ -4436,8 +4607,20 @@ elif page == 'Allenamento Modello':
             c1, c2, c3 = st.columns(3)
             with c1:
                 iw_steps = st.number_input("Input Storico (steps 30min)", 2, value=48, step=2, key="t_s2s_in")
-                fw_steps = st.number_input("Input Forecast (steps 30min)", 1, value=6, step=1, key="t_s2s_fore")
+                # Se non usiamo future forecasts, la finestra di forecast (decoder input) deve coincidere con l'output window
+                # per garantire la corretta forma dei tensori shiftati.
+                default_fw = 6
+                if not use_future_forecasts:
+                    # In realtà fw_steps e ow_steps sono solitamente uguali nel seq2seq standard,
+                    # ma lasciamo l'utente decidere, forzando coerenza se necessario dopo.
+                    pass
+
+                fw_steps = st.number_input("Input Forecast (steps 30min)", 1, value=default_fw, step=1, key="t_s2s_fore")
                 ow_steps = st.number_input("Output Previsione (steps 30min)", 1, value=6, step=1, key="t_s2s_out")
+
+                if not use_future_forecasts and fw_steps != ow_steps:
+                    st.warning(f"Attenzione: Senza previsioni future, Input Forecast ({fw_steps}) dovrebbe essere uguale a Output Previsione ({ow_steps}).")
+
                 n_splits_cv = st.number_input("Numero Fold CV", 2, value=3, step=1, key="t_s2s_n_splits_cv")
             with c2:
                 if train_model_type == "Transformer":
@@ -4463,6 +4646,12 @@ elif page == 'Allenamento Modello':
         
         if st.button(f"Avvia Addestramento {train_model_type}", type="primary", disabled=not ready_to_train, key="train_run_s2s_trans"):
             st.info(f"Avvio addestramento {train_model_type} per '{save_name}'...")
+
+            # Controllo di coerenza per no_future_forecasts
+            if not use_future_forecasts and fw_steps != ow_steps:
+                st.warning(f"Forzatura: Input Forecast impostato a {ow_steps} per coincidere con Output Window (richiesto da modalità senza previsioni future).")
+                fw_steps = ow_steps
+
             with st.spinner(f"Preparazione dati {train_model_type}..."):
                 # <<< MODIFICA 3: Passaggio parametri
                 data_tuple = prepare_training_data_seq2seq(
@@ -4484,7 +4673,12 @@ elif page == 'Allenamento Modello':
                         input_dim_encoder=X_enc_scaled.shape[2], input_dim_decoder=X_dec_scaled.shape[2],
                         output_dim=len(selected_targets), d_model=d_model, nhead=nhead,
                         num_encoder_layers=num_enc_l, num_decoder_layers=num_dec_l,
-                        dim_feedforward=dim_ff, dropout=dr, num_quantiles=num_quantiles_train)
+                        dim_feedforward=dim_ff, dropout=dr, num_quantiles=num_quantiles_train,
+                        prediction_mode=prediction_mode,
+                        output_window=ow_steps,
+                        priority_indices=priority_indices,
+                        priority_weight=priority_weight
+                    )
                 else:
                     encoder = EncoderLSTM(X_enc_scaled.shape[2], hs, nl, dr)
                     if train_model_type == "Seq2Seq con Attenzione":
@@ -4521,7 +4715,14 @@ elif page == 'Allenamento Modello':
                     config_save = {"display_name": save_name, "training_date": datetime.now(italy_tz).isoformat(), "model_type": train_model_type.replace(" (Encoder-Decoder)", ""), "input_window_steps": iw_steps, "forecast_window_steps": fw_steps, "output_window_steps": ow_steps, "all_past_feature_columns": selected_past_features, "forecast_input_columns": selected_forecast_features, "target_columns": selected_targets, "dropout": dr, "training_mode": training_mode.split()[0].lower(), "loss_function": loss_choice}
                     if training_mode == "Quantile Regression": config_save["quantiles"] = quantiles_list
                     if train_model_type == "Transformer":
-                        config_save.update({"d_model": d_model, "nhead": nhead, "dim_feedforward": dim_ff, "num_encoder_layers": num_enc_l, "num_decoder_layers": num_dec_l})
+                        config_save.update({
+                            "d_model": d_model, "nhead": nhead, "dim_feedforward": dim_ff,
+                            "num_encoder_layers": num_enc_l, "num_decoder_layers": num_dec_l,
+                            "prediction_mode": prediction_mode,
+                            "use_future_forecasts": use_future_forecasts, # Salva questo flag per riferimento
+                            "priority_indices": priority_indices,
+                            "priority_weight": priority_weight
+                        })
                     else:
                         config_save.update({"hidden_size": hs, "num_layers": nl})
 
