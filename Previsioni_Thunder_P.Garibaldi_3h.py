@@ -244,7 +244,7 @@ MODEL_BASE_NAME = "modello_seq2seq_20251204_1223_best" # Default, will be overwr
 GSHEET_ID = os.environ.get("GSHEET_ID", "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Idro-P. Garibaldi 6h"
+GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Idro-P. Garibaldi 3h"
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
