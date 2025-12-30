@@ -48,5 +48,6 @@ jobs:
       shell: bash
 
     # 6. Esegue il nuovo script Python di previsione.
-    - name: Run Previsioni_Thunder_6h.py
-      run: python Previsioni_Thunder_6h.py
+    - name: Run Previsioni_Thunder_TFT.py
+      run: python Previsioni_Thunder_TFT.py
+
