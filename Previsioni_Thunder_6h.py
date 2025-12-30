@@ -7,12 +7,14 @@ from google.oauth2.service_account import Credentials
 import joblib
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pandas as pd
 import numpy as np
 import traceback
 import io
 import csv
 import random
+import math
 
 # ============================================
 # CONFIGURAZIONE RIPRODUCIBILITÀ
@@ -33,213 +35,189 @@ def set_seed(seed):
 set_seed(SEED)
 
 # ============================================
-# DEFINIZIONE MODELLO (Seq2SeqWithAttention)
+# DEFINIZIONE MODELLO TFT (Temporal Fusion Transformer)
 # ============================================
 
-class EncoderLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers=2, dropout=0.2, bidirectional=True):
+class GatedLinearUnit(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, dropout: float = 0.0):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.bidirectional = bidirectional
-        self.num_directions = 2 if bidirectional else 1
-
-        self.input_proj = nn.Linear(input_size, hidden_size)
-        self.lstm = nn.LSTM(
-            hidden_size, hidden_size, num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
-            bidirectional=bidirectional
-        )
-        self.layer_norm = nn.LayerNorm(hidden_size * self.num_directions)
-
-        if bidirectional:
-            self.hidden_proj = nn.Linear(hidden_size * 2, hidden_size)
-            self.cell_proj = nn.Linear(hidden_size * 2, hidden_size)
-
-    def forward(self, x):
-        x = self.input_proj(x)
-        outputs, (hidden, cell) = self.lstm(x)
-        outputs = self.layer_norm(outputs)
-
-        if self.bidirectional:
-            hidden = hidden.view(self.num_layers, 2, -1, self.hidden_size)
-            cell = cell.view(self.num_layers, 2, -1, self.hidden_size)
-            hidden = self.hidden_proj(torch.cat([hidden[:, 0, :, :], hidden[:, 1, :, :]], dim=-1))
-            cell = self.cell_proj(torch.cat([cell[:, 0, :, :], cell[:, 1, :, :]], dim=-1))
-
-        return outputs, hidden, cell
-
-
-class ImprovedAttention(nn.Module):
-    def __init__(self, hidden_size, attention_type='additive'):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.attention_type = attention_type
-
-        if attention_type == 'additive':
-            self.W_decoder = nn.Linear(hidden_size, hidden_size, bias=False)
-            self.W_encoder = nn.Linear(hidden_size * 2, hidden_size, bias=False)
-            self.v = nn.Linear(hidden_size, 1, bias=False)
-        elif attention_type == 'dot':
-            self.W = nn.Linear(hidden_size, hidden_size * 2, bias=False)
-
-        self.softmax = nn.Softmax(dim=1)
-
-    def forward(self, decoder_hidden, encoder_outputs, mask=None):
-        batch_size, seq_len, _ = encoder_outputs.shape
-
-        if self.attention_type == 'additive':
-            decoder_proj = self.W_decoder(decoder_hidden).unsqueeze(1).expand(-1, seq_len, -1)
-            encoder_proj = self.W_encoder(encoder_outputs)
-            energy = torch.tanh(decoder_proj + encoder_proj)
-            scores = self.v(energy).squeeze(-1)
-        elif self.attention_type == 'dot':
-            decoder_proj = self.W(decoder_hidden)
-            scores = torch.bmm(encoder_outputs, decoder_proj.unsqueeze(2)).squeeze(2)
-
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e10)
-
-        attn_weights = self.softmax(scores)
-        context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)
-
-        return context, attn_weights
-
-
-class DecoderLSTMWithAttention(nn.Module):
-    def __init__(self, forecast_input_size, hidden_size, output_size,
-                 num_layers=2, dropout=0.2, num_quantiles=1, attention_type='additive'):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.forecast_input_size = forecast_input_size
-        self.output_size = output_size
-        self.num_quantiles = num_quantiles
-
-        self.attention = ImprovedAttention(hidden_size, attention_type)
-        self.lstm = nn.LSTM(
-            forecast_input_size + hidden_size * 2, hidden_size, num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0
-        )
-        self.gate = nn.Sequential(
-            nn.Linear(forecast_input_size + hidden_size * 2, hidden_size),
-            nn.Sigmoid()
-        )
-        self.context_proj = nn.Linear(hidden_size * 2, hidden_size)
-        self.fc = nn.Linear(hidden_size, output_size * num_quantiles)
+        self.fc = nn.Linear(input_dim, output_dim)
+        self.gate = nn.Linear(input_dim, output_dim)
         self.dropout = nn.Dropout(dropout)
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x_forecast_step, hidden, cell, encoder_outputs):
-        batch_size = x_forecast_step.size(0)
-        decoder_hidden = hidden[-1]
-        context, attn_weights = self.attention(decoder_hidden, encoder_outputs)
-        lstm_input = torch.cat([x_forecast_step, context.unsqueeze(1)], dim=2)
-        output, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
-        output = output.squeeze(1)
-        projected_context = self.context_proj(context)
-        gate_input = torch.cat([x_forecast_step.squeeze(1), projected_context, output], dim=1)
-        gate_value = self.gate(gate_input)
-        gated_output = gate_value * output + (1 - gate_value) * projected_context
-        gated_output = self.dropout(gated_output)
-        prediction = self.fc(gated_output)
-        return prediction, hidden, cell, attn_weights
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.dropout(self.fc(x)) * self.sigmoid(self.gate(x))
 
 
-class Seq2SeqWithAttention(nn.Module):
-    def __init__(self, encoder, decoder, output_window_steps):
+class GatedResidualNetwork(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, 
+                 context_dim: int = None, dropout: float = 0.1):
         super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.output_window = output_window_steps
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.context_dim = context_dim
+        
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        if context_dim is not None:
+            self.context_fc = nn.Linear(context_dim, hidden_dim, bias=False)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.elu = nn.ELU()
+        self.glu = GatedLinearUnit(hidden_dim, output_dim, dropout)
+        self.layer_norm = nn.LayerNorm(output_dim)
+        if input_dim != output_dim:
+            self.skip_layer = nn.Linear(input_dim, output_dim)
+        else:
+            self.skip_layer = None
 
-    def forward(self, x_past, x_future_forecast, teacher_forcing_ratio=0.0, target_sequence=None):
-        batch_size = x_past.shape[0]
-        target_output_size = self.decoder.output_size
-        num_quantiles = self.decoder.num_quantiles
-        decoder_output_dim = target_output_size * num_quantiles
+    def forward(self, x: torch.Tensor, context: torch.Tensor = None) -> torch.Tensor:
+        if self.skip_layer is not None:
+            residual = self.skip_layer(x)
+        else:
+            residual = x
+        hidden = self.fc1(x)
+        if context is not None and self.context_dim is not None:
+            hidden = hidden + self.context_fc(context)
+        hidden = self.elu(hidden)
+        hidden = self.fc2(hidden)
+        output = self.glu(hidden)
+        return self.layer_norm(output + residual)
 
-        outputs = torch.zeros(batch_size, self.output_window, decoder_output_dim).to(x_past.device)
-        attention_weights_history = torch.zeros(batch_size, self.output_window, x_past.shape[1]).to(x_past.device)
 
-        encoder_outputs, encoder_hidden, encoder_cell = self.encoder(x_past)
-        decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
+class VariableSelectionNetwork(nn.Module):
+    def __init__(self, input_dim: int, num_inputs: int, hidden_dim: int, 
+                 context_dim: int = None, dropout: float = 0.1):
+        super().__init__()
+        self.num_inputs = num_inputs
+        self.hidden_dim = hidden_dim
+        self.variable_grns = nn.ModuleList([
+            GatedResidualNetwork(input_dim, hidden_dim, hidden_dim, context_dim, dropout)
+            for _ in range(num_inputs)
+        ])
+        self.selection_grn = GatedResidualNetwork(
+            hidden_dim * num_inputs, hidden_dim, num_inputs, context_dim, dropout
+        )
+        self.softmax = nn.Softmax(dim=-1)
 
-        # Primo input del decoder
-        decoder_input_step = x_future_forecast[:, 0:1, :]
+    def forward(self, inputs: list, context: torch.Tensor = None) -> tuple:
+        processed = []
+        for i, (var_input, grn) in enumerate(zip(inputs, self.variable_grns)):
+            if context is not None:
+                ctx_expanded = context.unsqueeze(1).expand(-1, var_input.size(1), -1)
+                processed.append(grn(var_input, ctx_expanded))
+            else:
+                processed.append(grn(var_input))
+        stacked = torch.cat(processed, dim=-1)
+        if context is not None:
+            ctx_expanded = context.unsqueeze(1).expand(-1, stacked.size(1), -1)
+            selection_weights = self.selection_grn(stacked, ctx_expanded)
+        else:
+            selection_weights = self.selection_grn(stacked)
+        variable_weights = self.softmax(selection_weights)
+        processed_stacked = torch.stack(processed, dim=-2)
+        output = (processed_stacked * variable_weights.unsqueeze(-1)).sum(dim=-2)
+        return output, variable_weights
 
-        for t in range(self.output_window):
-            decoder_output_step, decoder_hidden, decoder_cell, attn_weights = self.decoder(
-                decoder_input_step, decoder_hidden, decoder_cell, encoder_outputs
-            )
 
-            outputs[:, t, :] = decoder_output_step
-            attention_weights_history[:, t, :] = attn_weights.squeeze()
+class InterpretableMultiHeadAttention(nn.Module):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = math.sqrt(self.d_k)
 
-            if t < self.output_window - 1:
-                # Autoregressive logic handled in make_prediction for inference script
-                # Here we just expect x_future_forecast to contain the correct next step input
-                # But since we are in a script where we might need to feed back predictions...
-                # Actually, for the script, we will call the model step-by-step or pass the full tensor
-                # IF the full tensor is already prepared.
-                # However, since the script needs to handle dynamic autoregression (updating the input),
-                # it's better if the script calls the model in a way that allows this, OR
-                # we implement the autoregressive logic HERE inside the forward method if x_future_forecast is not full.
-                
-                # For consistency with the script logic which prepares the tensor:
-                # We will assume x_future_forecast is fully populated OR we are in a mode where we don't update it here.
-                # BUT, wait! In the Transformer script, we pass the full tensor.
-                # If we want true autoregression where prediction t feeds into t+1, we need to do it here OR in the script loop.
-                # The Transformer script does it inside the model forward (for autoregressive mode).
-                # So let's add the autoregressive feedback logic here too!
-                
-                if teacher_forcing_ratio == 0 and target_sequence is None:
-                     # Autoregressive Inference Mode
-                     
-                     # 1. Get prediction
-                    if num_quantiles > 1:
-                        pred_reshaped = decoder_output_step.view(batch_size, target_output_size, num_quantiles)
-                        pred_targets = pred_reshaped[:, :, 1] # Median
-                    else:
-                        pred_targets = decoder_output_step.view(batch_size, target_output_size)
-                    
-                    # 2. Prepare next input
-                    # We need to take the base features from x_future_forecast (e.g. weather) and update the target columns
-                    next_base_input = x_future_forecast[:, t+1:t+2, :].clone()
-                    
-                    # Assuming target columns are the LAST N columns of the decoder input
-                    # This is a strong assumption but standard in this project
-                    num_target_features = target_output_size
-                    
-                    # Check if we actually have target features in the input (we might not if use_future_forecasts=False)
-                    # If use_future_forecasts=False, input dim is just num_targets
-                    if next_base_input.shape[-1] == num_target_features:
-                        next_base_input = pred_targets.unsqueeze(1)
-                    else:
-                        # We have other features + targets. Update only targets.
-                        next_base_input[:, :, -num_target_features:] = pred_targets
-                    
-                    decoder_input_step = next_base_input
-                else:
-                    decoder_input_step = x_future_forecast[:, t+1:t+2, :]
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
+                mask: torch.Tensor = None) -> tuple:
+        batch_size = query.size(0)
+        Q = self.W_q(query).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        K = self.W_k(key).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        V = self.W_v(value).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        attention_weights = torch.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+        context = torch.matmul(attention_weights, V)
+        context = context.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+        output = self.W_o(context)
+        return output, attention_weights
 
-        if num_quantiles > 1:
-            outputs = outputs.view(batch_size, self.output_window, target_output_size, num_quantiles)
 
-        return outputs, attention_weights_history
+class TemporalFusionTransformer(nn.Module):
+    def __init__(self,
+                 num_past_inputs: int,
+                 num_future_inputs: int,
+                 num_static_inputs: int = 0,
+                 hidden_dim: int = 64,
+                 num_heads: int = 4,
+                 num_encoder_layers: int = 1,
+                 dropout: float = 0.1,
+                 output_dim: int = 1,
+                 output_window: int = 6,
+                 num_quantiles: int = 1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.output_window = output_window
+        self.num_quantiles = num_quantiles
+        self.num_past_inputs = num_past_inputs
+        self.num_future_inputs = num_future_inputs
+        self.num_static_inputs = num_static_inputs
+        self.past_var_embeddings = nn.ModuleList([nn.Linear(1, hidden_dim) for _ in range(num_past_inputs)])
+        self.future_var_embeddings = nn.ModuleList([nn.Linear(1, hidden_dim) for _ in range(num_future_inputs)])
+        self.past_vsn = VariableSelectionNetwork(hidden_dim, num_past_inputs, hidden_dim, None, dropout)
+        if num_future_inputs > 0:
+            self.future_vsn = VariableSelectionNetwork(hidden_dim, num_future_inputs, hidden_dim, None, dropout)
+        else:
+            self.future_vsn = None
+        self.encoder_lstm = nn.LSTM(hidden_dim, hidden_dim, num_encoder_layers, batch_first=True, dropout=dropout if num_encoder_layers > 1 else 0)
+        self.decoder_lstm = nn.LSTM(hidden_dim, hidden_dim, num_encoder_layers, batch_first=True, dropout=dropout if num_encoder_layers > 1 else 0)
+        self.post_lstm_gate = GatedResidualNetwork(hidden_dim, hidden_dim, hidden_dim, dropout=dropout)
+        self.temporal_attention = InterpretableMultiHeadAttention(hidden_dim, num_heads, dropout)
+        self.post_attention_grn = GatedResidualNetwork(hidden_dim, hidden_dim, hidden_dim, dropout=dropout)
+        self.attention_layer_norm = nn.LayerNorm(hidden_dim)
+        self.positionwise_grn = GatedResidualNetwork(hidden_dim, hidden_dim, hidden_dim, dropout=dropout)
+        self.output_layer = nn.Linear(hidden_dim, output_dim * num_quantiles)
+
+    def forward(self, x_past: torch.Tensor, x_future: torch.Tensor, x_static: torch.Tensor = None) -> tuple:
+        batch_size = x_past.size(0); past_seq_len = x_past.size(1)
+        past_embedded = [self.past_var_embeddings[i](x_past[:, :, i:i+1]) for i in range(self.num_past_inputs)]
+        future_embedded = [self.future_var_embeddings[i](x_future[:, :, i:i+1]) for i in range(self.num_future_inputs)]
+        past_selected, _ = self.past_vsn(past_embedded, None)
+        if self.num_future_inputs > 0 and self.future_vsn is not None and len(future_embedded) > 0:
+            future_selected, _ = self.future_vsn(future_embedded, None)
+        else:
+            future_selected = torch.zeros(batch_size, self.output_window, self.hidden_dim, device=x_past.device)
+        encoder_output, (h_n, c_n) = self.encoder_lstm(past_selected)
+        decoder_output, _ = self.decoder_lstm(future_selected, (h_n, c_n))
+        combined = torch.cat([encoder_output, decoder_output], dim=1)
+        combined = self.post_lstm_gate(combined)
+        attention_output, temporal_attention_weights = self.temporal_attention(combined, combined, combined)
+        attention_output = self.attention_layer_norm(combined + self.post_attention_grn(attention_output))
+        output_temporal = self.positionwise_grn(attention_output)
+        future_output = output_temporal[:, past_seq_len:, :]
+        predictions_input = future_output[:, :self.output_window, :]
+        predictions = self.output_layer(predictions_input)
+        return predictions, {"attention": temporal_attention_weights}
 
 
 # ============================================
 # COSTANTI
 # ============================================
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_seq2seq_20251201_0842_best" # Default, will be overwritten by config if needed
+MODEL_BASE_NAME = "modello_temporal_20251230_0838"  # TFT Model
 
-GSHEET_ID = os.environ.get("GSHEET_ID")
+GSHEET_ID = os.environ.get("GSHEET_ID", "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Idro-Bettolelle 6h"
+GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni TFT Idro-Bettolelle"
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
@@ -263,7 +241,7 @@ def log_environment_info():
 
 
 def load_model_and_scalers(model_base_name, models_dir):
-    print(f"\n=== CARICAMENTO MODELLO E SCALER ===")
+    print(f"\n=== CARICAMENTO MODELLO TFT ===")
     config_path = os.path.join(models_dir, f"{model_base_name}.json")
     model_path = os.path.join(models_dir, f"{model_base_name}.pth")
     scaler_past_features_path = os.path.join(models_dir, f"{model_base_name}_past_features.joblib")
@@ -279,36 +257,41 @@ def load_model_and_scalers(model_base_name, models_dir):
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    enc_input_size = len(config["all_past_feature_columns"])
+    # TFT specific config
+    num_past = len(config["all_past_feature_columns"])
+    num_future = len(config["forecast_input_columns"])
+    num_targets = len(config["target_columns"])
     
-    # Determine decoder input size
-    use_future_forecasts = config.get("use_future_forecasts", True)
-    dec_output_size = len(config["target_columns"])
-    
-    if use_future_forecasts:
-        dec_input_size = len(config["forecast_input_columns"])
-    else:
-        dec_input_size = dec_output_size # Only past targets
-    
-    quantiles = config.get("quantiles")
-    num_quantiles = len(quantiles) if quantiles and isinstance(quantiles, list) else 1
-    
-    hidden = config["hidden_size"]
-    layers = config["num_layers"]
-    drop = config["dropout"]
+    hidden_dim = config["hidden_dim"]
+    num_heads = config.get("num_heads", 4)
+    num_layers = config["num_encoder_layers"]
+    dropout = config["dropout"]
     out_win = config["output_window_steps"]
     
-    print(f"Configurazione modello:")
-    print(f"  - Encoder input: {enc_input_size} features")
-    print(f"  - Decoder input: {dec_input_size} features")
-    print(f"  - Output: {dec_output_size} target(s)")
+    quantiles = config.get("quantiles", [0.5])
+    num_quantiles = len(quantiles)
+    
+    print(f"Configurazione modello TFT:")
+    print(f"  - Past features: {num_past}")
+    print(f"  - Future features: {num_future}")
+    print(f"  - Output: {num_targets} target(s)")
+    print(f"  - Hidden dim: {hidden_dim}")
+    print(f"  - Attention heads: {num_heads}")
+    print(f"  - Encoder layers: {num_layers}")
     print(f"  - Quantili: {num_quantiles}")
     print(f"  - Output window: {out_win} steps")
-    print(f"  - Use Future Forecasts: {use_future_forecasts}")
     
-    encoder = EncoderLSTM(enc_input_size, hidden, layers, drop)
-    decoder = DecoderLSTMWithAttention(dec_input_size, hidden, dec_output_size, layers, drop, num_quantiles=num_quantiles)
-    model = Seq2SeqWithAttention(encoder, decoder, out_win).to(device)
+    model = TemporalFusionTransformer(
+        num_past_inputs=num_past,
+        num_future_inputs=num_future,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads,
+        num_encoder_layers=num_layers,
+        dropout=dropout,
+        output_dim=num_targets,
+        output_window=out_win,
+        num_quantiles=num_quantiles
+    ).to(device)
     
     model_state = torch.load(model_path, map_location=device)
     model.load_state_dict(model_state)
@@ -325,8 +308,8 @@ def load_model_and_scalers(model_base_name, models_dir):
             scaler_forecast_features = None
         scaler_targets = joblib.load(scaler_targets_path)
     
-    print("✓ Modello e scaler caricati")
-    
+    print("Modello TFT e scaler caricati")
+        
     return model, scaler_past_features, scaler_forecast_features, scaler_targets, config, device
 
 
@@ -336,19 +319,10 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     output_window_steps = config["output_window_steps"]
     past_feature_columns = config["all_past_feature_columns"]
     target_columns = config.get("target_columns", [])
+    forecast_feature_columns = config["forecast_input_columns"]
     
-    use_future_forecasts = config.get("use_future_forecasts", True)
-    forecast_feature_columns = []
-    actual_forecast_cols_to_fetch = []
-
-    if use_future_forecasts:
-        forecast_feature_columns = config["forecast_input_columns"]
-        # Filtra le colonne che sono anche target (non vanno cercate nel foglio previsioni)
-        actual_forecast_cols_to_fetch = [c for c in forecast_feature_columns if c not in target_columns]
-        
-        if len(actual_forecast_cols_to_fetch) == 0:
-            print("Info: Le colonne di input previsionale coincidono con i target (Modello Autoregressivo Puro).")
-            print("      Non verranno caricati dati dal foglio previsioni.")
+    # Filter columns that are also targets (not to be searched in forecast sheet)
+    actual_forecast_cols_to_fetch = [c for c in forecast_feature_columns if c not in target_columns]
     
     sh = gc.open_by_key(sheet_id)
     
@@ -364,8 +338,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     df_historical_raw = pd.read_csv(io.StringIO(values_to_csv_string(historical_values)), decimal=',')
     
     df_forecast_raw = None
-    # Carica il foglio previsioni SOLO se ci sono feature esterne da cercare
-    if use_future_forecasts and len(actual_forecast_cols_to_fetch) > 0:
+    if len(actual_forecast_cols_to_fetch) > 0:
         print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
         try:
             forecast_ws = sh.worksheet(GSHEET_FORECAST_DATA_SHEET_NAME)
@@ -374,7 +347,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
         except gspread.exceptions.WorksheetNotFound:
             print(f"Warning: Foglio '{GSHEET_FORECAST_DATA_SHEET_NAME}' non trovato. Si prosegue senza previsioni esterne.")
 
-    # Rinomina colonne
+    # Rename columns helper
     def build_rename_map(columns):
         rename_map = {}
         for col in columns:
@@ -401,7 +374,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     if df_forecast_raw is not None:
         df_forecast_raw = df_forecast_raw.loc[:, ~df_forecast_raw.columns.duplicated(keep='last')]
 
-    # Parsing date storiche
+    # Parse historical dates
     df_historical_raw[GSHEET_DATE_COL_INPUT] = pd.to_datetime(
         df_historical_raw[GSHEET_DATE_COL_INPUT], format=GSHEET_DATE_FORMAT_INPUT, errors='coerce'
     )
@@ -409,7 +382,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     latest_valid_timestamp = df_historical[GSHEET_DATE_COL_INPUT].iloc[-1]
     print(f"Ultimo timestamp storico: {latest_valid_timestamp}")
     
-    # Prepara dati storici
+    # Prepare historical data
     for col in past_feature_columns:
         if col not in df_historical.columns:
             raise ValueError(f"Colonna storica '{col}' non trovata.")
@@ -419,10 +392,10 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     input_data_historical = df_features_filled.iloc[-input_window_steps:].values
     print(f"Shape dati storici: {input_data_historical.shape}")
     
-    # Prepara dati forecast
+    # Prepare forecast data
     input_data_forecast = None
     
-    if use_future_forecasts and len(actual_forecast_cols_to_fetch) > 0 and df_forecast_raw is not None:
+    if len(actual_forecast_cols_to_fetch) > 0 and df_forecast_raw is not None:
         df_forecast_raw[GSHEET_FORECAST_DATE_COL] = pd.to_datetime(
             df_forecast_raw[GSHEET_FORECAST_DATE_COL], format=GSHEET_FORECAST_DATE_FORMAT, errors='coerce'
         )
@@ -438,7 +411,7 @@ def fetch_and_prepare_data(gc, sheet_id, config):
                 raise ValueError(f"Colonna previsionale '{col}' non trovata.")
             future_data[col] = pd.to_numeric(future_data[col], errors='coerce')
 
-        # Gestione caso misto (Rain + Level) dove Level è target
+        # Handle mixed case (external features + target columns as placeholders)
         if len(actual_forecast_cols_to_fetch) < len(forecast_feature_columns):
              df_complete_forecast = pd.DataFrame(index=future_data.index, columns=forecast_feature_columns)
              for col in actual_forecast_cols_to_fetch:
@@ -450,112 +423,82 @@ def fetch_and_prepare_data(gc, sheet_id, config):
              
         print(f"Shape dati forecast: {input_data_forecast.shape}")
         
-    elif use_future_forecasts and len(actual_forecast_cols_to_fetch) == 0:
-        print("Nessuna colonna forecast esterna richiesta. Si procede in modalità autoregressiva pura.")
-        input_data_forecast = None
+    elif len(actual_forecast_cols_to_fetch) == 0:
+        # Create dummy forecast with only seasonal features (Dummy, Sin, Cos)
+        print("Nessuna colonna forecast esterna richiesta. Creazione input dummy per variabili temporali.")
+        input_data_forecast = np.zeros((output_window_steps, len(forecast_feature_columns)))
     else:
-        print("Nessuna colonna forecast richiesta o dati forecast non caricati.")
+        print("Dati forecast non disponibili.")
     
     return input_data_historical, input_data_forecast, latest_valid_timestamp
 
-
+    
 def make_prediction(model, scalers, config, data_inputs, device):
-    print(f"\n=== GENERAZIONE PREVISIONI ===")
+    print(f"\n=== GENERAZIONE PREVISIONI TFT ===")
     scaler_past_features, scaler_forecast_features, scaler_targets = scalers
     historical_data_np, forecast_data_np = data_inputs
     
-    # Normalizzazione
+    print(f"DEBUG: Historical Data Shape: {historical_data_np.shape}")
+    
+    # Normalize past data
     historical_normalized = scaler_past_features.transform(historical_data_np)
     historical_tensor = torch.FloatTensor(historical_normalized).unsqueeze(0).to(device)
     
-    forecast_tensor = None
-    use_future_forecasts = config.get("use_future_forecasts", True)
+    print(f"DEBUG: Past Tensor Shape: {historical_tensor.shape}")
+    print(f"DEBUG: Past Tensor Mean: {historical_tensor.mean().item():.6f}")
+    print(f"DEBUG: Past Tensor Std: {historical_tensor.std().item():.6f}")
     
-    if use_future_forecasts and forecast_data_np is not None:
-        # CRITICO: Se siamo in modalità autoregressiva (anche parziale), le colonne dei target in forecast_data_np
-        # sono state riempite con 0. Dobbiamo inserire l'ultimo valore storico noto nella prima riga
-        # per "innescare" correttamente il loop autoregressivo.
-        
-        past_cols = config.get("all_past_feature_columns", [])
-        target_cols = config.get("target_columns", [])
-        forecast_cols = config.get("forecast_input_columns", [])
-        
-        # Identifica gli indici dei target nelle feature passate e future
-        # Assumiamo che in forecast_data_np i target siano nelle posizioni corrispondenti a forecast_cols
-        
-        for t_col in target_cols:
-            if t_col in past_cols and t_col in forecast_cols:
-                past_idx = past_cols.index(t_col)
-                fcst_idx = forecast_cols.index(t_col)
-                
-                # historical_data_np è raw (non scalato)
-                last_val = historical_data_np[-1, past_idx]
-                
-                # Inseriamo il valore solo nella prima riga (step t=0 per predire t=1)
-                # Le righe successive verranno sovrascritte dal modello durante l'inferenza
-                forecast_data_np[0, fcst_idx] = last_val
-                
+    # Normalize forecast data
+    if forecast_data_np is not None and scaler_forecast_features is not None:
         forecast_normalized = scaler_forecast_features.transform(forecast_data_np)
         forecast_tensor = torch.FloatTensor(forecast_normalized).unsqueeze(0).to(device)
     else:
-        # No future forecasts: costruiamo il dummy input con l'ultimo target noto
-        past_cols = config.get("all_past_feature_columns", [])
-        target_cols = config.get("target_columns", [])
-        num_targets = len(target_cols)
+        # Create dummy forecast tensor
         output_steps = config['output_window_steps']
-        
-        last_target_values = []
-        for t_col in target_cols:
-            if t_col in past_cols:
-                idx = past_cols.index(t_col)
-                last_target_values.append(historical_normalized[-1, idx])
-            else:
-                last_target_values.append(0.0)
-        
-        last_targets_tensor = torch.tensor(last_target_values, dtype=torch.float32).view(1, 1, -1).to(device)
-        
-        # Create dummy future tensor (batch, seq_len, num_targets)
-        # We initialize with zeros, but the first step will be the last known target
-        dummy_future = torch.zeros(1, output_steps, num_targets).to(device)
-        dummy_future[:, 0:1, :] = last_targets_tensor
-        forecast_tensor = dummy_future
+        num_forecast_features = len(config["forecast_input_columns"])
+        forecast_tensor = torch.zeros(1, output_steps, num_forecast_features).to(device)
 
-    # Inferenza
+    print(f"DEBUG: Forecast Tensor Shape: {forecast_tensor.shape}")
+
+    # TFT Inference (simpler than Seq2Seq - no autoregressive loop)
     model.eval()
     set_seed(SEED)
     
     with torch.no_grad():
-        # The model's forward method now handles the autoregressive loop if teacher_forcing_ratio=0
-        predictions_normalized, _ = model(historical_tensor, forecast_tensor, teacher_forcing_ratio=0.0)
+        predictions_normalized, attention_info = model(historical_tensor, forecast_tensor)
     
     predictions_np = predictions_normalized.cpu().numpy().squeeze(0)
     num_targets = len(config["target_columns"])
     
-    # De-normalizzazione
-    if predictions_np.ndim == 3:
-        seq_len, n_targets, n_quantiles = predictions_np.shape
-        preds_permuted = predictions_np.transpose(0, 2, 1)
-        preds_flat = preds_permuted.reshape(-1, num_targets)
-        preds_unscaled_flat = scaler_targets.inverse_transform(preds_flat)
-        preds_unscaled = preds_unscaled_flat.reshape(seq_len, n_quantiles, num_targets)
-        predictions_scaled_back = preds_unscaled.transpose(0, 2, 1)
-    elif predictions_np.ndim == 2:
-        predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
+    # De-normalize predictions
+    quantiles = config.get("quantiles", [0.5])
+    num_quantiles = len(quantiles)
+    
+    if num_quantiles > 1:
+        # Shape: (output_steps, num_targets * num_quantiles)
+        # Reshape to (output_steps, num_quantiles, num_targets) for inverse transform
+        seq_len = predictions_np.shape[0]
+        preds_reshaped = predictions_np.reshape(seq_len, num_targets, num_quantiles)
+        
+        # Inverse transform each quantile
+        preds_unscaled = np.zeros_like(preds_reshaped)
+        for q in range(num_quantiles):
+            preds_unscaled[:, :, q] = scaler_targets.inverse_transform(preds_reshaped[:, :, q])
+        
+        predictions_scaled_back = preds_unscaled  # Shape: (output_steps, num_targets, num_quantiles)
     else:
-        predictions_np_flat = predictions_np.reshape(-1, num_targets)
-        predictions_scaled_back_flat = scaler_targets.inverse_transform(predictions_np_flat)
-        predictions_scaled_back = predictions_scaled_back_flat.reshape(predictions_np.shape)
+        predictions_scaled_back = scaler_targets.inverse_transform(predictions_np)
 
-    # Log previsioni
-    print(f"\nPrevisioni generate (shape: {predictions_scaled_back.shape}):")
+    # Log predictions
+    print(f"\nPrevisioni TFT generate (shape: {predictions_scaled_back.shape}):")
     if predictions_scaled_back.ndim == 3:
         median_idx = predictions_scaled_back.shape[2] // 2
         for i in range(predictions_scaled_back.shape[0]):
             val = predictions_scaled_back[i, 0, median_idx]
-            print(f"  Step {i+1}: {val:.2f}")
+            print(f"  Step {i+1}: {val:.3f} m")
     else:
         for i in range(predictions_scaled_back.shape[0]):
-            print(f"  Step {i+1}: {predictions_scaled_back[i]}")
+            print(f"  Step {i+1}: {predictions_scaled_back[i][0]:.3f} m")
     
     return predictions_scaled_back
 
@@ -600,12 +543,12 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
     
     if rows_to_append:
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
-        print(f"✓ Salvate {len(rows_to_append)} righe di previsione")
+        print(f"Salvate {len(rows_to_append)} righe di previsione")
 
 
 def main():
     print(f"\n{'='*60}")
-    print(f"AVVIO SCRIPT SEQ2SEQ - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"AVVIO SCRIPT TFT - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
     
     try:
@@ -620,7 +563,7 @@ def main():
             scopes=['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         )
         gc = gspread.authorize(credentials)
-        print("✓ Autenticazione Google Sheets riuscita")
+        print("Autenticazione Google Sheets riuscita")
         
         model, scaler_past, scaler_forecast, scaler_target, config, device = \
             load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
@@ -635,11 +578,11 @@ def main():
         append_predictions_to_gsheet(gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions, config)
         
         print(f"\n{'='*60}")
-        print(f"✓ COMPLETATO - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"COMPLETATO - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"{'='*60}")
 
     except Exception as e:
-        print(f"\n❌ ERRORE: {e}")
+        print(f"\nERRORE: {e}")
         traceback.print_exc()
 
 
