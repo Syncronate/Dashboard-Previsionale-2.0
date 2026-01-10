@@ -1,0 +1,59 @@
+{
+    "display_name": "modello_temporal_20260109_1757",
+    "training_date": "2026-01-09T18:08:02.611864+01:00",
+    "model_type": "TFT",
+    "input_window_steps": 48,
+    "forecast_window_steps": 6,
+    "output_window_steps": 6,
+    "all_past_feature_columns": [
+        "Seasonality_Sin",
+        "Seasonality_Cos",
+        "soil_moisture_100_to_255cm (m\u00b3/m\u00b3)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Cumulata Sensore 1295 (Arcevia)_cumulata_3h",
+        "Cumulata Sensore 2637 (Bettolelle)_cumulata_1h",
+        "Cumulata Sensore 2858 (Barbara)_cumulata_3h",
+        "Cumulata Sensore 2964 (Corinaldo)_cumulata_3h"
+    ],
+    "forecast_input_columns": [
+        "Seasonality_Sin",
+        "Seasonality_Cos"
+    ],
+    "target_columns": [
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)"
+    ],
+    "dropout": 0.2,
+    "training_mode": "standard",
+    "loss_function": "HybridPointLoss",
+    "hidden_dim": 128,
+    "num_heads": 4,
+    "num_encoder_layers": 2,
+    "horizon_weights": {
+        "group_0": {
+            "pioggia_montana": 0.6,
+            "pioggia_intermedia": 0.6,
+            "pioggia_locale": 0.4,
+            "idrometri_monte": 1.5,
+            "idrometri_intermedi": 2.0,
+            "suolo": 0.7
+        },
+        "group_1": {
+            "pioggia_montana": 0.7,
+            "pioggia_intermedia": 0.6,
+            "pioggia_locale": 0.5,
+            "idrometri_monte": 1.4,
+            "idrometri_intermedi": 2.0,
+            "suolo": 0.6
+        },
+        "group_2": {
+            "pioggia_montana": 0.7,
+            "pioggia_intermedia": 0.6,
+            "pioggia_locale": 0.5,
+            "idrometri_monte": 1.4,
+            "idrometri_intermedi": 2.0,
+            "suolo": 0.6
+        }
+    }
+}
