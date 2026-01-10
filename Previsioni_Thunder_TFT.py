@@ -41,7 +41,8 @@ HORIZON_FEATURE_CATEGORIES = {
     "pioggia_locale": ["Bettolelle", "2637"],
     "idrometri_monte": ["Serra dei Conti", "1008"],
     "idrometri_intermedi": ["Pianello", "Nevola", "3072", "1283", "Passo Ripe"],
-    "suolo": ["soil_moisture"]
+    "suolo": ["soil_moisture"],
+    "stagionalita": ["Seasonality"]
 }
 # --- END HORIZON FEATURE CATEGORIES ---
 
@@ -306,7 +307,7 @@ class TemporalFusionTransformer(nn.Module):
 # COSTANTI
 # ============================================
 MODELS_DIR = "models"
-MODEL_BASE_NAME = os.environ.get("TFT_MODEL_NAME", "modello_temporal_20260109_1760")  # Default: 3h Horizon-Gated
+MODEL_BASE_NAME = os.environ.get("TFT_MODEL_NAME", "modello_temporal_20260109_1757")  # Default: 3h Horizon-Gated
 
 GSHEET_ID = os.environ.get("GSHEET_ID", "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
@@ -634,7 +635,6 @@ def append_feature_importance_to_gsheet(gc, sheet_id_str, importance_sheet_name,
     for i, (name, weight) in enumerate(zip(feature_names, avg_weights)):
         importance_data.append({
             "Feature": name,
-            "Categoria": get_category(name),
             "Peso": float(weight),
         })
     
@@ -655,15 +655,8 @@ def append_feature_importance_to_gsheet(gc, sheet_id_str, importance_sheet_name,
         worksheet = sh.add_worksheet(title=importance_sheet_name, rows=50, cols=10)
     
     # Header
-    header = ["Rank", "Feature", "Categoria", "Peso (%)"]
+    header = ["Rank", "Feature", "Peso (%)"]
     worksheet.append_row(header, value_input_option='USER_ENTERED')
-    
-    # Add timestamp row
-    from datetime import datetime
-    import pytz
-    italy_tz = pytz.timezone('Europe/Rome')
-    timestamp_row = [f"Aggiornato: {datetime.now(italy_tz).strftime('%d/%m/%Y %H:%M')}"]
-    worksheet.append_row(timestamp_row, value_input_option='USER_ENTERED')
     
     # Data rows
     rows_to_append = []
@@ -671,7 +664,6 @@ def append_feature_importance_to_gsheet(gc, sheet_id_str, importance_sheet_name,
         row = [
             item["Rank"],
             item["Feature"],
-            item["Categoria"],
             f"{item['Peso']*100:.2f}".replace('.', ',')
         ]
         rows_to_append.append(row)
