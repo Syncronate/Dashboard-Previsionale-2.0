@@ -34,9 +34,16 @@ def set_seed(seed):
 
 set_seed(SEED)
 
-# ============================================
-# DEFINIZIONE MODELLO TFT (Temporal Fusion Transformer)
-# ============================================
+# --- HORIZON FEATURE CATEGORIES ---
+HORIZON_FEATURE_CATEGORIES = {
+    "pioggia_montana": ["Arcevia", "1295"],
+    "pioggia_intermedia": ["Corinaldo", "Barbara", "2858", "2964"],
+    "pioggia_locale": ["Bettolelle", "2637"],
+    "idrometri_monte": ["Serra dei Conti", "1008"],
+    "idrometri_intermedi": ["Pianello", "Nevola", "3072", "1283", "Passo Ripe"],
+    "suolo": ["soil_moisture"]
+}
+# --- END HORIZON FEATURE CATEGORIES ---
 
 class GatedLinearUnit(nn.Module):
     def __init__(self, input_dim: int, output_dim: int, dropout: float = 0.0):
@@ -113,11 +120,65 @@ class VariableSelectionNetwork(nn.Module):
             selection_weights = self.selection_grn(stacked, ctx_expanded)
         else:
             selection_weights = self.selection_grn(stacked)
-        variable_weights = self.softmax(selection_weights)
+        weights = self.softmax(selection_weights)
         processed_stacked = torch.stack(processed, dim=-2)
-        output = (processed_stacked * variable_weights.unsqueeze(-1)).sum(dim=-2)
-        return output, variable_weights
+        output = (processed_stacked * weights.unsqueeze(-1)).sum(dim=-2)
+        return output, weights
 
+class HorizonFeatureGating(nn.Module):
+    def __init__(self, num_features: int, feature_names: list, output_window: int, 
+                 horizon_weights: dict = None, hidden_dim: int = 64):
+        super().__init__()
+        self.num_features = num_features
+        self.feature_names = feature_names
+        self.output_window = output_window
+        self.hidden_dim = hidden_dim
+        self.feature_category_map = self._build_category_map(feature_names)
+        
+        if horizon_weights is None:
+            self.use_gating = False
+        else:
+            self.use_gating = True
+            # Pre-compute weight tensors for each step group
+            self.register_buffer('weight_group_0', self._build_weight_tensor(horizon_weights.get('group_0', {})))
+            self.register_buffer('weight_group_1', self._build_weight_tensor(horizon_weights.get('group_1', {})))
+            self.register_buffer('weight_group_2', self._build_weight_tensor(horizon_weights.get('group_2', {})))
+    
+    def _build_category_map(self, feature_names: list) -> dict:
+        category_map = {}
+        for idx, fname in enumerate(feature_names):
+            fname_lower = fname.lower()
+            found_category = "other"
+            for category, keywords in HORIZON_FEATURE_CATEGORIES.items():
+                for keyword in keywords:
+                    if keyword.lower() in fname_lower:
+                        found_category = category
+                        break
+                if found_category != "other": break
+            category_map[idx] = found_category
+        return category_map
+    
+    def _build_weight_tensor(self, category_weights: dict) -> torch.Tensor:
+        weights = torch.ones(self.num_features)
+        for idx, category in self.feature_category_map.items():
+            if category in category_weights:
+                weights[idx] = category_weights[category]
+        return weights
+    
+    def forward(self, variable_weights: torch.Tensor) -> torch.Tensor:
+        if not self.use_gating: return variable_weights
+        w0 = self.weight_group_0.to(variable_weights.device)
+        w1 = self.weight_group_1.to(variable_weights.device)
+        w2 = self.weight_group_2.to(variable_weights.device)
+        steps = variable_weights.size(1)
+        steps_per_group = max(1, self.output_window // 3)
+        out = []
+        for t in range(steps):
+            group_idx = min(t // steps_per_group, 2)
+            if group_idx == 0: out.append(variable_weights[:, t, :] * w0)
+            elif group_idx == 1: out.append(variable_weights[:, t, :] * w1)
+            else: out.append(variable_weights[:, t, :] * w2)
+        return torch.stack(out, dim=1)
 
 class InterpretableMultiHeadAttention(nn.Module):
     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
@@ -161,7 +222,9 @@ class TemporalFusionTransformer(nn.Module):
                  dropout: float = 0.1,
                  output_dim: int = 1,
                  output_window: int = 6,
-                 num_quantiles: int = 1):
+                 num_quantiles: int = 1,
+                 feature_names: list = None,       # NEW: for horizon gating (ignored in inference)
+                 horizon_weights: dict = None):    # NEW: for horizon gating (ignored in inference)
         super().__init__()
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
@@ -177,6 +240,20 @@ class TemporalFusionTransformer(nn.Module):
             self.future_vsn = VariableSelectionNetwork(hidden_dim, num_future_inputs, hidden_dim, None, dropout)
         else:
             self.future_vsn = None
+            
+        # --- 2b. Horizon Feature Gating ---
+        self.feature_names = feature_names if feature_names else []
+        if self.feature_names and horizon_weights:
+            self.horizon_gating = HorizonFeatureGating(
+                num_features=num_past_inputs,
+                feature_names=self.feature_names,
+                output_window=output_window,
+                horizon_weights=horizon_weights,
+                hidden_dim=hidden_dim
+            )
+        else:
+            self.horizon_gating = None
+
         self.encoder_lstm = nn.LSTM(hidden_dim, hidden_dim, num_encoder_layers, batch_first=True, dropout=dropout if num_encoder_layers > 1 else 0)
         self.decoder_lstm = nn.LSTM(hidden_dim, hidden_dim, num_encoder_layers, batch_first=True, dropout=dropout if num_encoder_layers > 1 else 0)
         self.post_lstm_gate = GatedResidualNetwork(hidden_dim, hidden_dim, hidden_dim, dropout=dropout)
@@ -188,13 +265,26 @@ class TemporalFusionTransformer(nn.Module):
 
     def forward(self, x_past: torch.Tensor, x_future: torch.Tensor, x_static: torch.Tensor = None) -> tuple:
         batch_size = x_past.size(0); past_seq_len = x_past.size(1)
-        past_embedded = [self.past_var_embeddings[i](x_past[:, :, i:i+1]) for i in range(self.num_past_inputs)]
-        future_embedded = [self.future_var_embeddings[i](x_future[:, :, i:i+1]) for i in range(self.num_future_inputs)]
-        past_selected, _ = self.past_vsn(past_embedded, None)
+        past_embedded = []
+        for i in range(self.num_past_inputs):
+            past_embedded.append(self.past_var_embeddings[i](x_past[:, :, i:i+1]))
+            
+        future_embedded = []
+        for i in range(self.num_future_inputs):
+            future_embedded.append(self.future_var_embeddings[i](x_future[:, :, i:i+1]))
+            
+        past_selected, past_var_weights = self.past_vsn(past_embedded, None)
+        
+        # Apply Horizon Gating
+        if self.horizon_gating is not None:
+            past_var_weights_gated = self.horizon_gating(past_var_weights)
+            past_selected = (torch.stack(past_embedded, dim=-2) * past_var_weights_gated.unsqueeze(-1)).sum(dim=-2)
+
         if self.num_future_inputs > 0 and self.future_vsn is not None and len(future_embedded) > 0:
             future_selected, _ = self.future_vsn(future_embedded, None)
         else:
             future_selected = torch.zeros(batch_size, self.output_window, self.hidden_dim, device=x_past.device)
+            
         encoder_output, (h_n, c_n) = self.encoder_lstm(past_selected)
         decoder_output, _ = self.decoder_lstm(future_selected, (h_n, c_n))
         combined = torch.cat([encoder_output, decoder_output], dim=1)
@@ -205,19 +295,24 @@ class TemporalFusionTransformer(nn.Module):
         future_output = output_temporal[:, past_seq_len:, :]
         predictions_input = future_output[:, :self.output_window, :]
         predictions = self.output_layer(predictions_input)
-        return predictions, {"attention": temporal_attention_weights}
+        
+        if self.num_quantiles > 1:
+            predictions = predictions.view(batch_size, self.output_window, self.output_dim, self.num_quantiles)
+            
+        return predictions, {"attention": temporal_attention_weights, "past_variable_weights": past_var_weights}
 
 
 # ============================================
 # COSTANTI
 # ============================================
 MODELS_DIR = "models"
-MODEL_BASE_NAME = "modello_temporal_20251230_0838"  # TFT Model
+MODEL_BASE_NAME = os.environ.get("TFT_MODEL_NAME", "modello_temporal_20260109_1760")  # Default: 3h Horizon-Gated
 
 GSHEET_ID = os.environ.get("GSHEET_ID", "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
 GSHEET_FORECAST_DATA_SHEET_NAME = "Previsioni Cumulate Feature ICON"
-GSHEET_PREDICTIONS_SHEET_NAME = "Previsioni Idro-Bettolelle 6h"
+GSHEET_PREDICTIONS_SHEET_NAME = os.environ.get("GSHEET_PREDICTIONS_SHEET", "Previsioni Idro-Bettolelle 6h")
+GSHEET_FEATURE_IMPORTANCE_SHEET_NAME = os.environ.get("GSHEET_IMPORTANCE_SHEET", "TFT Feature Importance 6h")
 
 GSHEET_DATE_COL_INPUT = 'Data e Ora'
 GSHEET_DATE_FORMAT_INPUT = '%d/%m/%Y %H:%M'
@@ -290,7 +385,9 @@ def load_model_and_scalers(model_base_name, models_dir):
         dropout=dropout,
         output_dim=num_targets,
         output_window=out_win,
-        num_quantiles=num_quantiles
+        num_quantiles=num_quantiles,
+        feature_names=config.get("all_past_feature_columns", []),  # NEW: backward compatible
+        horizon_weights=config.get("horizon_weights", None)        # NEW: backward compatible
     ).to(device)
     
     model_state = torch.load(model_path, map_location=device)
@@ -500,7 +597,89 @@ def make_prediction(model, scalers, config, data_inputs, device):
         for i in range(predictions_scaled_back.shape[0]):
             print(f"  Step {i+1}: {predictions_scaled_back[i][0]:.3f} m")
     
-    return predictions_scaled_back
+    return predictions_scaled_back, attention_info
+
+
+def append_feature_importance_to_gsheet(gc, sheet_id_str, importance_sheet_name, attention_info, config):
+    """Export feature importance (variable selection weights) to Google Sheets for operational transparency."""
+    print(f"\n=== SALVATAGGIO FEATURE IMPORTANCE ===")
+    
+    if attention_info is None or "past_variable_weights" not in attention_info:
+        print("Warning: No variable weights available for export.")
+        return
+    
+    past_var_weights = attention_info["past_variable_weights"]  # Shape: [1, input_window, num_features]
+    
+    # Aggregate weights over the input window (mean)
+    if isinstance(past_var_weights, torch.Tensor):
+        weights_np = past_var_weights.detach().cpu().numpy()
+    else:
+        weights_np = past_var_weights
+    
+    # Mean over batch and time dimensions
+    avg_weights = weights_np.squeeze(0).mean(axis=0)  # Shape: [num_features]
+    
+    feature_names = config.get("all_past_feature_columns", [])
+    
+    # Map features to categories
+    def get_category(feature_name):
+        for category, keywords in HORIZON_FEATURE_CATEGORIES.items():
+            for kw in keywords:
+                if kw.lower() in feature_name.lower():
+                    return category
+        return "altro"
+    
+    # Build importance data
+    importance_data = []
+    for i, (name, weight) in enumerate(zip(feature_names, avg_weights)):
+        importance_data.append({
+            "Feature": name,
+            "Categoria": get_category(name),
+            "Peso": float(weight),
+        })
+    
+    # Sort by weight descending
+    importance_data.sort(key=lambda x: x["Peso"], reverse=True)
+    
+    # Add rank
+    for rank, item in enumerate(importance_data, 1):
+        item["Rank"] = rank
+    
+    # Write to GSheet
+    sh = gc.open_by_key(sheet_id_str)
+    
+    try:
+        worksheet = sh.worksheet(importance_sheet_name)
+        worksheet.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = sh.add_worksheet(title=importance_sheet_name, rows=50, cols=10)
+    
+    # Header
+    header = ["Rank", "Feature", "Categoria", "Peso (%)"]
+    worksheet.append_row(header, value_input_option='USER_ENTERED')
+    
+    # Add timestamp row
+    from datetime import datetime
+    import pytz
+    italy_tz = pytz.timezone('Europe/Rome')
+    timestamp_row = [f"Aggiornato: {datetime.now(italy_tz).strftime('%d/%m/%Y %H:%M')}"]
+    worksheet.append_row(timestamp_row, value_input_option='USER_ENTERED')
+    
+    # Data rows
+    rows_to_append = []
+    for item in importance_data:
+        row = [
+            item["Rank"],
+            item["Feature"],
+            item["Categoria"],
+            f"{item['Peso']*100:.2f}".replace('.', ',')
+        ]
+        rows_to_append.append(row)
+    
+    if rows_to_append:
+        worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+        print(f"Salvate {len(rows_to_append)} righe di feature importance")
+
 
 
 def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predictions_np, config):
@@ -549,6 +728,7 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name, predi
 def main():
     print(f"\n{'='*60}")
     print(f"AVVIO SCRIPT TFT - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Modello: {MODEL_BASE_NAME}")
     print(f"{'='*60}")
     
     try:
@@ -573,9 +753,10 @@ def main():
         
         scalers = (scaler_past, scaler_forecast, scaler_target)
         data_inputs = (hist_data, fcst_data)
-        predictions = make_prediction(model, scalers, config, data_inputs, device)
+        predictions, attention_info = make_prediction(model, scalers, config, data_inputs, device)
         
         append_predictions_to_gsheet(gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME, predictions, config)
+        append_feature_importance_to_gsheet(gc, GSHEET_ID, GSHEET_FEATURE_IMPORTANCE_SHEET_NAME, attention_info, config)
         
         print(f"\n{'='*60}")
         print(f"COMPLETATO - {datetime.now(italy_tz).strftime('%Y-%m-%d %H:%M:%S')}")
