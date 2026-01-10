@@ -1,0 +1,60 @@
+{
+    "display_name": "modello_temporal_20260110_1845",
+    "training_date": "2026-01-10T19:03:44.576534+01:00",
+    "model_type": "TFT",
+    "input_window_steps": 48,
+    "forecast_window_steps": 6,
+    "output_window_steps": 6,
+    "all_past_feature_columns": [
+        "Seasonality_Sin",
+        "Seasonality_Cos",
+        "soil_moisture_100_to_255cm (m\u00b3/m\u00b3)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Cumulata Sensore 1295 (Arcevia)_cumulata_3h",
+        "Cumulata Sensore 2637 (Bettolelle)_cumulata_1h",
+        "Cumulata Sensore 2858 (Barbara)_cumulata_3h",
+        "Cumulata Sensore 2964 (Corinaldo)_cumulata_3h"
+    ],
+    "forecast_input_columns": [
+        "Seasonality_Sin",
+        "Seasonality_Cos"
+    ],
+    "target_columns": [
+        "Livello Idrometrico Sensore 3405 [m] (Ponte Garibaldi)"
+    ],
+    "dropout": 0.2,
+    "training_mode": "standard",
+    "loss_function": "HybridPointLoss",
+    "hidden_dim": 128,
+    "num_heads": 4,
+    "num_encoder_layers": 2,
+    "horizon_weights": {
+        "group_0": {
+            "pioggia_montana": 0.6,
+            "pioggia_intermedia": 0.8,
+            "pioggia_locale": 0.3,
+            "idrometri_monte": 1.8,
+            "idrometri_intermedi": 1.6,
+            "suolo": 0.3
+        },
+        "group_1": {
+            "pioggia_montana": 0.8,
+            "pioggia_intermedia": 0.9,
+            "pioggia_locale": 0.5,
+            "idrometri_monte": 1.6,
+            "idrometri_intermedi": 1.5,
+            "suolo": 0.3
+        },
+        "group_2": {
+            "pioggia_montana": 1.0,
+            "pioggia_intermedia": 1.0,
+            "pioggia_locale": 0.7,
+            "idrometri_monte": 1.5,
+            "idrometri_intermedi": 1.4,
+            "suolo": 0.3
+        }
+    }
+}
