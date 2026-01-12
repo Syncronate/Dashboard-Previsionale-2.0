@@ -1,3 +1,4 @@
+
 import os
 import json
 from datetime import datetime, timedelta
@@ -146,87 +147,148 @@ class HorizonFeatureGating(nn.Module):
             self.register_buffer('weight_group_2', self._build_weight_tensor(horizon_weights.get('group_2', {})))
     
     def _build_category_map(self, feature_names: list) -> dict:
+        """Map each feature index to its category."""
         category_map = {}
         for idx, fname in enumerate(feature_names):
             fname_lower = fname.lower()
-            found_category = "other"
+            found_category = "other"  # Default category
             for category, keywords in HORIZON_FEATURE_CATEGORIES.items():
                 for keyword in keywords:
                     if keyword.lower() in fname_lower:
                         found_category = category
                         break
-                if found_category != "other": break
+                if found_category != "other":
+                    break
             category_map[idx] = found_category
         return category_map
     
     def _build_weight_tensor(self, category_weights: dict) -> torch.Tensor:
+        """Build a weight tensor for all features based on category weights."""
         weights = torch.ones(self.num_features)
         for idx, category in self.feature_category_map.items():
             if category in category_weights:
                 weights[idx] = category_weights[category]
         return weights
     
-    def forward(self, variable_weights: torch.Tensor) -> torch.Tensor:
-        if not self.use_gating: return variable_weights
-        w0 = self.weight_group_0.to(variable_weights.device)
-        w1 = self.weight_group_1.to(variable_weights.device)
-        w2 = self.weight_group_2.to(variable_weights.device)
-        steps = variable_weights.size(1)
+    def get_weights_for_step(self, step_idx: int) -> torch.Tensor:
+        """Get the weight tensor for a specific prediction step."""
+        if not self.use_gating:
+            return torch.ones(self.num_features, device=self.weight_group_0.device if hasattr(self, 'weight_group_0') else 'cpu')
+        
+        # Determine which group this step belongs to
         steps_per_group = max(1, self.output_window // 3)
-        out = []
-        for t in range(steps):
-            group_idx = min(t // steps_per_group, 2)
-            if group_idx == 0: out.append(variable_weights[:, t, :] * w0)
-            elif group_idx == 1: out.append(variable_weights[:, t, :] * w1)
-            else: out.append(variable_weights[:, t, :] * w2)
-        return torch.stack(out, dim=1)
+        group_idx = min(step_idx // steps_per_group, 2)
+        
+        if group_idx == 0:
+            return self.weight_group_0
+        elif group_idx == 1:
+            return self.weight_group_1
+        else:
+            return self.weight_group_2
+    
+    def forward(self, variable_weights: torch.Tensor, step_idx: int = None) -> torch.Tensor:
+        """
+        Apply horizon-aware gating to variable weights.
+        
+        Args:
+            variable_weights: (batch, seq_len, num_features) - weights from VSN
+            step_idx: If provided, applies weights for specific step. 
+                      If None, applies average weights.
+        
+        Returns:
+            Gated variable weights (batch, seq_len, num_features)
+        """
+        if not self.use_gating:
+            return variable_weights
+        
+        if step_idx is not None:
+            gate_weights = self.get_weights_for_step(step_idx)
+        else:
+            # Average across all groups
+            gate_weights = (self.weight_group_0 + self.weight_group_1 + self.weight_group_2) / 3.0
+        
+        # Apply gating: multiply then renormalize to sum to 1
+        # gate_weights: (num_features,) -> expand to match variable_weights
+        gated = variable_weights * gate_weights.unsqueeze(0).unsqueeze(0)
+        
+        # Renormalize so weights sum to 1 along feature dimension
+        gated_sum = gated.sum(dim=-1, keepdim=True) + 1e-8
+        gated_normalized = gated / gated_sum
+        
+        return gated_normalized
+
 
 class InterpretableMultiHeadAttention(nn.Module):
+    """
+    Interpretable Multi-Head Attention per TFT.
+    A differenza della MHA standard, questa versione permette di estrarre
+    pesi di attenzione interpretabili su base temporale.
+    """
     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_k = d_model // n_heads
+        
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        
+        # Proiezioni Q, K, V
         self.W_q = nn.Linear(d_model, d_model)
         self.W_k = nn.Linear(d_model, d_model)
         self.W_v = nn.Linear(d_model, d_model)
+        
+        # Proiezione output
         self.W_o = nn.Linear(d_model, d_model)
+        
         self.dropout = nn.Dropout(dropout)
         self.scale = math.sqrt(self.d_k)
-
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
+        
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, 
                 mask: torch.Tensor = None) -> tuple:
         batch_size = query.size(0)
+        
+        # (batch, seq_len, n_heads, d_k) -> (batch, n_heads, seq_len, d_k)
         Q = self.W_q(query).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         K = self.W_k(key).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         V = self.W_v(value).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        
+        # Scaled Dot-Product Attention
+        # (batch, n_heads, seq_len, d_k) x (batch, n_heads, d_k, seq_len) -> (batch, n_heads, seq_len, seq_len)
         scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
+        
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
+        
         attention_weights = torch.softmax(scores, dim=-1)
         attention_weights = self.dropout(attention_weights)
+        
+        # (batch, n_heads, seq_len, seq_len) x (batch, n_heads, seq_len, d_k) -> (batch, n_heads, seq_len, d_k)
         context = torch.matmul(attention_weights, V)
+        
+        # (batch, seq_len, n_heads * d_k) -> (batch, seq_len, d_model)
         context = context.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+        
         output = self.W_o(context)
+        
         return output, attention_weights
 
 
 class TemporalFusionTransformer(nn.Module):
     def __init__(self,
-                 num_past_inputs: int,
-                 num_future_inputs: int,
-                 num_static_inputs: int = 0,
-                 hidden_dim: int = 64,
-                 num_heads: int = 4,
-                 num_encoder_layers: int = 1,
+                 num_past_inputs: int,          # Numero di feature passate (livelli, pioggia, etc.)
+                 num_future_inputs: int,        # Numero di feature future note (stagionalità)
+                 num_static_inputs: int = 0,    # Numero di feature statiche (opzionale)
+                 hidden_dim: int = 64,          # Dimensione hidden state
+                 num_heads: int = 4,            # Numero di attention heads
+                 num_encoder_layers: int = 1,   # Numero di layer LSTM encoder
                  dropout: float = 0.1,
-                 output_dim: int = 1,
-                 output_window: int = 6,
-                 num_quantiles: int = 1,
-                 feature_names: list = None,       # NEW: for horizon gating (ignored in inference)
-                 horizon_weights: dict = None):    # NEW: for horizon gating (ignored in inference)
+                 output_dim: int = 1,           # Numero di target (es. 1 = solo Bettolelle)
+                 output_window: int = 6,        # Passi futuri da predire
+                 num_quantiles: int = 1,        # Quantili per uncertainty (1 = point forecast)
+                 feature_names: list = None,    # NEW: List of past feature names for horizon gating
+                 horizon_weights: dict = None): # NEW: Horizon-aware feature weights config
         super().__init__()
+        
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.output_window = output_window
@@ -234,73 +296,190 @@ class TemporalFusionTransformer(nn.Module):
         self.num_past_inputs = num_past_inputs
         self.num_future_inputs = num_future_inputs
         self.num_static_inputs = num_static_inputs
-        self.past_var_embeddings = nn.ModuleList([nn.Linear(1, hidden_dim) for _ in range(num_past_inputs)])
-        self.future_var_embeddings = nn.ModuleList([nn.Linear(1, hidden_dim) for _ in range(num_future_inputs)])
-        self.past_vsn = VariableSelectionNetwork(hidden_dim, num_past_inputs, hidden_dim, None, dropout)
+        
+        # --- 1. Embedding delle variabili ---
+        # Ogni feature viene embedded in hidden_dim
+        self.past_var_embeddings = nn.ModuleList([
+            nn.Linear(1, hidden_dim) for _ in range(num_past_inputs)
+        ])
+        self.future_var_embeddings = nn.ModuleList([
+            nn.Linear(1, hidden_dim) for _ in range(num_future_inputs)
+        ])
+        
+        if num_static_inputs > 0:
+            self.static_var_embeddings = nn.ModuleList([
+                nn.Linear(1, hidden_dim) for _ in range(num_static_inputs)
+            ])
+            # Static context encoder
+            self.static_context_grn = GatedResidualNetwork(
+                hidden_dim * num_static_inputs, hidden_dim, hidden_dim, dropout=dropout
+            )
+            context_dim = hidden_dim
+        else:
+            self.static_var_embeddings = None
+            self.static_context_grn = None
+            context_dim = None
+        
+        # --- 2. Variable Selection Networks ---
+        self.past_vsn = VariableSelectionNetwork(
+            hidden_dim, num_past_inputs, hidden_dim, context_dim, dropout
+        )
         if num_future_inputs > 0:
-            self.future_vsn = VariableSelectionNetwork(hidden_dim, num_future_inputs, hidden_dim, None, dropout)
+            self.future_vsn = VariableSelectionNetwork(
+                hidden_dim, num_future_inputs, hidden_dim, context_dim, dropout
+            )
         else:
             self.future_vsn = None
-            
-        # --- 2b. Horizon Feature Gating ---
+        
+        # --- 2b. Horizon Feature Gating (NEW) ---
         self.feature_names = feature_names if feature_names else []
-        if self.feature_names and horizon_weights:
+        self.horizon_weights = horizon_weights
+        if feature_names and horizon_weights:
             self.horizon_gating = HorizonFeatureGating(
                 num_features=num_past_inputs,
-                feature_names=self.feature_names,
+                feature_names=feature_names,
                 output_window=output_window,
                 horizon_weights=horizon_weights,
                 hidden_dim=hidden_dim
             )
         else:
             self.horizon_gating = None
-
-        self.encoder_lstm = nn.LSTM(hidden_dim, hidden_dim, num_encoder_layers, batch_first=True, dropout=dropout if num_encoder_layers > 1 else 0)
-        self.decoder_lstm = nn.LSTM(hidden_dim, hidden_dim, num_encoder_layers, batch_first=True, dropout=dropout if num_encoder_layers > 1 else 0)
+        
+        # --- 3. Encoder LSTM (per sequenza passata) ---
+        self.encoder_lstm = nn.LSTM(
+            hidden_dim, hidden_dim, num_encoder_layers,
+            batch_first=True, dropout=dropout if num_encoder_layers > 1 else 0
+        )
+        
+        # --- 4. Decoder LSTM (per sequenza futura) ---
+        self.decoder_lstm = nn.LSTM(
+            hidden_dim, hidden_dim, num_encoder_layers,
+            batch_first=True, dropout=dropout if num_encoder_layers > 1 else 0
+        )
+        
+        # --- 5. Gated Layer per combinare encoder/decoder ---
         self.post_lstm_gate = GatedResidualNetwork(hidden_dim, hidden_dim, hidden_dim, dropout=dropout)
+        
+        # --- 6. Temporal Self-Attention ---
         self.temporal_attention = InterpretableMultiHeadAttention(hidden_dim, num_heads, dropout)
         self.post_attention_grn = GatedResidualNetwork(hidden_dim, hidden_dim, hidden_dim, dropout=dropout)
         self.attention_layer_norm = nn.LayerNorm(hidden_dim)
+        
+        # --- 7. Position-wise Feed-Forward ---
         self.positionwise_grn = GatedResidualNetwork(hidden_dim, hidden_dim, hidden_dim, dropout=dropout)
+        
+        # --- 8. Output layer (multi-horizon direct) ---
         self.output_layer = nn.Linear(hidden_dim, output_dim * num_quantiles)
 
-    def forward(self, x_past: torch.Tensor, x_future: torch.Tensor, x_static: torch.Tensor = None) -> tuple:
-        batch_size = x_past.size(0); past_seq_len = x_past.size(1)
+    def forward(self, x_past: torch.Tensor, x_future: torch.Tensor, 
+                x_static: torch.Tensor = None) -> tuple:
+        """
+        Args:
+            x_past: (batch, past_seq_len, num_past_inputs) - Serie storica
+            x_future: (batch, future_seq_len, num_future_inputs) - Covariate future note
+            x_static: (batch, num_static_inputs) - Feature statiche (opzionale)
+        
+        Returns:
+            predictions: (batch, output_window, output_dim, num_quantiles) o (batch, output_window, output_dim)
+            interpretability: Dict con pesi attenzione e importanza variabili
+        """
+        batch_size = x_past.size(0)
+        past_seq_len = x_past.size(1)
+        future_seq_len = x_future.size(1)
+        
+        # --- 1. Embed variabili ---
+        # Past
         past_embedded = []
         for i in range(self.num_past_inputs):
-            past_embedded.append(self.past_var_embeddings[i](x_past[:, :, i:i+1]))
-            
+            var_input = x_past[:, :, i:i+1]  # (batch, seq, 1)
+            past_embedded.append(self.past_var_embeddings[i](var_input))
+        
+        # Future
         future_embedded = []
         for i in range(self.num_future_inputs):
-            future_embedded.append(self.future_var_embeddings[i](x_future[:, :, i:i+1]))
-            
-        past_selected, past_var_weights = self.past_vsn(past_embedded, None)
+            var_input = x_future[:, :, i:i+1]
+            future_embedded.append(self.future_var_embeddings[i](var_input))
         
-        # Apply Horizon Gating
+        # Static context
+        static_context = None
+        if x_static is not None and self.num_static_inputs > 0:
+            static_embedded = []
+            for i in range(self.num_static_inputs):
+                var_input = x_static[:, i:i+1]
+                static_embedded.append(self.static_var_embeddings[i](var_input))
+            static_concat = torch.cat(static_embedded, dim=-1)
+            static_context = self.static_context_grn(static_concat)
+        
+        # --- 2. Variable Selection ---
+        past_selected, past_var_weights = self.past_vsn(past_embedded, static_context)
+        
+        # --- 2b. Apply Horizon Feature Gating (NEW) ---
+        # Store original weights for interpretability, apply gated weights to processing
+        past_var_weights_gated = past_var_weights
         if self.horizon_gating is not None:
+            # Apply gating to variable weights (modifies attention distribution)
             past_var_weights_gated = self.horizon_gating(past_var_weights)
+            # RE-CALCULATE past_selected with gated weights
             past_selected = (torch.stack(past_embedded, dim=-2) * past_var_weights_gated.unsqueeze(-1)).sum(dim=-2)
-
-        if self.num_future_inputs > 0 and self.future_vsn is not None and len(future_embedded) > 0:
-            future_selected, _ = self.future_vsn(future_embedded, None)
-        else:
-            future_selected = torch.zeros(batch_size, self.output_window, self.hidden_dim, device=x_past.device)
-            
-        encoder_output, (h_n, c_n) = self.encoder_lstm(past_selected)
-        decoder_output, _ = self.decoder_lstm(future_selected, (h_n, c_n))
-        combined = torch.cat([encoder_output, decoder_output], dim=1)
-        combined = self.post_lstm_gate(combined)
-        attention_output, temporal_attention_weights = self.temporal_attention(combined, combined, combined)
-        attention_output = self.attention_layer_norm(combined + self.post_attention_grn(attention_output))
-        output_temporal = self.positionwise_grn(attention_output)
-        future_output = output_temporal[:, past_seq_len:, :]
-        predictions_input = future_output[:, :self.output_window, :]
-        predictions = self.output_layer(predictions_input)
         
+        # Gestione caso senza feature future
+        if self.num_future_inputs > 0 and self.future_vsn is not None and len(future_embedded) > 0:
+            future_selected, future_var_weights = self.future_vsn(future_embedded, static_context)
+        else:
+            # Se non ci sono feature future, usa l'ultimo hidden state dell'encoder ripetuto
+            # Creiamo un placeholder di zeri per il decoder
+            batch_size = x_past.size(0)
+            future_selected = torch.zeros(batch_size, self.output_window, self.hidden_dim, device=x_past.device)
+            future_var_weights = None
+        
+        # --- 3. Encoder LSTM ---
+        encoder_output, (h_n, c_n) = self.encoder_lstm(past_selected)
+        
+        # --- 4. Decoder LSTM ---
+        decoder_output, _ = self.decoder_lstm(future_selected, (h_n, c_n))
+        
+        # --- 5. Concatena encoder e decoder outputs ---
+        # (batch, past_seq + future_seq, hidden)
+        combined = torch.cat([encoder_output, decoder_output], dim=1)
+        
+        # Gated skip connection
+        combined = self.post_lstm_gate(combined)
+        
+        # --- 6. Temporal Self-Attention ---
+        # Maschera causale: il futuro può vedere solo il passato e se stesso
+        total_len = past_seq_len + future_seq_len
+        
+        attention_output, temporal_attention_weights = self.temporal_attention(
+            combined, combined, combined
+        )
+        
+        # Add & Norm
+        attention_output = self.attention_layer_norm(combined + self.post_attention_grn(attention_output))
+        
+        # --- 7. Position-wise Feed-Forward ---
+        output_temporal = self.positionwise_grn(attention_output)
+        
+        # --- 8. Estrai solo gli output futuri (ultimi future_seq_len steps) ---
+        future_output = output_temporal[:, past_seq_len:, :]  # (batch, future_seq, hidden)
+        
+        # Usa solo i primi output_window steps come predizioni
+        predictions_input = future_output[:, :self.output_window, :]
+        
+        # --- 9. Output projection ---
+        predictions = self.output_layer(predictions_input)  # (batch, output_window, output_dim * num_quantiles)
+        
+        # Reshape per quantili
         if self.num_quantiles > 1:
             predictions = predictions.view(batch_size, self.output_window, self.output_dim, self.num_quantiles)
-            
-        return predictions, {"attention": temporal_attention_weights, "past_variable_weights": past_var_weights}
+        
+        # Interpretability dict
+        interpretability = {
+            'past_variable_weights': past_var_weights,      # (batch, past_seq, num_past)
+            'future_variable_weights': future_var_weights,  # (batch, future_seq, num_future)
+            'temporal_attention': temporal_attention_weights  # (batch, heads, total_seq, total_seq)
+        }
+        
+        return predictions, interpretability
 
 
 # ============================================
