@@ -485,7 +485,7 @@ class TemporalFusionTransformer(nn.Module):
 # COSTANTI
 # ============================================
 MODELS_DIR = "models"
-MODEL_BASE_NAME = os.environ.get("TFT_MODEL_NAME", "modello_temporal_20260109_1757")  # Default: 3h Horizon-Gated
+MODEL_BASE_NAME = os.environ.get("TFT_MODEL_NAME", "modello_temporal_20260115_1726")  # Default: 3h Horizon-Gated
 
 GSHEET_ID = os.environ.get("GSHEET_ID", "1pQI6cKrrT-gcVAfl-9ZhUx5b3J-edZRRj6nzDcCBRcA")
 GSHEET_HISTORICAL_DATA_SHEET_NAME = "DATI METEO CON FEATURE"
