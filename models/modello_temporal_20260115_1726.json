@@ -1,0 +1,92 @@
+{
+    "display_name": "modello_temporal_20260115_1726",
+    "training_date": "2026-01-15T21:11:34.024546+01:00",
+    "model_type": "TFT",
+    "input_window_steps": 48,
+    "forecast_window_steps": 6,
+    "output_window_steps": 6,
+    "all_past_feature_columns": [
+        "Seasonality_Sin",
+        "Seasonality_Cos",
+        "Cumulata Sensore 1295 (Arcevia)",
+        "Cumulata Sensore 2637 (Bettolelle)",
+        "Cumulata Sensore 2858 (Barbara)",
+        "Cumulata Sensore 2964 (Corinaldo)",
+        "Livello Idrometrico Sensore 1008 [m] (Serra dei Conti)",
+        "Livello Idrometrico Sensore 3072 [m] (Pianello di Ostra)",
+        "Livello Idrometrico Sensore 1283 [m] (Corinaldo)",
+        "soil_moisture_100_to_255cm (m\u00b3/m\u00b3)"
+    ],
+    "forecast_input_columns": [
+        "Seasonality_Sin",
+        "Seasonality_Cos"
+    ],
+    "target_columns": [
+        "Livello Idrometrico Sensore 1112 [m] (Bettolelle)"
+    ],
+    "dropout": 0.25,
+    "training_mode": "standard",
+    "loss_function": "HybridPointLoss",
+    "hidden_dim": 128,
+    "num_heads": 4,
+    "num_encoder_layers": 2,
+    "horizon_weights": {
+        "group_0": {
+            "pioggia_montana": 0.6,
+            "pioggia_intermedia": 0.6,
+            "pioggia_locale": 0.4,
+            "idrometri_monte": 1.5,
+            "idrometri_intermedi": 2.0,
+            "suolo": 0.7,
+            "stagionalita": 1.0,
+            "grid_alta": 1.0,
+            "grid_media": 1.0,
+            "grid_bassa": 1.0,
+            "grid_aggregati": 1.0,
+            "temperatura": 1.0,
+            "umidita_aria": 1.0,
+            "pressione": 1.0,
+            "neve": 1.0,
+            "pioggia_grid": 1.0,
+            "evapotraspirazione": 1.0
+        },
+        "group_1": {
+            "pioggia_montana": 0.7,
+            "pioggia_intermedia": 0.6,
+            "pioggia_locale": 0.5,
+            "idrometri_monte": 1.4,
+            "idrometri_intermedi": 2.0,
+            "suolo": 0.6,
+            "stagionalita": 1.0,
+            "grid_alta": 1.0,
+            "grid_media": 1.0,
+            "grid_bassa": 1.0,
+            "grid_aggregati": 1.0,
+            "temperatura": 1.0,
+            "umidita_aria": 1.0,
+            "pressione": 1.0,
+            "neve": 1.0,
+            "pioggia_grid": 1.0,
+            "evapotraspirazione": 1.0
+        },
+        "group_2": {
+            "pioggia_montana": 0.7,
+            "pioggia_intermedia": 0.6,
+            "pioggia_locale": 0.5,
+            "idrometri_monte": 1.4,
+            "idrometri_intermedi": 2.0,
+            "suolo": 0.6,
+            "stagionalita": 1.0,
+            "grid_alta": 1.0,
+            "grid_media": 1.0,
+            "grid_bassa": 1.0,
+            "grid_aggregati": 1.0,
+            "temperatura": 1.0,
+            "umidita_aria": 1.0,
+            "pressione": 1.0,
+            "neve": 1.0,
+            "pioggia_grid": 1.0,
+            "evapotraspirazione": 1.0
+        }
+    }
+}
