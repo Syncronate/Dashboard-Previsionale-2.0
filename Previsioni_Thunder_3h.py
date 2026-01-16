@@ -613,6 +613,14 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     historical_values = historical_ws.get_all_values()
     df_historical_raw = pd.read_csv(io.StringIO(values_to_csv_string(historical_values)), decimal=',')
     
+    # --- HOTFIX: Rinomina specifica per Sensore 1283 (Nevola) ---
+    col_nevola_bad = "Livello Idrometrico Sensore 1283 [m] (Corinaldo/Nevola)"
+    col_nevola_good = "Livello Idrometrico Sensore 1283 [m] (Corinaldo)"
+    if col_nevola_bad in df_historical_raw.columns:
+        print(f"Rinomina colonna operativa: '{col_nevola_bad}' -> '{col_nevola_good}'")
+        df_historical_raw.rename(columns={col_nevola_bad: col_nevola_good}, inplace=True)
+    # ------------------------------------------------------------
+    
     df_forecast_raw = None
     if len(actual_forecast_cols_to_fetch) > 0:
         print(f"Caricamento dati previsionali da '{GSHEET_FORECAST_DATA_SHEET_NAME}'...")
