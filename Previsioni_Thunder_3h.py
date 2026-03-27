@@ -599,7 +599,16 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     else:
         print("Dati forecast non disponibili.")
 
-    return input_data_historical, input_data_forecast, latest_valid_timestamp
+    # --- NUOVO BLOCCO: Estrazione ultimo valore reale dei target per la normalizzazione ---
+    last_target_values = {}
+    for col in target_columns:
+        if col in df_historical.columns:
+            # Prende l'ultimo valore non nullo reale per il target direttamente dal DataFrame Pandas
+            last_target_values[col] = float(df_historical[col].dropna().iloc[-1])
+        else:
+            last_target_values[col] = 0.0
+
+    return input_data_historical, input_data_forecast, latest_valid_timestamp, last_target_values
 
 
 def make_prediction(model, scalers, config, data_inputs, device):
@@ -664,63 +673,39 @@ def make_prediction(model, scalers, config, data_inputs, device):
 # ============================================
 # NORMALIZZAZIONE OFFSET SEDIMENTO
 # ============================================
-def normalize_predictions_with_offset(predictions_raw, historical_data_np, config):
+def normalize_predictions_with_offset(predictions_raw, last_target_values, config):
     """
     Normalizza le previsioni del modello ancorandole al valore attuale dell'idrometro.
-    Compensa l'offset da sedimento preservando la tendenza prevista dal modello.
-
-    Metodo: Estrapolazione lineare all'indietro per stimare P(t_now):
-        P(t_now) = 2 * P(step1) - P(step2)
-
-    Formula: P_corr(t) = V_attuale + [P(t) - P(t_now)]
-
-    Args:
-        predictions_raw: Previsioni de-normalizzate dal modello
-                        Shape: (output_steps, num_targets) o (output_steps, num_targets, num_quantiles)
-        historical_data_np: Dati storici grezzi (non scalati)
-                           Shape: (input_window_steps, num_past_features)
-        config: Configurazione del modello
-
-    Returns:
-        predictions_normalized: Previsioni corrette con offset sedimento (stessa shape)
-        normalization_info: Dict con V_attuale, P_t_now, offset per ogni target
+    Prende l'ultimo valore reale direttamente dal DataFrame (last_target_values).
     """
-    target_columns = config["target_columns"]
-    past_feature_columns = config["all_past_feature_columns"]
-
+    target_columns = config.get("target_columns", [])
     predictions_normalized = predictions_raw.copy()
     normalization_info = {}
 
     for t_idx, target_col in enumerate(target_columns):
-        # --- Trova la colonna target nei dati storici ---
-        if target_col not in past_feature_columns:
-            print(f"  ⚠ '{target_col}' non trovata nelle past features, skip normalizzazione")
+        if target_col not in last_target_values:
+            print(f"  ⚠ '{target_col}' non trovato nel DataFrame storico, skip normalizzazione")
             continue
 
-        # --- V_attuale = ultimo valore letto dall'idrometro (include sedimento) ---
-        past_idx = past_feature_columns.index(target_col)
-        V_actual = float(historical_data_np[-1, past_idx])
+        # V_attuale preso in modo sicuro dal dizionario
+        V_actual = last_target_values[target_col]
 
         if V_actual <= 0.0:
             print(f"  ⚠ V_attuale={V_actual:.3f}m per '{target_col}', dato potenzialmente errato")
 
         # --- Estrai prime due previsioni per questo target ---
         if predictions_raw.ndim == 3:
-            # Caso quantili: (steps, targets, quantiles)
-            P1 = predictions_raw[0, t_idx]  # shape: (num_quantiles,)
-            P2 = predictions_raw[1, t_idx]  # shape: (num_quantiles,)
+            P1 = predictions_raw[0, t_idx]
+            P2 = predictions_raw[1, t_idx]
         else:
-            # Caso point forecast: (steps, targets)
-            P1 = predictions_raw[0, t_idx]  # scalar
-            P2 = predictions_raw[1, t_idx]  # scalar
+            P1 = predictions_raw[0, t_idx]
+            P2 = predictions_raw[1, t_idx]
 
         # --- Estrapolazione lineare all'indietro ---
-        # trend_30min = P2 - P1
-        # P(t_now) = P1 - trend = P1 - (P2 - P1) = 2*P1 - P2
         if predictions_raw.shape[0] >= 2:
             P_t_now = 2.0 * P1 - P2
         else:
-            P_t_now = P1  # fallback: solo 1 step disponibile
+            P_t_now = P1
 
         # --- Calcolo offset e applicazione ---
         offset = V_actual - P_t_now
@@ -737,11 +722,11 @@ def normalize_predictions_with_offset(predictions_raw, historical_data_np, confi
             return f"{v:.3f}"
 
         print(f"\n  === Normalizzazione Offset Sedimento: '{target_col}' ===")
-        print(f"    V_attuale (idrometro):    {V_actual:.3f} m")
-        print(f"    P(step1) modello (t+30):  {fmt(P1)} m")
-        print(f"    P(step2) modello (t+60):  {fmt(P2)} m")
-        print(f"    P(t_now) estrapolato:     {fmt(P_t_now)} m")
-        print(f"    Offset sedimento:         {fmt(offset)} m")
+        print(f"    V_attuale (LETTO DAL FOGLIO!):  {V_actual:.3f} m")
+        print(f"    P(step1) modello (t+30):        {fmt(P1)} m")
+        print(f"    P(step2) modello (t+60):        {fmt(P2)} m")
+        print(f"    P(t_now) estrapolato:           {fmt(P_t_now)} m")
+        print(f"    Offset sedimento calcolato:     {fmt(offset)} m")
         print(f"    {'─' * 48}")
 
         for i in range(predictions_normalized.shape[0]):
@@ -753,7 +738,6 @@ def normalize_predictions_with_offset(predictions_raw, historical_data_np, confi
                 nrm_v = float(predictions_normalized[i, t_idx])
             print(f"    Step {i+1}: {raw_v:.3f} → {nrm_v:.3f} m")
 
-        # --- Salva info per il Google Sheet ---
         normalization_info[target_col] = {
             'V_actual': V_actual,
             'P_t_now': P_t_now.tolist() if isinstance(P_t_now, np.ndarray) else float(P_t_now),
@@ -936,7 +920,8 @@ def main():
         model, scaler_past, scaler_forecast, scaler_target, config, device = \
             load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
 
-        hist_data, fcst_data, last_ts = fetch_and_prepare_data(gc, GSHEET_ID, config)
+        # Ora estraiamo in modo sicuro anche "last_target_values" dal file pandas storico
+        hist_data, fcst_data, last_ts, last_target_values = fetch_and_prepare_data(gc, GSHEET_ID, config)
         config["_prediction_start_time"] = last_ts
 
         scalers = (scaler_past, scaler_forecast, scaler_target)
@@ -950,7 +935,7 @@ def main():
         # =====================================================
         print(f"\n=== NORMALIZZAZIONE PREVISIONI (Offset Sedimento) ===")
         predictions_normalized, norm_info = normalize_predictions_with_offset(
-            predictions, hist_data, config
+            predictions, last_target_values, config
         )
 
         # Salva previsioni (normalizzate come principali, grezze come riferimento)
