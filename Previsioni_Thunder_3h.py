@@ -599,11 +599,10 @@ def fetch_and_prepare_data(gc, sheet_id, config):
     else:
         print("Dati forecast non disponibili.")
 
-    # --- NUOVO BLOCCO: Estrazione ultimo valore reale dei target per la normalizzazione ---
+    # --- Estrazione ultimo valore reale dei target per la normalizzazione ---
     last_target_values = {}
     for col in target_columns:
         if col in df_historical.columns:
-            # Prende l'ultimo valore non nullo reale per il target direttamente dal DataFrame Pandas
             last_target_values[col] = float(df_historical[col].dropna().iloc[-1])
         else:
             last_target_values[col] = 0.0
@@ -687,7 +686,6 @@ def normalize_predictions_with_offset(predictions_raw, last_target_values, confi
             print(f"  ⚠ '{target_col}' non trovato nel DataFrame storico, skip normalizzazione")
             continue
 
-        # V_attuale preso in modo sicuro dal dizionario
         V_actual = last_target_values[target_col]
 
         if V_actual <= 0.0:
@@ -807,21 +805,61 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name,
                                   predictions_raw_np, predictions_norm_np,
                                   normalization_info, config):
     """
-    Salva le previsioni nel Google Sheet.
-    - Colonna principale "Previsto": contiene i valori NORMALIZZATI
-    - Colonna di riferimento "Modello Grezzo": contiene i valori grezzi del modello
-    - Riga informativa con i parametri di normalizzazione
+    Salva le previsioni nel Google Sheet in modalità APPEND (senza cancellare i dati precedenti).
+    - Scrive l'intestazione solo se il foglio è vuoto (prima esecuzione)
+    - Aggiunge una riga vuota separatrice tra esecuzioni successive
+    - Colonna principale "Previsto": valori NORMALIZZATI
+    - Colonna "Modello Grezzo": valori grezzi del modello
+    - Colonna "Run Timestamp": timestamp dell'esecuzione su ogni riga
+    - Colonna "Info Normalizzazione": parametri di offset sulla prima riga del blocco
     """
-    print(f"\n=== SALVATAGGIO PREVISIONI ===")
+    print(f"\n=== SALVATAGGIO PREVISIONI (APPEND) ===")
     sh = gc.open_by_key(sheet_id_str)
 
     try:
         worksheet = sh.worksheet(predictions_sheet_name)
-        worksheet.clear()
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=100, cols=20)
+        worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=5000, cols=20)
 
-    # === RIGA INFO NORMALIZZAZIONE ===
+    # Controlla se il foglio è già popolato (ha un'intestazione)
+    existing_values = worksheet.get_all_values()
+    sheet_is_empty = len(existing_values) == 0
+
+    quantiles = config.get("quantiles")
+    target_cols = config["target_columns"]
+    has_normalization = predictions_norm_np is not None
+
+    # === INTESTAZIONE (solo se il foglio è vuoto) ===
+    if sheet_is_empty:
+        header = ["Timestamp Previsione", "Run Timestamp"]
+
+        if quantiles and isinstance(quantiles, list) and len(quantiles) > 1:
+            for col in target_cols:
+                for q in quantiles:
+                    header.append(f"Previsto: {col} (Q{int(q * 100)})")
+        else:
+            for col in target_cols:
+                header.append(f"Previsto: {col}")
+
+        if has_normalization:
+            if quantiles and isinstance(quantiles, list) and len(quantiles) > 1:
+                for col in target_cols:
+                    for q in quantiles:
+                        header.append(f"Modello Grezzo: {col} (Q{int(q * 100)})")
+            else:
+                for col in target_cols:
+                    header.append(f"Modello Grezzo: {col}")
+
+        header.append("Info Normalizzazione")
+        worksheet.append_row(header, value_input_option='USER_ENTERED')
+        print("Intestazione scritta (foglio era vuoto)")
+    else:
+        # Separatore visivo tra esecuzioni (riga vuota)
+        worksheet.append_row([], value_input_option='USER_ENTERED')
+        print(f"Foglio esistente con {len(existing_values)} righe — aggiunta in coda")
+
+    # === Prepara stringa info normalizzazione (una per run) ===
+    norm_info_str = ""
     if normalization_info:
         info_parts = []
         for col, info in normalization_info.items():
@@ -830,49 +868,26 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name,
             o = info['offset']
             v_str = f"{v:.3f}".replace('.', ',')
             if isinstance(p, list):
-                o_mean = np.mean(o)
+                o_mean = float(np.mean(o))
                 o_str = f"{o_mean:+.3f}".replace('.', ',')
-                info_parts.append(f"V_att={v_str}m | Offset_medio={o_str}m")
+                info_parts.append(f"V_att={v_str}m Offset_medio={o_str}m")
             else:
                 p_str = f"{p:.3f}".replace('.', ',')
                 o_str = f"{o:+.3f}".replace('.', ',')
-                info_parts.append(f"V_att={v_str}m | P(t0)={p_str}m | Offset={o_str}m")
-        info_row = [f"Normalizzazione Sedimento: {' | '.join(info_parts)}"]
-        worksheet.append_row(info_row, value_input_option='USER_ENTERED')
-
-    # === HEADER ===
-    quantiles = config.get("quantiles")
-    target_cols = config["target_columns"]
-    header = ["Timestamp Previsione"]
-
-    has_normalization = predictions_norm_np is not None
-
-    if quantiles and isinstance(quantiles, list) and len(quantiles) > 1:
-        for col in target_cols:
-            for q in quantiles:
-                header.append(f"Previsto: {col} (Q{int(q * 100)})")
-    else:
-        for col in target_cols:
-            header.append(f"Previsto: {col}")
-
-    if has_normalization:
-        if quantiles and isinstance(quantiles, list) and len(quantiles) > 1:
-            for col in target_cols:
-                for q in quantiles:
-                    header.append(f"Modello Grezzo: {col} (Q{int(q * 100)})")
-        else:
-            for col in target_cols:
-                header.append(f"Modello Grezzo: {col}")
-
-    worksheet.append_row(header, value_input_option='USER_ENTERED')
+                info_parts.append(f"V_att={v_str}m P(t0)={p_str}m Offset={o_str}m")
+        norm_info_str = " | ".join(info_parts)
 
     # === RIGHE DATI ===
     rows_to_append = []
     prediction_start_time = config["_prediction_start_time"]
+    run_timestamp = datetime.now(italy_tz).strftime('%d/%m/%Y %H:%M:%S')
 
     for i in range(predictions_raw_np.shape[0]):
         timestamp = prediction_start_time + timedelta(minutes=30 * (i + 1))
-        row = [timestamp.strftime('%d/%m/%Y %H:%M')]
+        row = [
+            timestamp.strftime('%d/%m/%Y %H:%M'),
+            run_timestamp,
+        ]
 
         if has_normalization:
             main_data = predictions_norm_np[i]
@@ -889,12 +904,14 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name,
                 raw_data = raw_data.flatten()
             row.extend([f"{val:.3f}".replace('.', ',') for val in raw_data])
 
+        # Info normalizzazione solo sulla prima riga del blocco
+        row.append(norm_info_str if i == 0 else "")
         rows_to_append.append(row)
 
     if rows_to_append:
         worksheet.append_rows(rows_to_append, value_input_option='USER_ENTERED')
         status = "raw + normalizzate" if has_normalization else "raw"
-        print(f"Salvate {len(rows_to_append)} righe di previsione ({status})")
+        print(f"Aggiunte {len(rows_to_append)} righe di previsione ({status})")
 
 
 def main():
@@ -920,7 +937,6 @@ def main():
         model, scaler_past, scaler_forecast, scaler_target, config, device = \
             load_model_and_scalers(MODEL_BASE_NAME, MODELS_DIR)
 
-        # Ora estraiamo in modo sicuro anche "last_target_values" dal file pandas storico
         hist_data, fcst_data, last_ts, last_target_values = fetch_and_prepare_data(gc, GSHEET_ID, config)
         config["_prediction_start_time"] = last_ts
 
@@ -942,8 +958,8 @@ def main():
         append_predictions_to_gsheet(
             gc, GSHEET_ID, GSHEET_PREDICTIONS_SHEET_NAME,
             predictions,               # raw model predictions
-            predictions_normalized,     # offset-corrected predictions
-            norm_info,                  # normalization parameters
+            predictions_normalized,    # offset-corrected predictions
+            norm_info,                 # normalization parameters
             config
         )
 
