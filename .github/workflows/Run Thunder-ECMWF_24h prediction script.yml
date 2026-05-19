@@ -5,6 +5,10 @@ on:
   # Permette di avviare il workflow manualmente dalla UI di GitHub.
   workflow_dispatch:
 
+  # Esegue il workflow in automatico ogni 30 minuti
+  schedule:
+    - cron: '*/30 * * * *'
+
 jobs:
   run-prediction:
     # Il tipo di runner su cui verrà eseguito il job.
