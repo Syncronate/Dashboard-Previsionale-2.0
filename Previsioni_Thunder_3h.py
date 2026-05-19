@@ -821,9 +821,12 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name,
     except gspread.exceptions.WorksheetNotFound:
         worksheet = sh.add_worksheet(title=predictions_sheet_name, rows=5000, cols=20)
 
-    # Controlla se il foglio è già popolato (ha un'intestazione)
+    # Controlla se il foglio è già popolato (ha un'intestazione).
+    # Filtra le righe vuote o con sole celle blank, che gspread può restituire
+    # anche su un foglio apparentemente pulito (formattazione residua, ecc.)
     existing_values = worksheet.get_all_values()
-    sheet_is_empty = len(existing_values) == 0
+    non_empty_rows = [row for row in existing_values if any(cell.strip() for cell in row)]
+    sheet_is_empty = len(non_empty_rows) == 0
 
     quantiles = config.get("quantiles")
     target_cols = config["target_columns"]
@@ -856,7 +859,7 @@ def append_predictions_to_gsheet(gc, sheet_id_str, predictions_sheet_name,
     else:
         # Separatore visivo tra esecuzioni (riga vuota)
         worksheet.append_row([], value_input_option='USER_ENTERED')
-        print(f"Foglio esistente con {len(existing_values)} righe — aggiunta in coda")
+        print(f"Foglio esistente con {len(non_empty_rows)} righe non vuote — aggiunta in coda")
 
     # === Prepara stringa info normalizzazione (una per run) ===
     norm_info_str = ""
